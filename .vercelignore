@@ -1,0 +1,21 @@
+# Keep the Python function bundle under Vercel's 500 MB limit.
+frontend/node_modules
+node_modules
+frontend/dist
+backend/.venv
+backend/.venv-mac
+backend/venv
+**/.venv
+**/.venv-mac
+**/__pycache__
+**/*.pyc
+.pytest_cache
+backend/tests
+backend/scripts
+backend/alembic
+*.db
+backend/*.db
+.claude
+.codex
+.DS_Store
+*.log

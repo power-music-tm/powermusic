@@ -1,0 +1,129 @@
+:root {
+  /* Brand */
+  --color-brand-primary: #1a1a2e;
+  /* Mid blue for section chrome / info — stronger contrast than grey panels on the light bg */
+  --color-brand-secondary: #2c5f8f;
+  --color-brand-secondary-hover: #234c73;
+  --color-brand-secondary-muted: #e8f1f8;
+  --color-brand-secondary-border: #9bb8d4;
+  --color-brand-accent: #e94560;
+  --color-brand-accent-hover: #c73652;
+
+  /* Surface — neutral app canvas + white cards (Stripe / GitHub pattern).
+     Soft cool grey, not tinted blue. Cards stay pure white. */
+  --color-surface-bg: #f6f8fa;
+  --color-surface-card: #ffffff;
+  --color-surface-sidebar: #1a1a2e;
+  --color-surface-sidebar-hover: #252542;
+  --color-surface-sidebar-active: rgba(255, 255, 255, 0.1);
+  /* Manager portal — richer canvas + hero (signup/splash continuity) */
+  --color-manager-canvas: #e4e9f2;
+  --color-manager-canvas-deep: #d8dfea;
+  --color-manager-hero-from: #1a1a2e;
+  --color-manager-hero-to: #141425;
+  --color-manager-card: #ffffff;
+  --color-manager-panel: #f3f5fa;
+  --color-manager-directory: #e8ebf0;
+  --color-manager-border: rgba(26, 26, 46, 0.08);
+  --color-manager-border-strong: rgba(26, 26, 46, 0.14);
+  --color-surface-panel: #eef1f4;
+  --color-surface-highlight: #e8ebef;
+  --color-surface-highlight-strong: #dde2e8;
+  --color-surface-highlight-text: #1a1a2e;
+
+  /* Text */
+  --color-text-primary: #1a1a2e;
+  --color-text-secondary: #57606a;
+  --color-text-inverse: #ffffff;
+  --color-text-muted: #6e7781;
+
+  /* Border */
+  --color-border-default: #d0d7de;
+  --color-border-focus: #e94560;
+
+  /* Tags / Status — GREEN = add/added, RED = remove/removed */
+  --color-tag-added-bg: #dcfce7;
+  --color-tag-added-text: #166534;
+  --color-tag-removed-bg: #fee2e2;
+  --color-tag-removed-text: #991b1b;
+  --color-tag-already-exists-bg: #fef3c7;
+  --color-tag-already-exists-text: #92400e;
+  --color-tag-add-action-bg: #dcfce7;
+  --color-tag-add-action-text: #166534;
+  --color-tag-remove-action-bg: #fee2e2;
+  --color-tag-remove-action-text: #991b1b;
+  --color-tag-auto-mail-bg: #c8daf2;
+  --color-tag-auto-mail-text: #1e3a5f;
+  --color-tag-auto-mail-border: #9bb8d4;
+  --color-tag-neutral-bg: #e5e7eb;
+  --color-tag-neutral-text: #374151;
+  --color-tag-neutral-border: #c4c9d0;
+  --color-tag-review-exists-bg: #fef3c7;
+  --color-tag-review-exists-text: #92400e;
+  --color-tag-review-exists-border: #fcd34d;
+  --color-tag-duplicate-confirmed-bg: #fee2e2;
+  --color-tag-duplicate-confirmed-text: #991b1b;
+  --color-tag-duplicate-confirmed-border: #fca5a5;
+  --color-tag-duplicate-potential-bg: #ffedd5;
+  --color-tag-duplicate-potential-text: #9a3412;
+  --color-tag-duplicate-potential-border: #fdba74;
+  --color-tag-review-mismatch-bg: #e8f3fc;
+  --color-tag-review-mismatch-text: #1e3a5f;
+  --color-tag-review-mismatch-border: #b8d4ea;
+  --color-tag-review-removed-bg: #e0e7ff;
+  --color-tag-review-removed-text: #3730a3;
+  --color-tag-review-removed-border: #a5b4fc;
+
+  /* Signals */
+  --color-signal-amber: #f59e0b;
+  --color-signal-red: #ef4444;
+  --color-signal-green: #22c55e;
+  --color-signal-neutral: #6b7280;
+
+  /* Amber row border — Already Exists */
+  --color-already-exists-border: #f59e0b;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Typography */
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-size-xs: 11px;
+  --font-size-sm: 13px;
+  --font-size-base: 14px;
+  --font-size-md: 15px;
+  --font-size-lg: 18px;
+  --font-size-xl: 22px;
+  --font-size-2xl: 28px;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-full: 9999px;
+
+  /* Shadow */
+  --shadow-card: 0 1px 3px rgba(0,0,0,0.08);
+  --shadow-drawer: -4px 0 24px rgba(0,0,0,0.12);
+  --shadow-modal: 0 8px 32px rgba(0,0,0,0.16);
+  /* Manager portal — elevated work surfaces (auth card language, lighter touch) */
+  --shadow-manager-form: 0 16px 48px rgba(26, 26, 46, 0.09), 0 2px 8px rgba(26, 26, 46, 0.04);
+  --shadow-manager-panel: 0 4px 24px rgba(26, 26, 46, 0.05);
+
+  /* Layout */
+  --app-sidebar-width: 240px;
+  --drawer-width: 420px;
+}
+
+@media (max-width: 767px) {
+  :root {
+    --app-sidebar-width: 0px;
+    --drawer-width: 100vw;
+  }
+}

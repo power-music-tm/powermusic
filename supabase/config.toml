@@ -1,0 +1,15 @@
+# Supabase local config — see https://supabase.com/docs/guides/cli/config
+
+[auth]
+site_url = "http://localhost:5173"
+additional_redirect_urls = [
+  "http://localhost:5173/auth/callback",
+  "http://localhost:3000/auth/callback",
+  "http://127.0.0.1:3000/auth/callback",
+  "http://127.0.0.1:5173/auth/callback",
+  "http://localhost:5173/submit/signup",
+  "http://localhost:5173/admin/login",
+]
+
+[functions.send-email]
+verify_jwt = false

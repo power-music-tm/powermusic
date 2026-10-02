@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/image.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0f1729" />
+    <title>Power Music</title>
+    <style>
+      /* Dark canvas before the JS bundle mounts — no spinner, no text, just
+         the app background so a no-cache load never flashes a white/"loading"
+         screen. React paints over #root the moment it mounts. */
+      html, body { margin: 0; height: 100%; background: #0f1729; }
+      #root { min-height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

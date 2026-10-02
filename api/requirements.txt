@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+pydantic
+python-dotenv
+psycopg[binary]
+alembic
+apscheduler
+google-genai
+google-api-python-client
+google-auth
+google-auth-oauthlib
+cryptography
+PyJWT[crypto]
+python-multipart
