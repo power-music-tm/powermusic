@@ -73,6 +73,7 @@ app.add_middleware(
 )
 
 @app.get("/health")
+@app.get("/api/health")
 def health_check(db: Session = Depends(get_db)):
     try:
         verify_database_connection(db)
