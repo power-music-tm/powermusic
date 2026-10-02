@@ -60,6 +60,15 @@ def get_database_url() -> str:
         url = url.replace("postgresql://", "postgresql+psycopg://", 1)
     elif url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql+psycopg://", 1)
+
+    # Supabase "Transaction pooler" URIs often include ?pgbouncer=true for Prisma.
+    # psycopg rejects that as an invalid connection option — strip it. Port 6543
+    # alone selects transaction mode; no libpq flag is required.
+    parsed = urlparse(url)
+    params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    params.pop("pgbouncer", None)
+    url = urlunparse(parsed._replace(query=urlencode(params)))
+
     url = _force_ipv4(url)
     return _ensure_sslmode(url)
 
