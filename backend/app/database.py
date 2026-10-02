@@ -148,7 +148,15 @@ Base = declarative_base()
 
 
 def get_db():
-    db = SessionLocal()
+    try:
+        db = SessionLocal()
+    except Exception as exc:  # noqa: BLE001
+        if isinstance(exc, DatabaseConnectionError):
+            raise
+        raise DatabaseConnectionError(
+            f"Could not open database session: {type(exc).__name__}: {exc}. "
+            "Check DATABASE_URL on Vercel (transaction pooler, port 6543)."
+        ) from exc
     try:
         yield db
     finally:

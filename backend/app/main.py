@@ -58,6 +58,7 @@ origins = [
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5174",
     "https://power-music-mock.vercel.app",
+    "https://powermusic-rouge.vercel.app",
 ]
 # Extra allowed frontend origins for deployment, comma-separated.
 # e.g. EXTRA_CORS_ORIGINS=https://powermusic-app.vercel.app,https://ops.powermusic.com
@@ -77,7 +78,17 @@ def health_check(db: Session = Depends(get_db)):
         verify_database_connection(db)
     except DatabaseConnectionError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {"status": "ok", "database": "connected"}
+    except Exception as exc:  # noqa: BLE001 — surface real deploy misconfig
+        raise HTTPException(
+            status_code=503,
+            detail=f"Database check failed: {type(exc).__name__}: {exc}",
+        ) from exc
+    return {
+        "status": "ok",
+        "database": "connected",
+        "supabase_url_set": bool(os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL")),
+        "database_url_set": bool(os.getenv("DATABASE_URL")),
+    }
 
 app.include_router(auth_router)
 app.include_router(pilot1.router)
