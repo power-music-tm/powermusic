@@ -41,6 +41,10 @@
   ],
   "crons": [
     {
+      "path": "/api/pilot2/poll",
+      "schedule": "*/2 * * * *"
+    },
+    {
       "path": "/api/pilot2/learning/distill",
       "schedule": "0 2 * * *"
     },
