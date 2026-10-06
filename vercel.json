@@ -1,6 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "regions": ["syd1"],
+  "regions": ["sfo1"],
   "services": {
     "frontend": {
       "root": "frontend",
@@ -40,10 +40,7 @@
     { "source": "/(.*)", "destination": { "service": "frontend" } }
   ],
   "crons": [
-    {
-      "path": "/api/pilot2/poll",
-      "schedule": "*/2 * * * *"
-    },
+
     {
       "path": "/api/pilot2/learning/distill",
       "schedule": "0 2 * * *"
