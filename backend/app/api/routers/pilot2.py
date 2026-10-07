@@ -1400,20 +1400,32 @@ async def gmail_push(request: Request, token: Optional[str] = None, db: Session 
 
 @router.api_route("/gmail/renew-watch", methods=["GET", "POST"])
 @router.api_route("/gmail/watch/renew", methods=["GET", "POST"])
-def renew_watches(request: Request, secret: Optional[str] = None, db: Session = Depends(get_db)):
-    """Re-arm Gmail push watches that are missing or expire within 48 hours.
+def renew_watches(
+    request: Request,
+    secret: Optional[str] = None,
+    cushion_hours: int = 168,
+    db: Session = Depends(get_db),
+):
+    """Re-arm Gmail push watches for every Connected inbox.
 
-    Runs on a schedule (APScheduler in-process, or an external cron hitting
-    this endpoint on serverless). Cron-secret protected like /poll.
-    `/gmail/watch/renew` is the original path (used by vercel.json) and is kept."""
+    Default (no query params, as sent by Vercel cron): cushion_hours=168 (7 days).
+    Gmail watches last at most 7 days, so every live watch will expire within
+    the next 7 days — meaning all Connected inboxes are renewed unconditionally.
+    Pass cushion_hours=48 to restore the old "only if expiring within 48 h" behaviour.
+    Cron-secret protected like /poll.
+    `/gmail/watch/renew` is the original path (used by vercel.json) and is kept.
+    """
     require_cron_secret(request, secret)
-    summary = sync.renew_watches(db, cushion=timedelta(hours=48))
+    summary = sync.renew_watches(db, cushion=timedelta(hours=cushion_hours))
     result = {**summary, "pushEnabled": config.gmail_push_enabled()}
     if not config.gmail_push_enabled():
         result["warning"] = (
             "Gmail push not configured. Set PILOT2_GMAIL_MODE=live and "
             "PILOT2_GMAIL_PUBSUB_TOPIC."
         )
+    if summary.get("failed", 0) > 0:
+        from fastapi.responses import JSONResponse as _JSONResponse
+        return _JSONResponse(content=result, status_code=500)
     return result
 
 

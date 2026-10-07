@@ -25,7 +25,7 @@ def _envelope(payload):
 @pytest.fixture
 def client(monkeypatch):
     monkeypatch.setattr(config, "GMAIL_PUSH_TOKEN", TOKEN)
-    monkeypatch.setattr(config, "CRON_SECRET", CRON)
+    monkeypatch.setenv("CRON_SECRET", CRON)
     app = FastAPI()
     app.include_router(pilot2_router.router)
     app.dependency_overrides[pilot2_router.get_db] = lambda: MagicMock()

@@ -727,6 +727,11 @@ def renew_watches(
         .filter(models.EmailAccount.status == "Connected")
         .all()
     )
+    logger.info(
+        "Renewing Gmail watches (cushion=%s) for %d connected inbox(es)",
+        cushion,
+        len(accounts),
+    )
     for account in accounts:
         due = account.watch_expiration is None or account.watch_expiration <= cutoff
         if not due or (require_token and not account.oauth_refresh_token):
@@ -744,6 +749,12 @@ def renew_watches(
             except Exception:
                 pass
             summary["failed"] += 1
+    logger.info(
+        "Gmail watch renewal complete: renewed=%d skipped=%d failed=%d",
+        summary["renewed"],
+        summary["skipped"],
+        summary["failed"],
+    )
     return summary
 
 

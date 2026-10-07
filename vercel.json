@@ -47,7 +47,7 @@
     },
     {
       "path": "/api/pilot2/gmail/watch/renew",
-      "schedule": "0 3 * * *"
+      "schedule": "0 10 * * *"
     }
   ]
 }
