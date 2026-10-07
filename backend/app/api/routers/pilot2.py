@@ -2,13 +2,15 @@
 
 import base64
 import binascii
+import hmac
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from app import models
@@ -1323,57 +1325,90 @@ def trigger_poll(request: Request, secret: Optional[str] = None, db: Session = D
     return result
 
 
+def _is_transient_push_error(exc: BaseException) -> bool:
+    """True when a Pub/Sub redelivery could plausibly succeed (DB/Gmail outage,
+    rate limit, timeout). Everything else is acked and left to /poll to converge."""
+    from sqlalchemy.exc import OperationalError
+
+    from app.database import DatabaseConnectionError
+
+    if isinstance(exc, (OperationalError, DatabaseConnectionError, TimeoutError, ConnectionError)):
+        return True
+    status = getattr(getattr(exc, "resp", None), "status", None)  # googleapiclient HttpError
+    try:
+        status = int(status) if status is not None else None
+    except (TypeError, ValueError):
+        status = None
+    return status is not None and (status == 429 or status >= 500)
+
+
 @router.post("/gmail/push")
 async def gmail_push(request: Request, token: Optional[str] = None, db: Session = Depends(get_db)):
     """Gmail push webhook (Google Pub/Sub → here).
 
     Pub/Sub delivers `{"message": {"data": base64(JSON)}}` where the JSON is
     `{"emailAddress", "historyId"}`. We authenticate with a shared secret in
-    the URL (?token=), then delta-sync that inbox immediately.
+    the URL (?token=), then delta-sync that inbox immediately using the STORED
+    history cursor (the pushed historyId is never trusted as the cursor).
 
-    We always ACK with 200 (even on internal errors) so Pub/Sub doesn't retry
-    a poison message forever — the daily poll + next notification converge any
-    missed change. Only a bad/absent token is rejected.
+    Auth fails closed: if PILOT2_GMAIL_PUSH_TOKEN is unset every request is
+    rejected. Payloads that retrying cannot fix are acked with 200; only
+    transient failures (DB/Gmail outage) return 503 so Pub/Sub redelivers.
+    /poll remains the fallback that converges anything missed.
     """
-    if config.GMAIL_PUSH_TOKEN and token != config.GMAIL_PUSH_TOKEN:
-        raise HTTPException(status_code=403, detail="Invalid push token.")
+    expected = config.GMAIL_PUSH_TOKEN
+    if not expected or not hmac.compare_digest((token or "").encode("utf-8"), expected.encode("utf-8")):
+        raise HTTPException(status_code=401, detail="Invalid or missing push token.")
 
     try:
         envelope = await request.json()
     except Exception:
+        logger.warning("Gmail push ignored: invalid JSON body")
         return {"status": "ignored", "reason": "invalid JSON"}
 
-    message = (envelope or {}).get("message") or {}
-    data = message.get("data")
+    message = (envelope.get("message") if isinstance(envelope, dict) else None) or {}
+    data = message.get("data") if isinstance(message, dict) else None
     if not data:
+        logger.warning("Gmail push ignored: no data")
         return {"status": "ignored", "reason": "no data"}
 
     try:
         decoded = json.loads(base64.b64decode(data).decode("utf-8"))
-    except (binascii.Error, ValueError, UnicodeDecodeError):
+    except (binascii.Error, ValueError, UnicodeDecodeError, TypeError):
+        logger.warning("Gmail push ignored: undecodable data")
         return {"status": "ignored", "reason": "undecodable data"}
+    if not isinstance(decoded, dict):
+        logger.warning("Gmail push ignored: unexpected payload shape")
+        return {"status": "ignored", "reason": "unexpected payload"}
 
     email_address = decoded.get("emailAddress")
     history_id = decoded.get("historyId")
     try:
-        changes = sync.handle_push_notification(db, email_address, history_id)
-    except Exception:
-        logger.exception("Gmail push handling failed for %s", email_address)
+        # Sync DB/Gmail work: keep it off the event loop.
+        changes = await run_in_threadpool(sync.handle_push_notification, db, email_address, history_id)
+    except Exception as exc:
         db.rollback()
+        if _is_transient_push_error(exc):
+            logger.warning("Gmail push transient failure inbox=%s historyId=%s: %s", email_address, history_id, type(exc).__name__)
+            raise HTTPException(status_code=503, detail="Transient failure; retry.")
+        logger.exception("Gmail push handling failed inbox=%s historyId=%s (acked)", email_address, history_id)
         return {"status": "error-acked", "changes": 0}
 
+    logger.info("Gmail push processed inbox=%s historyId=%s changes=%s", email_address, history_id, changes)
     return {"status": "ok", "inbox": email_address, "changes": changes}
 
 
+@router.api_route("/gmail/renew-watch", methods=["GET", "POST"])
 @router.api_route("/gmail/watch/renew", methods=["GET", "POST"])
 def renew_watches(request: Request, secret: Optional[str] = None, db: Session = Depends(get_db)):
-    """Re-arm Gmail push watches nearing their 7-day expiry.
+    """Re-arm Gmail push watches that are missing or expire within 48 hours.
 
     Runs on a schedule (APScheduler in-process, or an external cron hitting
-    this endpoint on serverless). Cron-secret protected like /poll."""
+    this endpoint on serverless). Cron-secret protected like /poll.
+    `/gmail/watch/renew` is the original path (used by vercel.json) and is kept."""
     require_cron_secret(request, secret)
-    renewed = sync.renew_expiring_watches(db)
-    result = {"renewed": renewed, "pushEnabled": config.gmail_push_enabled()}
+    summary = sync.renew_watches(db, cushion=timedelta(hours=48))
+    result = {**summary, "pushEnabled": config.gmail_push_enabled()}
     if not config.gmail_push_enabled():
         result["warning"] = (
             "Gmail push not configured. Set PILOT2_GMAIL_MODE=live and "

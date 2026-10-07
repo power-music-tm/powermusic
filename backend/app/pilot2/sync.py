@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Set
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app import models
@@ -470,6 +471,16 @@ def sync_account_history(db: Session, account: models.EmailAccount) -> int:
                 account.gmail_history_id = str(profile.get("historyId", start_id))
                 db.commit()
                 logger.warning("Reset history id for %s after %s", account.email, exc)
+                # The cursor jump skips whatever arrived in the gap; recover
+                # roster mail (bounded, allowlisted senders only) so it isn't lost.
+                try:
+                    changes += catch_up_recent_messages(db, account)
+                except Exception:
+                    logger.exception("Roster catch-up after history reset failed for %s", account.email)
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
                 return changes
             raise
 
@@ -675,8 +686,11 @@ def arm_watch(db: Session, account: models.EmailAccount) -> bool:
     if not result:
         return False
 
+    # Only seed the cursor when we have none. Overwriting an existing cursor
+    # (e.g. on daily renewal) would skip every message between the old cursor
+    # and now.
     history_id = result.get("historyId")
-    if history_id:
+    if history_id and not account.gmail_history_id:
         account.gmail_history_id = str(history_id)
     expiration = result.get("expiration")
     if expiration:
@@ -693,26 +707,53 @@ def arm_watch(db: Session, account: models.EmailAccount) -> bool:
     return True
 
 
+def renew_watches(
+    db: Session,
+    *,
+    cushion: timedelta = WATCH_RENEW_CUSHION,
+    require_token: bool = False,
+) -> dict:
+    """Re-arm every connected inbox whose watch is missing or within `cushion`
+    of expiry. Errors are isolated per account.
+
+    Returns {"renewed": n, "skipped": n, "failed": n} (no secrets).
+    """
+    summary = {"renewed": 0, "skipped": 0, "failed": 0}
+    if not config.gmail_push_enabled():
+        return summary
+    cutoff = datetime.now(timezone.utc) + cushion
+    accounts = (
+        db.query(models.EmailAccount)
+        .filter(models.EmailAccount.status == "Connected")
+        .all()
+    )
+    for account in accounts:
+        due = account.watch_expiration is None or account.watch_expiration <= cutoff
+        if not due or (require_token and not account.oauth_refresh_token):
+            summary["skipped"] += 1
+            continue
+        try:
+            if arm_watch(db, account):
+                summary["renewed"] += 1
+            else:
+                summary["failed"] += 1
+        except Exception:
+            logger.exception("Watch renewal failed for %s", account.email)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            summary["failed"] += 1
+    return summary
+
+
 def renew_expiring_watches(db: Session) -> int:
     """Re-arm every connected inbox whose watch is missing or near expiry.
 
     Runs daily (scheduler) / via cron on serverless. Gmail requires a fresh
     watch call at least weekly or push silently stops.
     """
-    if not config.gmail_push_enabled():
-        return 0
-    cutoff = datetime.now(timezone.utc) + WATCH_RENEW_CUSHION
-    accounts = (
-        db.query(models.EmailAccount)
-        .filter(models.EmailAccount.status == "Connected")
-        .all()
-    )
-    renewed = 0
-    for account in accounts:
-        if account.watch_expiration is None or account.watch_expiration <= cutoff:
-            if arm_watch(db, account):
-                renewed += 1
-    return renewed
+    return renew_watches(db)["renewed"]
 
 
 def handle_push_notification(
@@ -731,7 +772,7 @@ def handle_push_notification(
     account = (
         db.query(models.EmailAccount)
         .filter(
-            models.EmailAccount.email == email_address,
+            func.lower(models.EmailAccount.email) == email_address.strip().lower(),
             models.EmailAccount.status == "Connected",
         )
         .first()
@@ -752,12 +793,15 @@ def handle_push_notification(
         if gmail.is_auth_revoked_error(exc):
             account = (
                 db.query(models.EmailAccount)
-                .filter(models.EmailAccount.email == email_address)
+                .filter(func.lower(models.EmailAccount.email) == email_address.strip().lower())
                 .first()
             )
             if account is not None:
                 gmail.mark_account_auth_revoked(db, account, exc)
-        return 0
+            # Retrying cannot fix a revoked token.
+            return 0
+        # Let the webhook decide whether this is worth a Pub/Sub redelivery.
+        raise
     try:
         process_ai_batch(db, deadline=time.monotonic() + config.AI_BATCH_TIME_BUDGET_SECONDS)
     except Exception:

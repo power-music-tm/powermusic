@@ -611,6 +611,18 @@ def poll_all_accounts(db: Session) -> int:
         account.last_synced_at = datetime.now(timezone.utc)
     db.commit()
 
+    # Opportunistically keep Gmail push alive from the existing poll cadence.
+    # Never allowed to break polling.
+    try:
+        if config.gmail_push_enabled():
+            sync.renew_watches(db, cushion=timedelta(hours=24), require_token=True)
+    except Exception:
+        logger.exception("Opportunistic watch renewal failed during poll")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
     try:
         changes += sync.process_ai_batch(db)
     except Exception:
