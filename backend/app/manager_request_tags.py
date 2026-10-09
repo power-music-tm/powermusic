@@ -51,15 +51,39 @@ TAG_DISPLAY_ORDER = [
 ]
 
 
+import json
+
+
+def _clean_tag_group(group: Iterable[str] | None) -> List[str]:
+    if not group:
+        return []
+    if isinstance(group, str):
+        curr = group
+        for _ in range(3):
+            if isinstance(curr, str):
+                try:
+                    curr = json.loads(curr)
+                except Exception:
+                    break
+            else:
+                break
+        if isinstance(curr, (list, tuple, set)):
+            return [str(t) for t in curr]
+        if isinstance(curr, str) and curr:
+            return [curr]
+        return []
+    return [str(t) for t in group]
+
+
 def normalize_tags(tags: Iterable[str] | None) -> List[str]:
-    cleaned = [t for t in (tags or []) if t in ALLOWED_TAGS]
+    cleaned = [t for t in _clean_tag_group(tags) if t in ALLOWED_TAGS]
     return sorted(set(cleaned), key=lambda tag: TAG_DISPLAY_ORDER.index(tag) if tag in TAG_DISPLAY_ORDER else 99)
 
 
 def merge_tags(*tag_groups: Iterable[str] | None) -> List[str]:
     merged: List[str] = []
     for group in tag_groups:
-        merged.extend(group or [])
+        merged.extend(_clean_tag_group(group))
     return normalize_tags(merged)
 
 

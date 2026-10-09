@@ -60,7 +60,7 @@ def _effective_tags(
     req: models.ManagerRequest,
     directory_row: Optional[models.ManagerRequest],
 ) -> List[str]:
-    tags = list(req.tags or [])
+    tags = _parse_tags(req.tags)
     if directory_row:
         from app.manager_request_tags import TAG_ALREADY_REMOVED, TAG_ALREADY_EXISTS
         if directory_row.outcome == "Removed":
@@ -236,7 +236,7 @@ def _automated_email_meta(
     _, notes_auto = _split_manager_and_automated_notes(req.manager_notes)
     details = (meta.get("details") or "").strip() or notes_auto or subject or ""
 
-    has_auto_tag = TAG_AUTO_MAIL in (req.tags or [])
+    has_auto_tag = TAG_AUTO_MAIL in _parse_tags(req.tags)
     if (
         allow_gmail_lookup
         and not from_email
@@ -340,6 +340,27 @@ def _split_manager_and_automated_notes(raw: Optional[str]) -> Tuple[Optional[str
     manager = "\n\n".join(manager_parts).strip() or None
     auto = "\n\n".join(auto_parts).strip()
     return manager, auto
+
+
+import json
+
+def _parse_tags(tags: Any) -> List[str]:
+    if not tags:
+        return []
+    curr = tags
+    for _ in range(3):
+        if isinstance(curr, str):
+            try:
+                curr = json.loads(curr)
+            except Exception:
+                break
+        else:
+            break
+    if isinstance(curr, (list, tuple, set)):
+        return [str(t) for t in curr]
+    if isinstance(curr, str) and curr:
+        return [curr]
+    return []
 
 
 _REVIEW_TAGS = frozenset(
@@ -767,6 +788,10 @@ def directory_person_to_api_dict(
         "partnerId": getattr(req, "partner_id", None),
         "partnerName": partner_name,
         "partnerSlug": partner_slug,
+        "tags": _parse_tags(req.tags),
+        "sourceGmailMessageId": req.source_gmail_message_id,
+        "submittedBy": manager_fields if (req.manager_id or any(manager_fields.values())) else {"club": "Auto email"} if (has_tag(_parse_tags(req.tags), TAG_AUTO_MAIL) or req.source_gmail_message_id) else manager_fields,
+        "automatedEmail": _light_auto_mail_snapshot(req),
     }
 
 
@@ -774,7 +799,7 @@ def _light_auto_mail_snapshot(req: models.ManagerRequest) -> Optional[Dict[str, 
     """Auto-mail summary without DB round-trips (safe for list serialization)."""
     from app.intake_persons import get_auto_mail_meta
 
-    tags = req.tags or []
+    tags = _parse_tags(req.tags)
     meta = get_auto_mail_meta(req)
     _, notes_auto = _split_manager_and_automated_notes(req.manager_notes)
     if (
@@ -848,7 +873,7 @@ def _build_directory_request_history(
             seen.add(bare_handled_id)
 
         # ── Step 2: derive live events ──────────────────────────────────────────
-        tags = req.tags or []
+        tags = _parse_tags(req.tags)
         manager_user = getattr(req, "_manager_user", None)
         admin_user = getattr(req, "_admin_user", None)
         manager_name = resolve_manager_name(req, manager_user=manager_user)
