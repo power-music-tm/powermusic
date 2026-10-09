@@ -271,7 +271,7 @@ def _logo_url() -> str:
 
 
 def _dashboard_url() -> str:
-    return f"{config.FRONTEND_URL.rstrip('/')}/email-accounts"
+    return f"{config.FRONTEND_URL.rstrip('/')}/partner-settings?tab=automation"
 
 
 def _friendly_error(message: str) -> tuple[str, str | None]:
@@ -301,6 +301,7 @@ def _friendly_error(message: str) -> tuple[str, str | None]:
 def oauth_success_page(*, email: str, title: str) -> str:
     safe_email = escape(email)
     safe_title = escape(title)
+    dashboard_dest = escape(_dashboard_url())
     body = f"""
     <main class="card" role="main">
       <div class="card-top">
@@ -332,13 +333,30 @@ def oauth_success_page(*, email: str, title: str) -> str:
         </div>
 
         <div class="actions">
-          <a class="btn btn-primary" href="{escape(_dashboard_url())}">Return to Email accounts</a>
-          <button type="button" class="btn btn-secondary" onclick="window.close()">Close this tab</button>
+          <button type="button" class="btn btn-primary" onclick="finishOAuthFlow()">Close this tab</button>
         </div>
 
         <p class="footnote">You can close this window once you're back in the dashboard.</p>
       </div>
     </main>
+    <script>
+      function finishOAuthFlow() {{
+        window.close();
+        setTimeout(function() {{
+          if (!window.closed) {{
+            var fallbackUrl = "{dashboard_dest}";
+            if (
+              fallbackUrl.indexOf("localhost") !== -1 &&
+              window.location.hostname !== "localhost" &&
+              window.location.hostname !== "127.0.0.1"
+            ) {{
+              fallbackUrl = window.location.origin + "/partner-settings?tab=automation";
+            }}
+            window.location.href = fallbackUrl;
+          }}
+        }}, 100);
+      }}
+    </script>
 """
     return _page("Inbox connected", body)
 
@@ -346,6 +364,7 @@ def oauth_success_page(*, email: str, title: str) -> str:
 def oauth_error_page(*, message: str) -> str:
     friendly, _detail = _friendly_error(message)
     safe_friendly = escape(friendly)
+    dashboard_dest = escape(_dashboard_url())
     body = f"""
     <main class="card" role="main">
       <div class="card-top">
@@ -368,10 +387,28 @@ def oauth_error_page(*, message: str) -> str:
         </div>
 
         <div class="actions">
-          <a class="btn btn-primary" href="{escape(_dashboard_url())}">Back to Email accounts</a>
-          <button type="button" class="btn btn-secondary" onclick="window.close()">Close this tab</button>
+          <a class="btn btn-primary" href="{dashboard_dest}">Back to Email accounts</a>
+          <button type="button" class="btn btn-secondary" onclick="finishOAuthFlow()">Close this tab</button>
         </div>
       </div>
     </main>
+    <script>
+      function finishOAuthFlow() {{
+        window.close();
+        setTimeout(function() {{
+          if (!window.closed) {{
+            var fallbackUrl = "{dashboard_dest}";
+            if (
+              fallbackUrl.indexOf("localhost") !== -1 &&
+              window.location.hostname !== "localhost" &&
+              window.location.hostname !== "127.0.0.1"
+            ) {{
+              fallbackUrl = window.location.origin + "/partner-settings?tab=automation";
+            }}
+            window.location.href = fallbackUrl;
+          }}
+        }}, 100);
+      }}
+    </script>
 """
     return _page("Connection failed", body)

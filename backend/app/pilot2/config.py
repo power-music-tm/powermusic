@@ -58,7 +58,13 @@ GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_REDIRECT_URI = os.getenv(
     "GOOGLE_REDIRECT_URI", "http://localhost:8000/api/pilot2/inboxes/oauth/callback"
 )
-FRONTEND_URL = os.getenv("PILOT2_FRONTEND_URL", "http://localhost:5173")
+_raw_frontend_url = os.getenv("PILOT2_FRONTEND_URL") or os.getenv("FRONTEND_URL")
+if not _raw_frontend_url and os.getenv("VERCEL_PROJECT_PRODUCTION_URL"):
+    _raw_frontend_url = f"https://{os.getenv('VERCEL_PROJECT_PRODUCTION_URL')}"
+elif not _raw_frontend_url and os.getenv("VERCEL_URL"):
+    _raw_frontend_url = f"https://{os.getenv('VERCEL_URL')}"
+FRONTEND_URL = _raw_frontend_url or "http://localhost:5173"
+
 MAX_CONNECTED_INBOXES = int(os.getenv("PILOT2_MAX_CONNECTED_INBOXES", "7"))
 
 # Shared secret for the poll/distill trigger endpoints. When set, callers
