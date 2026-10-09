@@ -823,7 +823,7 @@ export default function PartnerSettings() {
                 aria-selected={selected}
                 onClick={() => {
                   setSettingsTab(tab.id);
-                  if (tab.id !== 'form-builder') setPartnerNameEditing(false);
+                  if (tab.id !== 'form-builder') setProfileEditing(false);
                 }}
                 className={`flex items-start gap-3 rounded-lg px-3.5 py-3 text-left transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-brand-primary)]/35 ${
                   selected

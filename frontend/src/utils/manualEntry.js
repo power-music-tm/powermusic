@@ -143,11 +143,34 @@ export function getManagerColumnContent(request, options = {}) {
   };
 }
 
-/** Directory ledger rows — empty manager is not an auto-email request. */
+/** Directory ledger rows — preserve Auto Email Request label for automated intake sources. */
 export function getDirectoryManagerColumnContent(row, options = {}) {
   const pName = options.partnerName || row?.partnerName || row?.partner_name;
   const pSlug = options.partnerSlug || row?.partnerSlug || row?.partner_slug;
   const terms = getPartnerTerminology(pName, pSlug);
+  const tags = row?.tags || [];
+
+  const isAutoMail = (
+    tags.includes('auto mail')
+    || Boolean(row?.sourceGmailMessageId)
+    || Boolean(row?.source_gmail_message_id)
+    || Boolean(row?.automatedEmail)
+    || isAutomatedSubmittedBy(row?.submittedBy)
+    || isAwaitingManagerSubmission(tags)
+    || (Array.isArray(row?.requestHistory) && row.requestHistory.some((e) => e.type === 'auto_mail'))
+  );
+
+  if (isAutoMail) {
+    return {
+      primary: AWAITING_MANAGER_LABEL,
+      secondary: AWAITING_MANAGER_HINT,
+      tertiary: terms.isGll
+        ? ((row?.submittedBy?.club || row?.club || '').trim() || 'No location')
+        : (row?.submittedBy?.club || row?.club || ''),
+      muted: true,
+    };
+  }
+
   const name = (row?.managerName || row?.addedBy || '').trim();
   const email = (row?.managerEmail || '').trim();
   const club = (row?.club || '').trim();
