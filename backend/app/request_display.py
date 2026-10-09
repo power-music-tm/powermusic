@@ -34,7 +34,8 @@ def allocate_request_ids(db: Session, count: int) -> List[str]:
     if count < 1:
         return []
 
-    db.execute(text("SELECT pg_advisory_xact_lock(842001)"))
+    if db.bind and db.bind.dialect.name == "postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(842001)"))
 
     rows = db.query(models.ManagerRequest.id).all()
     max_num = 0

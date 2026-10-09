@@ -330,7 +330,17 @@ def intake_roster_message(
     inbox_email: Optional[str] = None,
 ) -> bool:
     """Create a manager_request and return True if this message was consumed as roster mail."""
-    sources = list_automated_sources(db)
+    inbox_partner_id = None
+    if inbox_email:
+        account = (
+            db.query(models.EmailAccount)
+            .filter(models.EmailAccount.email == inbox_email.strip().lower())
+            .first()
+        )
+        if account and account.partner_id:
+            inbox_partner_id = account.partner_id
+
+    sources = list_automated_sources(db, partner_id=inbox_partner_id)
     if not sender_is_allowlisted(from_email, sources=sources):
         return False
 

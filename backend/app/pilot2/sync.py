@@ -539,9 +539,17 @@ def _apply_history_record(
             .filter(models.Email.gmail_message_id == message_id)
             .count()
         )
-        import_message(db, account, message, queue_ai=True)
-        if before == 0:
-            applied += 1
+        try:
+            import_message(db, account, message, queue_ai=True)
+            if before == 0:
+                applied += 1
+        except Exception:
+            logger.exception("History import failed for message %s in account %s", message_id, account.email)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            continue
 
     for item in record.get("labelsAdded", []) or []:
         applied += _apply_label_change(db, account, item, added=item.get("labelIds") or [])

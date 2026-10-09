@@ -349,10 +349,6 @@ def resolve_partner_for_automated_email(
     inbox_email: Optional[str] = None,
     sources: Optional[Sequence[models.AutomatedRosterSource]] = None,
 ) -> Optional[str]:
-    resolved_sources = list(sources) if sources is not None else list_automated_sources(db)
-    source_partner_ids = matching_automated_source_partners(from_email, resolved_sources)
-    if not source_partner_ids:
-        return None
     inbox_partner_id = None
     if inbox_email:
         account = (
@@ -362,6 +358,17 @@ def resolve_partner_for_automated_email(
         )
         if account and account.partner_id:
             inbox_partner_id = account.partner_id
+
+    if sources is not None:
+        resolved_sources = list(sources)
+    elif inbox_partner_id:
+        resolved_sources = list_automated_sources(db, partner_id=inbox_partner_id)
+    else:
+        resolved_sources = list_automated_sources(db)
+
+    source_partner_ids = matching_automated_source_partners(from_email, resolved_sources)
+    if not source_partner_ids:
+        return None
     if len(source_partner_ids) > 1:
         raise HTTPException(
             status_code=409,
