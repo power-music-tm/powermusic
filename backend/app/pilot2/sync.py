@@ -341,7 +341,7 @@ def catch_up_recent_messages(
     db: Session,
     account: models.EmailAccount,
     *,
-    query: str = "newer_than:6h",
+    query: str = "newer_than:6h in:inbox",
     max_messages: int = 30,
 ) -> int:
     """Recover missed *roster* mail when History API cursor drifts.

@@ -330,6 +330,11 @@ def intake_roster_message(
     inbox_email: Optional[str] = None,
 ) -> bool:
     """Create a manager_request and return True if this message was consumed as roster mail."""
+    if inbox_email and from_email:
+        if inbox_email.strip().lower() == from_email.strip().lower():
+            # A connected inbox must never process its own outbound/sent messages as request intake.
+            return False
+
     inbox_partner_id = None
     if inbox_email:
         account = (
