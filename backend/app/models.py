@@ -193,6 +193,9 @@ class EmailAccount(Base):
     backfill_imported_count = Column(Integer, nullable=False, default=0)
     backfill_error = Column(Text, nullable=True)
 
+    # When True, non-roster messages (bank alerts, invoices, CRM alerts) are ignored for Pilot 2 emails/attachments.
+    roster_only = Column(Boolean, nullable=False, default=True, server_default="true")
+
 
 class EmailIgnoreRule(Base):
     """Sender blocklist entry — email or whole domain hidden from Email responses."""

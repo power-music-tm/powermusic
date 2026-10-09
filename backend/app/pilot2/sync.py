@@ -136,6 +136,10 @@ def import_message(
         notify_admin_requests_changed("auto_mail")
         return None
 
+    if getattr(account, "roster_only", True):
+        # Dedicated roster inboxes do not persist non-roster emails or attachments into emails/email_attachments
+        return None
+
     if _should_skip_import(db, account, message):
         return None
 

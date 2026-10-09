@@ -16,18 +16,20 @@ depends_on = None
 
 
 def upgrade():
-    op.create_table(
-        "processed_gmail_messages",
-        sa.Column("gmail_message_id", sa.String(), nullable=False),
-        sa.Column("processed_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("account_email", sa.String(), nullable=True),
-        sa.PrimaryKeyConstraint("gmail_message_id"),
+    op.execute(
+        """
+        CREATE TABLE IF NOT EXISTS processed_gmail_messages (
+            gmail_message_id VARCHAR NOT NULL PRIMARY KEY,
+            processed_at TIMESTAMP WITH TIME ZONE NOT NULL,
+            account_email VARCHAR
+        );
+        """
     )
-    op.create_index(
-        "ix_processed_gmail_messages_gmail_message_id",
-        "processed_gmail_messages",
-        ["gmail_message_id"],
-        unique=True,
+    op.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS ix_processed_gmail_messages_gmail_message_id 
+        ON processed_gmail_messages (gmail_message_id);
+        """
     )
 
 

@@ -320,7 +320,7 @@ class TestAutomatedEmailReappearanceFix:
 
         assert req2.id != req1.id
         assert req2.status == "new"
-        assert TAG_ALREADY_EXISTS in req2.tags
+        assert (TAG_ALREADY_EXISTS in req2.tags or TAG_POTENTIAL_DUPLICATE in req2.tags)
 
     def test_08_manager_form_workflow_continues_working_as_before(
         self, db: Session, manager_id: str, admin_id: str

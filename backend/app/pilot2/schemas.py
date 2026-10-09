@@ -27,17 +27,20 @@ class InboxOut(BaseModel):
     backfillError: Optional[str] = Field(default=None, validation_alias="backfill_error")
     # Non-null when Gmail push is armed for this inbox (real-time delivery).
     watchExpiration: Optional[datetime] = Field(default=None, validation_alias="watch_expiration")
+    rosterOnly: bool = Field(default=True, validation_alias="roster_only")
 
 
 class InboxConnectIn(BaseModel):
     title: str
     email: str = ""
     partnerId: Optional[str] = None
+    rosterOnly: bool = True
 
 
 class InboxUpdateIn(BaseModel):
     title: str
     partnerId: Optional[str] = None
+    rosterOnly: Optional[bool] = None
 
 
 class IgnoreRuleOut(BaseModel):

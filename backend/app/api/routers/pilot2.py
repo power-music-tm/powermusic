@@ -429,7 +429,9 @@ def update_inbox(inbox_id: str, payload: schemas.InboxUpdateIn, db: Session = De
     if not title:
         raise HTTPException(status_code=400, detail="Title cannot be empty")
     account.title = title
-    pipeline.log(db, "inbox_renamed", f"Inbox {account.email} renamed to '{title}'.")
+    if payload.rosterOnly is not None:
+        account.roster_only = payload.rosterOnly
+    pipeline.log(db, "inbox_updated", f"Inbox {account.email} updated (title: '{title}', roster_only: {account.roster_only}).")
     db.commit()
     db.refresh(account)
     return account

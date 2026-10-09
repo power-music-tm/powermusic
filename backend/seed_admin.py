@@ -10,8 +10,8 @@ import uuid
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
-DEV_DEFAULT_EMAIL = "andrea@powermusic.com"
-DEV_DEFAULT_PASSWORD = "AndreaSuperSecurePass2026!"
+DEV_DEFAULT_EMAIL = "onboarding@powermusic.com"
+DEV_DEFAULT_PASSWORD = "Powermusic1_"
 
 
 def is_production() -> bool:
@@ -47,9 +47,12 @@ def main():
     load_dotenv(dotenv_path=".env")
     load_dotenv(dotenv_path="backend/.env")
 
-    db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        print("Error: DATABASE_URL is not set.", file=sys.stderr)
+    from app.database import get_database_url
+
+    try:
+        db_url = get_database_url()
+    except Exception as exc:
+        print(f"Error resolving database URL: {exc}", file=sys.stderr)
         sys.exit(1)
 
     admin_email, admin_password = resolve_admin_credentials()
@@ -60,14 +63,12 @@ def main():
         "yes",
     }
 
-    if db_url.startswith("postgresql://"):
-        db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
-    elif db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql+psycopg://", 1)
-
     print(f"Connecting to database to seed admin '{admin_email}'...")
     try:
-        engine = create_engine(db_url)
+        engine = create_engine(
+            db_url,
+            connect_args={"prepare_threshold": None} if not db_url.startswith("sqlite") else {},
+        )
         with engine.begin() as conn:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS pgcrypto;"))
 
