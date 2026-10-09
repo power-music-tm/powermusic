@@ -361,6 +361,8 @@ def catch_up_recent_messages(
     if not ids:
         return 0
 
+    from app.processed_gmail_messages import get_processed_gmail_message_ids
+
     known_req_ids = {
         row.source_gmail_message_id
         for row in (
@@ -370,6 +372,7 @@ def catch_up_recent_messages(
         )
         if row.source_gmail_message_id
     }
+    known_req_ids.update(get_processed_gmail_message_ids(db, ids))
     sources = list_automated_sources(db)
     imported = 0
 
@@ -539,6 +542,9 @@ def _apply_history_record(
             .filter(models.Email.gmail_message_id == message_id)
             .count()
         )
+        from app.processed_gmail_messages import is_gmail_message_processed
+        if is_gmail_message_processed(db, message_id):
+            continue
         try:
             import_message(db, account, message, queue_ai=True)
             if before == 0:

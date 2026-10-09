@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import List, Optional
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import models, schemas
@@ -346,6 +347,7 @@ def create_manager_request(
     allow_existing_lookup: bool = True,
 ) -> models.ManagerRequest:
     if allow_existing_lookup and source_gmail_message_id:
+        from app.processed_gmail_messages import is_gmail_message_processed
         existing = (
             db.query(models.ManagerRequest)
             .filter(models.ManagerRequest.source_gmail_message_id == source_gmail_message_id)
@@ -353,6 +355,21 @@ def create_manager_request(
         )
         if existing:
             return existing
+        if is_gmail_message_processed(db, source_gmail_message_id):
+            # Message was previously processed and its request was merged/deleted.
+            # Return any existing row or a dummy marker so callers skip re-importing.
+            dummy = models.ManagerRequest(
+                id=new_id or allocate_request_ids(db, 1)[0],
+                status="handled",
+                outcome="AlreadyProcessed",
+                action=action,
+                person_first_name=person.firstName,
+                person_last_name=person.lastName,
+                person_email=person.email,
+                person_location=person.location or "",
+                source_gmail_message_id=source_gmail_message_id,
+            )
+            return dummy
 
     if allow_existing_lookup and source_email_id:
         existing = (
@@ -394,8 +411,33 @@ def create_manager_request(
         from app.intake_persons import set_director_fields
         set_director_fields(row, getattr(person, "directorFirst", None) or "", getattr(person, "directorLast", None) or "")
     sync_display_person(row)
-    db.add(row)
-    db.flush()
+    try:
+        with db.begin_nested():
+            db.add(row)
+            db.flush()
+    except IntegrityError as exc:
+        if source_gmail_message_id:
+            existing = (
+                db.query(models.ManagerRequest)
+                .filter(models.ManagerRequest.source_gmail_message_id == source_gmail_message_id)
+                .first()
+            )
+            if existing:
+                return existing
+        if source_email_id:
+            existing = (
+                db.query(models.ManagerRequest)
+                .filter(models.ManagerRequest.source_email_id == source_email_id)
+                .first()
+            )
+            if existing:
+                return existing
+        raise exc
+
+    if source_gmail_message_id:
+        from app.processed_gmail_messages import record_processed_gmail_message
+        record_processed_gmail_message(db, source_gmail_message_id)
+
     from app.duplicate_group_service import process_request_grouping
     process_request_grouping(db, row)
     return row

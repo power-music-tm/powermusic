@@ -470,3 +470,18 @@ class PartnerCustomForm(Base):
     logo_url = Column(Text, nullable=True)
     logo_data_url = Column(Text, nullable=True)
     fields = Column(JSONB, nullable=False, server_default="[]")
+
+
+class ProcessedGmailMessage(Base):
+    """Persistent registry of all processed/consumed Gmail message IDs.
+    
+    Prevents background polling/push history sync from re-importing Gmail messages
+    whose ManagerRequest rows were merged, resolved, or permanently deleted.
+    """
+
+    __tablename__ = "processed_gmail_messages"
+
+    gmail_message_id = Column(String, primary_key=True, index=True)
+    processed_at = Column(DateTime(timezone=True), nullable=False)
+    account_email = Column(String, nullable=True)
+

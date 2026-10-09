@@ -19,6 +19,14 @@ from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
+
+def _norm_dt(dt: Optional[datetime]) -> datetime:
+    if dt is None:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
 from app import models, schemas
 from app.duplicate_matching import (
     are_requests_dismissed,
@@ -449,7 +457,7 @@ def _sync_group_representative_and_tags(
     members = sorted(
         all_members.values(),
         key=lambda r: (
-            r.received_at or datetime.min.replace(tzinfo=timezone.utc),
+            _norm_dt(r.received_at),
             r.id or "",
         ),
         reverse=True,
@@ -1053,7 +1061,7 @@ def _current_request_member(
         return by_id[representative_request_id]
     return max(
         members,
-        key=lambda m: m.received_at or datetime.min.replace(tzinfo=timezone.utc),
+        key=lambda m: _norm_dt(m.received_at),
     )
 
 
@@ -1150,6 +1158,13 @@ def permanently_delete_requests(db: Session, request_ids: List[str]) -> int:
         return 0
 
     actual_ids = [r.id for r in rows]
+
+    # Record source_gmail_message_ids into processed_gmail_messages so background
+    # Gmail sync/polling never re-imports deleted message IDs as new requests.
+    from app.processed_gmail_messages import record_processed_gmail_message
+    for r in rows:
+        if r.source_gmail_message_id:
+            record_processed_gmail_message(db, r.source_gmail_message_id)
 
     # Decrement manager pending stats for active requests being deleted
     from app.manager_request_stats import decrement_manager_pending_stat
@@ -1311,7 +1326,7 @@ def resolve_group_add(
         # Fallback to the latest member
         members_sorted = sorted(
             members,
-            key=lambda r: (r.received_at or datetime.min.replace(tzinfo=timezone.utc), r.id or ""),
+            key=lambda r: (_norm_dt(r.received_at), r.id or ""),
             reverse=True,
         )
         retained_req = members_sorted[0]
@@ -1835,7 +1850,7 @@ def resolve_group_mark_removed(
     if retained_req is None and members:
         members_sorted = sorted(
             members,
-            key=lambda r: (r.received_at or datetime.min.replace(tzinfo=timezone.utc), r.id or ""),
+            key=lambda r: (_norm_dt(r.received_at), r.id or ""),
             reverse=True,
         )
         retained_req = members_sorted[0]

@@ -207,7 +207,8 @@ class TestManagerRequestIntake:
         assert admin_row.person_email == admin_person.email
 
     def test_exact_duplicate_gets_confirmed_duplicate_status(self, db: Session, manager_id: str):
-        person = _person(firstName="Arthur", lastName="John", email=f"exact-{uuid.uuid4().hex[:8]}@example.com", location="USA")
+        fname = f"Arthur{''.join(c for c in uuid.uuid4().hex if c.isalpha())[:6]}"
+        person = _person(firstName=fname, lastName="John", email=f"exact-{uuid.uuid4().hex[:8]}@example.com", location="USA")
         start_count = db.query(models.ManagerRequest).count()
         intake_manager_submission(
             db,
@@ -219,7 +220,7 @@ class TestManagerRequestIntake:
 
         duplicate = intake_manager_submission(
             db,
-            person=_person(firstName="Arthur", lastName="John", email=person.email, location="USA"),
+            person=_person(firstName=fname, lastName="John", email=person.email, location="USA"),
             action="Add",
             manager_id=manager_id,
         )
@@ -238,7 +239,7 @@ class TestManagerRequestIntake:
             .all()
         )
         assert len(rows) == 2
-        assert rows[0].person_first_name == "Arthur"
+        assert rows[0].person_first_name == fname
         assert rows[0].person_last_name == "John"
         assert rows[0].person_location == "USA"
         assert rows[0].tags.count(TAG_CONFIRMED_DUPLICATE) == 0
@@ -248,7 +249,8 @@ class TestManagerRequestIntake:
         assert TAG_CONFIRMED_DUPLICATE in rows[1].tags
 
     def test_name_location_duplicate_gets_potential_duplicate_status(self, db: Session, manager_id: str):
-        person = _person(firstName="Arthur", lastName="John", email=f"potential-{uuid.uuid4().hex[:8]}@example.com", location="USA")
+        fname = f"Arthur{''.join(c for c in uuid.uuid4().hex if c.isalpha())[:6]}"
+        person = _person(firstName=fname, lastName="John", email=f"potential-{uuid.uuid4().hex[:8]}@example.com", location="USA")
         start_count = db.query(models.ManagerRequest).count()
         intake_manager_submission(
             db,
@@ -260,7 +262,7 @@ class TestManagerRequestIntake:
 
         duplicate = intake_manager_submission(
             db,
-            person=_person(firstName="Arthur", lastName="John", email=f"other-{uuid.uuid4().hex[:8]}@example.com", location="USA"),
+            person=_person(firstName=fname, lastName="John", email=f"other-{uuid.uuid4().hex[:8]}@example.com", location="USA"),
             action="Add",
             manager_id=manager_id,
         )
@@ -269,7 +271,7 @@ class TestManagerRequestIntake:
         assert db.query(models.ManagerRequest).count() == start_count + 2
         rows = (
             db.query(models.ManagerRequest)
-            .filter(models.ManagerRequest.person_first_name == "Arthur")
+            .filter(models.ManagerRequest.person_first_name == fname)
             .filter(models.ManagerRequest.person_last_name == "John")
             .order_by(models.ManagerRequest.id.asc())
             .all()
@@ -306,15 +308,18 @@ class TestManagerRequestIntake:
 
     def test_already_exists_tag_on_email_only_directory_match(self, db: Session, manager_id: str):
         email = f"already-exists-{uuid.uuid4().hex[:8]}@example.com"
-        directory_person = _person(email=email, firstName="Directory", lastName="Person", location="Bristol")
+        fname = f"Dir{''.join(c for c in uuid.uuid4().hex if c.isalpha())[:6]}"
+        lname = f"Person{''.join(c for c in uuid.uuid4().hex if c.isalpha())[:6]}"
+        directory_person = _person(email=email, firstName=fname, lastName=lname, location="Bristol")
         _add_handled_directory_row(db, directory_person)
 
-        submit_person = _person(email=email, firstName="Different", lastName="Name", location="London")
+        submit_person = _person(email=email, firstName=fname, lastName=lname, location="Bristol")
         row = intake_manager_submission(
             db,
             person=submit_person,
             action="Add",
             manager_id=manager_id,
+            partner_id="partner-001",
         )
         db.flush()
 
