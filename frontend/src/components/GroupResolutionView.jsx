@@ -11,7 +11,7 @@ import { formatAdminDateTime, formatRequestDisplayId } from '../utils/requestDis
 import { getManagerDisplayName, isManualEntry, MANUAL_ENTRY_CLUB } from '../utils/manualEntry';
 import { readManagerNotes } from '../utils/managerNotes';
 import { fetchJson } from '../utils/api';
-import { dismissRequest, getDismissImpact } from '../utils/pilot2Api';
+import { dismissRequest, getDismissImpact, suppressNewRequests, removeRequestsFromCache, REQUESTS_PAGE_CACHE_KEY } from '../utils/pilot2Api';
 import {
   resolveGroupAdd,
   resolveGroupUpdate,
@@ -179,6 +179,8 @@ export default function GroupResolutionView({
   directory = [],
   onResolved,
 }) {
+  const { selectedPartnerId } = usePartners();
+  const requestsCacheKey = selectedPartnerId ? `${REQUESTS_PAGE_CACHE_KEY}:${selectedPartnerId}` : REQUESTS_PAGE_CACHE_KEY;
   const repMember = group.members.find((m) => m.isRepresentative) || group.members[0];
   const hasDirectory = Boolean(group.directoryPersonId);
 
@@ -515,6 +517,8 @@ export default function GroupResolutionView({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ adminNote: null, finalValues }),
         });
+        suppressNewRequests({ requestIds: [memberId] });
+        removeRequestsFromCache(requestsCacheKey, { requestIds: [memberId] });
         const nextMembers = members.filter((m) => m.id !== memberId);
         setMembers(nextMembers);
         onResolved(
@@ -555,6 +559,9 @@ export default function GroupResolutionView({
     const alsoIds = new Set(deleteImpact?.confirmedSiblingIds || []);
     try {
       await dismissRequest(member.id);
+      const removeIds = [member.id, ...alsoIds];
+      suppressNewRequests({ requestIds: removeIds });
+      removeRequestsFromCache(requestsCacheKey, { requestIds: removeIds });
       const nextMembers = members.filter(
         (m) => m.id !== member.id && !alsoIds.has(m.id),
       );
@@ -588,6 +595,8 @@ export default function GroupResolutionView({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ adminNote: note || null }),
       });
+      suppressNewRequests({ requestIds: [member.id] });
+      removeRequestsFromCache(requestsCacheKey, { requestIds: [member.id] });
       const nextMembers = members.filter((m) => m.id !== member.id);
       const nextUnlinked = sessionUnlinkedIds.filter((id) => id !== member.id);
       setMembers(nextMembers);

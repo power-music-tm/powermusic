@@ -7,7 +7,7 @@ import { DataTable, Tag, Modal, Toast, useToast, SelectDropdown, StackedTextCell
 import DuplicateStatusHint, { StatusColumnPlainLabel } from '../components/ui/DuplicateStatusHint';
 import PageHeader from '../components/layout/PageHeader';
 import { getManagerColumnContent, getManagerDisplayName, isManualEntry, isAdminEntry } from '../utils/manualEntry';
-import { loadWithCache, patchCache, writeCache, refreshCache, bumpCacheEpoch, getNewRequestsPage, dismissRequest, getDismissImpact, bulkDismissRequests, applyNewRequestsSuppressions, REQUESTS_PAGE_CACHE_KEY } from '../utils/pilot2Api';
+import { loadWithCache, patchCache, writeCache, refreshCache, bumpCacheEpoch, getNewRequestsPage, dismissRequest, getDismissImpact, bulkDismissRequests, suppressNewRequests, clearNewRequestsSuppressions, removeRequestsFromCache, applyNewRequestsSuppressions, REQUESTS_PAGE_CACHE_KEY } from '../utils/pilot2Api';
 import { fetchJson } from '../utils/api';
 import { useRealtimeBroadcast } from '../hooks/useRealtimeBroadcast';
 import { useClientPagination } from '../hooks/useClientPagination';
@@ -26,7 +26,7 @@ import { useAuth } from '../context/AuthContext';
 import { usePartners } from '../context/PartnerContext';
 import { getPartnerTerminology } from '../utils/managerAuthBranding';
 import { formatRequestDisplayId } from '../utils/requestDisplayId';
-import { formatTimestampSplit } from '../utils/dateTime';
+import { formatTimestampSplit, isTodayInTimeZone, isYesterdayInTimeZone } from '../utils/dateTime';
 import { formatManagerNotes, readManagerNotes } from '../utils/managerNotes';
 import { formatPersonFields, formatPersonName, formatPersonEmail, formatPersonLocation } from '../utils/personDisplay';
 import { TAG_AUTO_MAIL, TAG_PARTNER_REQUEST, requestTagVariant, sentViaTableRequestTags, requestTagLabel, isAwaitingManagerSubmission, requestStatusTag, requestStatusTags, matchesSentViaFilter, SENT_VIA_BOTH, groupDirectoryStatusPills, groupDuplicateStatusIndicator, requestDirectoryStatusTags, requestDuplicateStatusIndicator } from '../utils/requestTags';
@@ -970,6 +970,18 @@ export default function Requests() {
           writeDirectoryCache(profile.id, nextDirectory, 'Added', selectedPartnerId || '');
         }
         sessionStorage.setItem('pm_directory_pending_tab', 'Added');
+        refreshRequestsPage({ networkOnly: true });
+      } else {
+        if (Array.isArray(created) && created.length > 0) {
+          created.forEach((r) => {
+            if (r.id) pendingCreatedIdsRef.current.add(r.id);
+          });
+          const next = [...created, ...newRequests];
+          setNewRequests(next);
+          patchCache(requestsCacheKey, { requests: next });
+          bumpCacheEpoch(requestsCacheKey);
+        }
+        refreshRequestsPage({ networkOnly: true });
       }
 
       showToast(
@@ -1040,6 +1052,8 @@ export default function Requests() {
           ...liveDirectory,
         ];
 
+    suppressNewRequests({ requestIds: [req.id] });
+    removeRequestsFromCache(requestsCacheKey, { requestIds: [req.id] });
     bumpCacheEpoch(requestsCacheKey);
     setNewRequests(nextRequests);
     setLiveDirectory(nextDirectory);
@@ -1048,24 +1062,24 @@ export default function Requests() {
     markDirectoryPersonHighlight(req.person.email);
     sessionStorage.setItem('pm_directory_pending_tab', outcome === 'Added' ? 'Added' : 'Removed');
 
-    showToast(
-      outcome === 'Removed'
-        ? `${personName} marked as Removed. They are now moved to archive in Directory.`
-        : `${personName} marked as ${outcome}. They are now in the Directory.`,
-      'success',
-    );
-
     try {
       await fetchJson(`/api/admin/requests/${req.id}/mark-handled`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ adminNote: adminNote || null }),
       });
+      showToast(
+        outcome === 'Removed'
+          ? `${personName} marked as Removed. They are now moved to archive in Directory.`
+          : `${personName} marked as ${outcome}. They are now in the Directory.`,
+        'success',
+      );
       refreshCache(directoryCacheKey, () => fetchJson(`/api/persons${selectedPartnerId ? `?partner_id=${encodeURIComponent(selectedPartnerId)}` : ''}`), (data) => {
         setLiveDirectory(Array.isArray(data) ? data : []);
       }).catch(() => {});
     } catch (err) {
       console.error(err);
+      clearNewRequestsSuppressions({ requestIds: [req.id] });
       showToast(err.message || 'Failed to save. Refreshing list.', 'error');
       loadWithCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data, isStale) => {
         if (!isStale && Array.isArray(data.requests)) {
@@ -1115,25 +1129,28 @@ export default function Requests() {
     }
     bumpHighlights();
 
-    const removeIds = new Set([req.id, ...alsoIds]);
-    const nextRequests = newRequests.filter((r) => !removeIds.has(r.id));
+    const removeIds = [req.id, ...alsoIds];
+    const removeSet = new Set(removeIds);
+    const nextRequests = newRequests.filter((r) => !removeSet.has(r.id));
 
+    suppressNewRequests({ requestIds: removeIds });
+    removeRequestsFromCache(requestsCacheKey, { requestIds: removeIds });
     bumpCacheEpoch(requestsCacheKey);
     setNewRequests(nextRequests);
     patchCache(requestsCacheKey, { requests: nextRequests });
-    const confirmedCount = impact?.confirmedSiblingCount || 0;
-    showToast(
-      confirmedCount > 0
-        ? `Request deleted${confirmedCount === 1 ? ' (and 1 confirmed duplicate)' : ` (and ${confirmedCount} confirmed duplicates)`}.`
-        : 'Request deleted.',
-      'success',
-    );
 
     try {
       await dismissRequest(req.id);
+      const confirmedCount = impact?.confirmedSiblingCount || 0;
+      showToast(
+        confirmedCount > 0
+          ? `Request deleted${confirmedCount === 1 ? ' (and 1 confirmed duplicate)' : ` (and ${confirmedCount} confirmed duplicates)`}.`
+          : 'Request deleted.',
+        'success',
+      );
       // Survivors (potential duplicates) may reappear as their own group/card.
       if ((impact?.potentialSiblingCount || 0) > 0 || req.duplicateGroupId) {
-        loadWithCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data, isStale) => {
+        refreshCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data, isStale) => {
           if (!isStale && Array.isArray(data.requests)) {
             syncAdminNewRequestHighlights(data.requests, { isManualEntry });
             setNewRequests(data.requests);
@@ -1143,6 +1160,7 @@ export default function Requests() {
       }
     } catch (err) {
       console.error(err);
+      clearNewRequestsSuppressions({ requestIds: removeIds });
       showToast(err.message || 'Failed to delete. Refreshing list.', 'error');
       loadWithCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data, isStale) => {
         if (!isStale && Array.isArray(data.requests)) {
@@ -1192,16 +1210,19 @@ export default function Requests() {
 
     const nextRequests = newRequests.filter((r) => !selectedIds.has(r.id));
     
+    suppressNewRequests({ requestIds: ids });
+    removeRequestsFromCache(requestsCacheKey, { requestIds: ids });
     bumpCacheEpoch(requestsCacheKey);
     setNewRequests(nextRequests);
     patchCache(requestsCacheKey, { requests: nextRequests });
     setSelectedIds(new Set());
-    showToast(`Deleted ${ids.length} request${ids.length === 1 ? '' : 's'}.`, 'success');
 
     try {
       await bulkDismissRequests(ids);
+      showToast(`Deleted ${ids.length} request${ids.length === 1 ? '' : 's'}.`, 'success');
     } catch (err) {
       console.error(err);
+      clearNewRequestsSuppressions({ requestIds: ids });
       showToast(err.message || 'Failed to bulk delete. Refreshing list.', 'error');
       loadWithCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data, isStale) => {
         if (!isStale && Array.isArray(data.requests)) {

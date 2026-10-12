@@ -43,10 +43,14 @@ async function withAuthEmailTimeout(promise, timeoutMessage) {
   }
 }
 
-async function managerAccountExists(supabase, email, { enforceDomain = true } = {}) {
-  let allowedDomains;
-  if (enforceDomain) {
-    allowedDomains = await ensureManagerAllowedDomains();
+async function managerAccountExists(
+  supabase,
+  email,
+  { enforceDomain = true, allowedDomains: explicitAllowedDomains = null } = {},
+) {
+  let allowedDomains = explicitAllowedDomains;
+  if (enforceDomain && !allowedDomains) {
+    allowedDomains = await ensureManagerAllowedDomains({ force: true });
   }
   const validated = validateManagerEmail(email, { enforceDomain, allowedDomains });
   if (!validated.ok) {
@@ -78,9 +82,15 @@ async function prepareAuthEmailClient() {
 }
 
 /** Send signup confirmation email (same Send Email hook as initial signUp). */
-export async function resendManagerSignupConfirmation(email, { enforceDomain = true } = {}) {
+export async function resendManagerSignupConfirmation(
+  email,
+  { enforceDomain = true, allowedDomains = null } = {},
+) {
   const supabase = await prepareAuthEmailClient();
-  const { email: normalized, exists } = await managerAccountExists(supabase, email, { enforceDomain });
+  const { email: normalized, exists } = await managerAccountExists(supabase, email, {
+    enforceDomain,
+    allowedDomains,
+  });
 
   if (!exists) {
     throw new Error(MANAGER_ACCOUNT_NOT_FOUND_MESSAGE);
@@ -108,9 +118,15 @@ export async function resendManagerSignupConfirmation(email, { enforceDomain = t
 }
 
 /** Send a manager password reset email (same Send Email hook as signup). */
-export async function requestManagerPasswordReset(email, { enforceDomain = true } = {}) {
+export async function requestManagerPasswordReset(
+  email,
+  { enforceDomain = true, allowedDomains = null } = {},
+) {
   const supabase = await prepareAuthEmailClient();
-  const { email: normalized, exists } = await managerAccountExists(supabase, email, { enforceDomain });
+  const { email: normalized, exists } = await managerAccountExists(supabase, email, {
+    enforceDomain,
+    allowedDomains,
+  });
 
   if (!exists) {
     throw new Error(MANAGER_ACCOUNT_NOT_FOUND_MESSAGE);
@@ -130,3 +146,4 @@ export async function requestManagerPasswordReset(email, { enforceDomain = true 
 }
 
 export const resendManagerPasswordReset = requestManagerPasswordReset;
+

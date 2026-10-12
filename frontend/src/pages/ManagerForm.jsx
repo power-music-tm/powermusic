@@ -402,14 +402,26 @@ export default function ManagerForm() {
       return;
     }
 
+    if (profile?.partner_name) {
+      const profileBranding = {
+        partnerId: profile.partner_id ?? null,
+        partnerName: profile.partner_name,
+        partnerSlug: profile.partner_slug ?? null,
+      };
+      cacheManagerPortalBranding(profileBranding);
+      showIntro(profileBranding);
+      return;
+    }
+
     const email = profile?.email || user?.email;
     if (!email) {
       showIntro(null);
       return;
     }
 
+    const intendedSlug = readManagerIntendedPartnerSlug();
     let active = true;
-    getPublicPartnerBranding(email)
+    getPublicPartnerBranding(email, intendedSlug)
       .then((data) => {
         if (!active) return;
         if (data?.partnerName) cacheManagerPortalBranding(data);
@@ -422,14 +434,14 @@ export default function ManagerForm() {
     return () => {
       active = false;
     };
-  }, [user?.id, profile?.email, user?.email]);
+  }, [user?.id, profile?.email, profile?.partner_name, user?.email]);
 
   useEffect(() => {
     if (!session?.access_token) {
       setPartnerBrandingReady(true);
       return;
     }
-    const partnerIdParam = partnerBranding?.partnerId || undefined;
+    const partnerIdParam = profile?.partner_id || partnerBranding?.partnerId || undefined;
     getManagerPartnerBranding(partnerIdParam)
       .then((data) => {
         if (data?.partnerName) {
@@ -441,7 +453,7 @@ export default function ManagerForm() {
       .finally(() => {
         setPartnerBrandingReady(true);
       });
-  }, [session?.access_token]);
+  }, [session?.access_token, profile?.partner_id]);
 
   useEffect(() => {
     const intended = readManagerIntendedPartnerSlug();

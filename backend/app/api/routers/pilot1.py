@@ -57,6 +57,8 @@ from app.partner_allowlists import (
     delete_manager_domain,
     delete_partner,
     get_partner_or_404,
+    get_partner_by_slug,
+    partner_slug_from_name,
     list_automated_sources,
     list_partners,
     list_manager_domain_strings,
@@ -259,8 +261,29 @@ def _manager_partner_id(
     header_partner_id: Optional[str] = None,
     header_partner_slug: Optional[str] = None,
 ) -> str:
+    assigned_partner_id = None
+    if manager_user_id and manager_user_id != "dev-bypass":
+        try:
+            import uuid
+            m_uuid = uuid.UUID(str(manager_user_id))
+            u_row = db.query(models.PowermusicUser).filter(models.PowermusicUser.id == m_uuid).first()
+            if u_row and u_row.partner_id:
+                assigned_partner_id = u_row.partner_id
+        except Exception:
+            pass
+
     effective_partner_id = partner_id or header_partner_id
     effective_partner_slug = header_partner_slug
+
+    if assigned_partner_id:
+        if effective_partner_id and effective_partner_id != assigned_partner_id:
+            raise HTTPException(status_code=403, detail="Manager account is not authorized for this partner.")
+        if effective_partner_slug:
+            slug_p = get_partner_by_slug(db, effective_partner_slug)
+            if slug_p and slug_p.id != assigned_partner_id:
+                raise HTTPException(status_code=403, detail="Manager account is not authorized for this partner.")
+        return assigned_partner_id
+
     resolved_id = resolve_partner_for_manager_email(
         db,
         manager_email,
@@ -671,23 +694,44 @@ def _assert_manager_submitter(
     header_partner_id: Optional[str] = None,
     header_partner_slug: Optional[str] = None,
 ) -> str:
+    assigned_partner_id = getattr(manager, "partner_id", None) if manager else None
+    if not assigned_partner_id and manager and manager.id and manager.id != "dev-bypass":
+        try:
+            import uuid
+            m_uuid = uuid.UUID(str(manager.id))
+            u_row = db.query(models.PowermusicUser).filter(models.PowermusicUser.id == m_uuid).first()
+            if u_row and u_row.partner_id:
+                assigned_partner_id = u_row.partner_id
+        except Exception:
+            pass
+
     sub_email = (submitted_by.email or "").strip()
     effective_partner_id = partner_id or header_partner_id
     effective_partner_slug = header_partner_slug
-    resolved_partner_id = resolve_partner_for_manager_email(
-        db,
-        sub_email or manager.email,
-        partner_id=effective_partner_id,
-        partner_slug=effective_partner_slug,
-        manager_user_id=manager.id if manager else None,
-    )
-    if not resolved_partner_id:
-        raise HTTPException(status_code=409, detail="Manager account is not assigned to a partner.")
+
+    if assigned_partner_id:
+        if effective_partner_id and effective_partner_id != assigned_partner_id:
+            raise HTTPException(status_code=403, detail="Submitter is not authorized for this partner.")
+        if effective_partner_slug:
+            slug_p = get_partner_by_slug(db, effective_partner_slug)
+            if slug_p and slug_p.id != assigned_partner_id:
+                raise HTTPException(status_code=403, detail="Submitter is not authorized for this partner.")
+        resolved_partner_id = assigned_partner_id
+    else:
+        resolved_partner_id = resolve_partner_for_manager_email(
+            db,
+            sub_email or (manager.email if manager else ""),
+            partner_id=effective_partner_id,
+            partner_slug=effective_partner_slug,
+            manager_user_id=manager.id if manager else None,
+        )
+        if not resolved_partner_id:
+            raise HTTPException(status_code=409, detail="Manager account is not assigned to a partner.")
 
     partner = get_partner_or_404(db, resolved_partner_id)
     is_health_fitness = (partner.name or "").strip().lower() == "health fitness"
 
-    if auth_is_required() and not is_health_fitness:
+    if auth_is_required() and not is_health_fitness and manager:
         if sub_email.lower() != manager.email.lower():
             raise HTTPException(
                 status_code=403,
@@ -696,7 +740,7 @@ def _assert_manager_submitter(
 
     return assert_manager_email_allowed(
         db,
-        manager.email if is_health_fitness else (sub_email or manager.email),
+        manager.email if (is_health_fitness and manager) else (sub_email or (manager.email if manager else "")),
         partner_id=resolved_partner_id,
         partner_slug=effective_partner_slug,
         manager_user_id=manager.id if manager else None,
@@ -1717,6 +1761,7 @@ def unlink_duplicate_group_members_api(
         raise HTTPException(status_code=404, detail="Could not unlink duplicate group members")
 
     db.commit()
+    notify_admin_requests_changed("unlink")
     return {
         "status": "unlinked",
         "unlinkedIds": result.get("unlinkedIds") or [payload.requestId2],

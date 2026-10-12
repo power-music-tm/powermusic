@@ -9,6 +9,9 @@ import {
   loadWithCache,
   bumpCacheEpoch,
   refreshCache,
+  clearCache,
+  suppressNewRequests,
+  removeRequestsFromCache,
   REQUESTS_PAGE_CACHE_KEY,
 } from '../utils/pilot2Api';
 import { fetchGroupDetail } from '../utils/duplicateGroupApi';
@@ -68,6 +71,22 @@ export default function GroupDetail() {
       if (type === 'error') {
         showToast(name || 'Something went wrong. Please try again.', 'error');
         return;
+      }
+
+      const groupMemberIds = group?.members?.map((m) => m.id) || [];
+
+      // If resolving/removing the group entirely, suppress group and member IDs
+      if (
+        type === 'add' ||
+        type === 'mark_removed' ||
+        type === 'remove_group' ||
+        type === 'update' ||
+        type === 'keep' ||
+        type === 'delete' ||
+        type === 'unlinked_dissolved'
+      ) {
+        suppressNewRequests({ groupIds: [groupId], requestIds: groupMemberIds });
+        removeRequestsFromCache(requestsCacheKey, { groupIds: [groupId], requestIds: groupMemberIds });
       }
 
       // Bust the requests page cache so the list reflects the resolved group
@@ -154,9 +173,13 @@ export default function GroupDetail() {
         }
       }
 
+      if (type === 'unlinked_new_requests') {
+        clearCache(requestsCacheKey);
+      }
+
       navigate('/new-requests');
     },
-    [navigate, requestsCacheKey, directoryCacheKey, selectedPartnerId, showToast],
+    [groupId, group?.members, navigate, requestsCacheKey, directoryCacheKey, selectedPartnerId, showToast],
   );
 
   /* ── loading state ── */

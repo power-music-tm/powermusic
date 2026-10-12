@@ -1,6 +1,6 @@
 // Pilot 2 API client — same base URL convention as the Pilot 1 pages
 // (see utils/api.js: localhost in dev, same-origin in production).
-import { fetchJson, authFetch } from './api';
+import { fetchJson, authFetch } from './api.js';
 
 const ADMIN_TIMEOUT_MS = 45000;
 
@@ -130,7 +130,6 @@ export async function refreshCache(key, fetcher, apply) {
   try {
     const { data: fresh, stale } = await resolveFreshPayload(key, fetcher);
     if (stale) {
-      if (fresh) apply(fresh, true);
       return fresh;
     }
     if (isApiErrorPayload(fresh)) {
@@ -166,6 +165,22 @@ export function patchCache(key, patch) {
     if (!isApiErrorPayload(existing)) {
       sessionStorage.setItem(`pm_cache_${key}`, JSON.stringify({ ...existing, ...patch }));
     }
+  } catch { /* quota */ }
+}
+
+export function removeRequestsFromCache(key, { requestIds = [], groupIds = [] } = {}) {
+  const reqSet = new Set(requestIds.filter(Boolean));
+  const grpSet = new Set(groupIds.filter(Boolean));
+  if (reqSet.size === 0 && grpSet.size === 0) return;
+  try {
+    const cached = sessionStorage.getItem(`pm_cache_${key}`);
+    if (!cached) return;
+    const parsed = JSON.parse(cached);
+    if (!parsed || !Array.isArray(parsed.requests)) return;
+    const nextRequests = parsed.requests.filter(
+      (r) => !reqSet.has(r.id) && !grpSet.has(r.duplicateGroupId),
+    );
+    sessionStorage.setItem(`pm_cache_${key}`, JSON.stringify({ ...parsed, requests: nextRequests }));
   } catch { /* quota */ }
 }
 
@@ -206,7 +221,19 @@ export function suppressNewRequests({ requestIds = [], groupIds = [] } = {}) {
   writeNewRequestsSuppressions(state);
 }
 
-/** Filter suppressed rows; drop tombstones once the server no longer returns them. */
+/** Remove suppression tombstones (e.g. after a failed mutation rollback). */
+export function clearNewRequestsSuppressions({ requestIds = [], groupIds = [] } = {}) {
+  const state = readNewRequestsSuppressions();
+  for (const id of requestIds) {
+    if (id) delete state.requestIds[id];
+  }
+  for (const id of groupIds) {
+    if (id) delete state.groupIds[id];
+  }
+  writeNewRequestsSuppressions(state);
+}
+
+/** Filter suppressed rows while preserving tombstones for their full TTL. */
 export function applyNewRequestsSuppressions(requests) {
   if (!Array.isArray(requests)) return requests;
   const state = readNewRequestsSuppressions();
@@ -232,19 +259,13 @@ export function applyNewRequestsSuppressions(requests) {
     (row) => !activeRequestIds.has(row.id) && !activeGroupIds.has(row.duplicateGroupId),
   );
 
-  const stillPresentIds = new Set(requests.map((row) => row.id));
-  const stillPresentGroups = new Set(
-    requests.map((row) => row.duplicateGroupId).filter(Boolean),
-  );
-
   const nextRequestIds = {};
   const nextGroupIds = {};
-  for (const id of activeRequestIds) {
-    // Keep suppression while server still returns the row (lag); drop once gone.
-    if (stillPresentIds.has(id)) nextRequestIds[id] = state.requestIds[id];
+  for (const [id, until] of Object.entries(state.requestIds)) {
+    if (until > now) nextRequestIds[id] = until;
   }
-  for (const id of activeGroupIds) {
-    if (stillPresentGroups.has(id)) nextGroupIds[id] = state.groupIds[id];
+  for (const [id, until] of Object.entries(state.groupIds)) {
+    if (until > now) nextGroupIds[id] = until;
   }
   writeNewRequestsSuppressions({ requestIds: nextRequestIds, groupIds: nextGroupIds });
 

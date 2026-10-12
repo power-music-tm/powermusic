@@ -8,8 +8,10 @@ import os
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from threading import Lock
+from typing import Optional
 from urllib.parse import urlparse
 
 import jwt
@@ -20,6 +22,11 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.database import get_db
+from app.partner_allowlists import (
+    assert_manager_email_allowed,
+    get_partner_by_slug,
+    partner_slug_from_name,
+)
 
 SUPABASE_URL = (
     os.getenv("SUPABASE_URL", "")
@@ -78,6 +85,7 @@ class AuthenticatedUser:
     id: str
     email: str
     role: str
+    partner_id: Optional[str] = None
 
 
 def auth_is_configured() -> bool:
@@ -219,12 +227,95 @@ def get_authenticated_user(
 
     profile = db.query(models.Profile).filter(models.Profile.id == user_id).first()
     if profile is None:
-        raise HTTPException(status_code=403, detail="User profile not found")
+        user_meta = claims.get("user_metadata") or {}
+        role = user_meta.get("role") or "manager"
+        if role == "manager":
+            meta_first = (user_meta.get("firstName") or "").strip() or None
+            meta_last = (user_meta.get("lastName") or "").strip() or None
+            meta_full = (user_meta.get("full_name") or "").strip() or None
+            if not meta_full and (meta_first or meta_last):
+                meta_full = f"{meta_first or ''} {meta_last or ''}".strip() or None
+            meta_club = (user_meta.get("club") or "").strip() or None
+            partner_slug = user_meta.get("partner_slug") or user_meta.get("partnerSlug")
+            meta_partner_id = user_meta.get("partner_id") or user_meta.get("partnerId")
+
+            p_id = None
+            if meta_partner_id:
+                p_match = db.query(models.Partner).filter(models.Partner.id == meta_partner_id).first()
+                if p_match:
+                    p_id = p_match.id
+            if not p_id and partner_slug:
+                p_match = get_partner_by_slug(db, partner_slug)
+                if p_match:
+                    p_id = p_match.id
+
+            user_email = claims.get("email") or ""
+            if p_id and user_email:
+                try:
+                    assert_manager_email_allowed(db, user_email, partner_id=p_id)
+                except Exception:
+                    p_id = None
+
+            profile = models.Profile(
+                id=uuid.UUID(str(user_id)),
+                email=user_email,
+                full_name=meta_full or (user_email.split("@")[0] if user_email else None),
+                first_name=meta_first,
+                last_name=meta_last,
+                club=meta_club,
+                role="manager",
+                partner_id=p_id,
+            )
+            db.add(profile)
+            db.commit()
+            db.refresh(profile)
+        else:
+            raise HTTPException(status_code=403, detail="User profile not found")
+
+    if profile.role == "manager" and not profile.partner_id:
+        user_meta = claims.get("user_metadata") or {}
+        partner_slug = user_meta.get("partner_slug") or user_meta.get("partnerSlug")
+        meta_partner_id = user_meta.get("partner_id") or user_meta.get("partnerId")
+        p_id = None
+        if meta_partner_id:
+            p_match = db.query(models.Partner).filter(models.Partner.id == meta_partner_id).first()
+            if p_match:
+                p_id = p_match.id
+        if not p_id and partner_slug:
+            p_match = get_partner_by_slug(db, partner_slug)
+            if p_match:
+                p_id = p_match.id
+
+        user_email = profile.email or (claims.get("email") or "")
+        if p_id and user_email:
+            try:
+                assert_manager_email_allowed(db, user_email, partner_id=p_id)
+                profile.partner_id = p_id
+                db.commit()
+                db.refresh(profile)
+            except Exception:
+                pass
+
+        if not profile.partner_id:
+            recent_req = (
+                db.query(models.ManagerRequest)
+                .filter(
+                    models.ManagerRequest.manager_id == profile.id,
+                    models.ManagerRequest.partner_id.isnot(None),
+                )
+                .order_by(models.ManagerRequest.received_at.desc())
+                .first()
+            )
+            if recent_req and recent_req.partner_id:
+                profile.partner_id = recent_req.partner_id
+                db.commit()
+                db.refresh(profile)
 
     user = AuthenticatedUser(
         id=str(profile.id),
         email=profile.email or (claims.get("email") or ""),
         role=profile.role,
+        partner_id=getattr(profile, "partner_id", None),
     )
     _cache_set(user_id, user)
     return user
@@ -241,6 +332,15 @@ def get_current_profile(
     profile = db.query(models.Profile).filter(models.Profile.id == user.id).first()
     if profile is None:
         raise HTTPException(status_code=403, detail="User profile not found")
+
+    partner_name = None
+    partner_slug = None
+    if profile.partner_id:
+        partner = db.query(models.Partner).filter(models.Partner.id == profile.partner_id).first()
+        if partner:
+            partner_name = partner.name
+            partner_slug = partner_slug_from_name(partner.name)
+
     return {
         "id": str(profile.id),
         "email": profile.email or user.email,
@@ -249,6 +349,9 @@ def get_current_profile(
         "last_name": profile.last_name,
         "club": profile.club,
         "role": profile.role,
+        "partner_id": getattr(profile, "partner_id", None),
+        "partner_name": partner_name,
+        "partner_slug": partner_slug,
     }
 
 

@@ -11,6 +11,9 @@ import {
   patchCache,
   refreshCache,
   writeCache,
+  suppressNewRequests,
+  removeRequestsFromCache,
+  bumpCacheEpoch,
   REQUESTS_PAGE_CACHE_KEY,
 } from '../utils/pilot2Api';
 import { getManagerDisplayName } from '../utils/manualEntry';
@@ -137,29 +140,33 @@ export default function RequestDetail() {
           ...currentDirectory,
         ];
 
-    patchCache(requestsCacheKey, { requests: nextRequests, persons: nextDirectory });
-    writeCache(directoryCacheKey, nextDirectory);
-    markDirectoryPersonHighlight(req.person.email);
-    sessionStorage.setItem('pm_directory_pending_tab', outcome === 'Added' ? 'Added' : 'Removed');
-
-    showToast(
-      outcome === 'Removed'
-        ? `${personName} marked as Removed. They are now moved to archive in Directory.`
-        : `${personName} marked as ${outcome}. They are now in the Directory.`,
-      'success',
-    );
-    navigate('/new-requests');
-
     try {
       await fetchJson(`/api/admin/requests/${req.id}/mark-handled`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ adminNote: adminNote || null }),
       });
+
+      suppressNewRequests({ requestIds: [req.id] });
+      removeRequestsFromCache(requestsCacheKey, { requestIds: [req.id] });
+      patchCache(requestsCacheKey, { requests: nextRequests, persons: nextDirectory });
+      bumpCacheEpoch(requestsCacheKey);
+      writeCache(directoryCacheKey, nextDirectory);
+      markDirectoryPersonHighlight(req.person.email);
+      sessionStorage.setItem('pm_directory_pending_tab', outcome === 'Added' ? 'Added' : 'Removed');
+
       refreshCache(directoryCacheKey, () => fetchJson(`/api/persons${selectedPartnerId ? `?partner_id=${encodeURIComponent(selectedPartnerId)}` : ''}`)).catch(() => {});
+
+      showToast(
+        outcome === 'Removed'
+          ? `${personName} marked as Removed. They are now moved to archive in Directory.`
+          : `${personName} marked as ${outcome}. They are now in the Directory.`,
+        'success',
+      );
+      navigate('/new-requests');
     } catch (err) {
       console.error(err);
-      showToast('Marked locally, but the server update failed. Refresh to confirm.', 'error');
+      showToast(err.message || 'Failed to save request.', 'error');
     }
   };
 

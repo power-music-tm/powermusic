@@ -113,6 +113,9 @@ def delete_partner(db: Session, partner_id: str) -> str:
     db.query(models.DuplicateGroup).filter(
         models.DuplicateGroup.partner_id == partner_id
     ).update({models.DuplicateGroup.partner_id: None}, synchronize_session=False)
+    db.query(models.PowermusicUser).filter(
+        models.PowermusicUser.partner_id == partner_id
+    ).update({models.PowermusicUser.partner_id: None}, synchronize_session=False)
 
     db.delete(partner)
     db.commit()
@@ -168,6 +171,29 @@ def resolve_partner_for_manager_email(
         return None
     domain = addr.rsplit("@", 1)[1]
 
+    # Check if the manager user already has an assigned partner in powermusic_users
+    user_row = None
+    if manager_user_id and manager_user_id != "dev-bypass":
+        try:
+            import uuid
+            m_uuid = uuid.UUID(str(manager_user_id))
+            user_row = (
+                db.query(models.PowermusicUser)
+                .filter(models.PowermusicUser.id == m_uuid)
+                .first()
+            )
+            if user_row and user_row.partner_id:
+                # If partner_id or partner_slug was explicitly passed and conflicts, reject mismatch
+                if partner_id and partner_id != user_row.partner_id:
+                    return None
+                if partner_slug:
+                    slug_p = get_partner_by_slug(db, partner_slug)
+                    if slug_p and slug_p.id != user_row.partner_id:
+                        return None
+                return user_row.partner_id
+        except Exception:
+            pass
+
     # If partner_slug was provided and partner_id wasn't:
     if not partner_id and partner_slug:
         partner_obj = get_partner_by_slug(db, partner_slug)
@@ -212,17 +238,9 @@ def resolve_partner_for_manager_email(
                 detail="Email domain belongs to multiple partners. Explicit partner context is required.",
             )
 
-        # Fallback to the latest configured partner domain instead of raising 409
-        latest_match = (
-            db.query(models.ManagerAllowedDomain)
-            .filter(models.ManagerAllowedDomain.domain == domain, models.ManagerAllowedDomain.partner_id.isnot(None))
-            .order_by(models.ManagerAllowedDomain.created_at.desc())
-            .first()
-        )
-        if latest_match and latest_match.partner_id:
-            return latest_match.partner_id
-
-        return next(iter(partner_ids))
+        # Ambiguous domain without partner context or manager association must NOT
+        # fall back to an arbitrary partner (e.g. JD Gyms).
+        return None
     return None
 
 
@@ -233,16 +251,31 @@ def assert_manager_email_allowed(
     partner_slug: Optional[str] = None,
     manager_user_id: Optional[str] = None,
 ) -> str:
-    if not email and manager_user_id:
-        u = db.query(models.PowermusicUser).filter(models.PowermusicUser.id == manager_user_id).first()
-        if u and u.email:
-            email = u.email
+    user_row = None
+    if manager_user_id and manager_user_id != "dev-bypass":
+        try:
+            import uuid
+            m_uuid = uuid.UUID(str(manager_user_id))
+            user_row = db.query(models.PowermusicUser).filter(models.PowermusicUser.id == m_uuid).first()
+        except Exception:
+            pass
+
+    if not email and user_row and user_row.email:
+        email = user_row.email
 
     effective_partner_id = partner_id
     if not effective_partner_id and partner_slug:
         p_obj = get_partner_by_slug(db, partner_slug)
         if p_obj:
             effective_partner_id = p_obj.id
+
+    if user_row and user_row.partner_id:
+        if effective_partner_id and effective_partner_id != user_row.partner_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Manager account is not authorized for this partner.",
+            )
+        effective_partner_id = user_row.partner_id
 
     domains = list_manager_domain_strings(db, partner_id=effective_partner_id)
     if not domains:

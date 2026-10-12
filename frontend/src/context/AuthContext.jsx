@@ -83,7 +83,7 @@ async function fetchUserProfile(userId, { accessToken, email } = {}) {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const { data, error } = await supabase
       .from('powermusic_users')
-      .select('id, email, full_name, first_name, last_name, club, role')
+      .select('id, email, full_name, first_name, last_name, club, role, partner_id')
       .eq('id', userId)
       .single();
 
@@ -116,6 +116,20 @@ function applyProfile(setRole, setProfile, profileData) {
   setRole(profileData.role);
   setProfile(profileData);
   writeAuthCache(profileData.id, profileData);
+  if (profileData.partner_name) {
+    try {
+      sessionStorage.setItem(
+        'manager-portal-intro-branding',
+        JSON.stringify({
+          partnerId: profileData.partner_id ?? null,
+          partnerName: profileData.partner_name,
+          partnerSlug: profileData.partner_slug ?? null,
+        }),
+      );
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 const getLoginFriendlyError = (error) => {
@@ -470,6 +484,12 @@ export function AuthProvider({ children }) {
     bumpAuthEpoch();
     clearAuthCache();
     clearStoredSession();
+    try {
+      sessionStorage.removeItem('manager-portal-intro-branding');
+      sessionStorage.removeItem('manager-intended-partner-slug');
+    } catch {
+      /* ignore */
+    }
     setUser(null);
     setSession(null);
     setRole(null);
@@ -520,7 +540,10 @@ export function AuthProvider({ children }) {
   };
 
   /** Check whether a manager profile exists for this email (sign-in pre-check). */
-  const checkManagerAccountExists = async (email, { enforceDomain = true } = {}) => {
+  const checkManagerAccountExists = async (
+    email,
+    { enforceDomain = true, allowedDomains: explicitAllowedDomains = null } = {},
+  ) => {
     const supabase = getSupabase();
     if (!supabase) {
       throw new Error(
@@ -528,9 +551,9 @@ export function AuthProvider({ children }) {
       );
     }
 
-    let allowedDomains;
-    if (enforceDomain) {
-      allowedDomains = await ensureManagerAllowedDomains();
+    let allowedDomains = explicitAllowedDomains;
+    if (enforceDomain && !allowedDomains) {
+      allowedDomains = await ensureManagerAllowedDomains({ force: true });
     }
     const validated = validateManagerEmail(email, { enforceDomain, allowedDomains });
     if (!validated.ok) {
@@ -549,8 +572,15 @@ export function AuthProvider({ children }) {
   };
 
   /** Manager portal — email + password sign-in for existing accounts. */
-  const signInManager = async (email, password, { enforceDomain = true } = {}) => {
-    const { email: normalized, exists } = await checkManagerAccountExists(email, { enforceDomain });
+  const signInManager = async (
+    email,
+    password,
+    { enforceDomain = true, allowedDomains = null } = {},
+  ) => {
+    const { email: normalized, exists } = await checkManagerAccountExists(email, {
+      enforceDomain,
+      allowedDomains,
+    });
 
     if (!exists) {
       throw new Error(MANAGER_ACCOUNT_NOT_FOUND_MESSAGE);
@@ -563,7 +593,10 @@ export function AuthProvider({ children }) {
   const resetManagerPassword = (email, options) => requestManagerPasswordReset(email, options);
 
   /** Manager portal — passwordless magic link for sign-in (existing accounts). */
-  const sendManagerMagicLink = async (email, { enforceDomain = true } = {}) => {
+  const sendManagerMagicLink = async (
+    email,
+    { enforceDomain = true, allowedDomains: explicitAllowedDomains = null } = {},
+  ) => {
     const supabase = getSupabase();
     if (!supabase) {
       throw new Error(
@@ -571,9 +604,9 @@ export function AuthProvider({ children }) {
       );
     }
 
-    let allowedDomains;
-    if (enforceDomain) {
-      allowedDomains = await ensureManagerAllowedDomains();
+    let allowedDomains = explicitAllowedDomains;
+    if (enforceDomain && !allowedDomains) {
+      allowedDomains = await ensureManagerAllowedDomains({ force: true });
     }
     const validated = validateManagerEmail(email, { enforceDomain, allowedDomains });
     if (!validated.ok) {
@@ -600,7 +633,17 @@ export function AuthProvider({ children }) {
   };
 
   /** Manager portal — register with email + password (one email verify if enabled in Supabase). */
-  const registerManager = async (fields, { enforceDomain = true, isHealthFitness = false, isGll = false } = {}) => {
+  const registerManager = async (
+    fields,
+    {
+      enforceDomain = true,
+      allowedDomains: explicitAllowedDomains = null,
+      isHealthFitness = false,
+      isGll = false,
+      partnerSlug = null,
+      partnerId = null,
+    } = {},
+  ) => {
     const supabase = getSupabase();
     if (!supabase) {
       throw new Error(
@@ -608,18 +651,26 @@ export function AuthProvider({ children }) {
       );
     }
 
-    let allowedDomains;
-    if (enforceDomain) {
-      allowedDomains = await ensureManagerAllowedDomains();
+    let allowedDomains = explicitAllowedDomains;
+    if (enforceDomain && !allowedDomains) {
+      allowedDomains = await ensureManagerAllowedDomains({ force: true });
     }
-    const validated = validateManagerSignupFields(fields, { enforceDomain, allowedDomains, isHealthFitness, isGll });
+    const validated = validateManagerSignupFields(fields, {
+      enforceDomain,
+      allowedDomains,
+      isHealthFitness,
+      isGll,
+    });
     if (!validated.ok) {
       throw new Error(validated.error);
     }
 
     const { email, firstName, lastName, club, full_name, password } = validated.value;
 
-    const { exists } = await checkManagerAccountExists(email, { enforceDomain });
+    const { exists } = await checkManagerAccountExists(email, {
+      enforceDomain,
+      allowedDomains,
+    });
     if (exists) {
       throw new Error(MANAGER_ACCOUNT_EXISTS_MESSAGE);
     }
@@ -639,6 +690,8 @@ export function AuthProvider({ children }) {
           club,
           full_name,
           role: 'manager',
+          partner_slug: partnerSlug || undefined,
+          partner_id: partnerId || undefined,
         },
       },
     });

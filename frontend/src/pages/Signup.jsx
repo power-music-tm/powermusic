@@ -15,6 +15,7 @@ import {
   isPasswordStrongEnough,
   resolveManagerAuthAllowedDomains,
   managerEmailDomainError,
+  MANAGER_EMAIL_DOMAIN_NOT_ALLOWED_MESSAGE,
 } from '../utils/managerAuth';
 import { formatCooldown, getOtpCooldownRemaining, setOtpCooldown } from '../utils/otpCooldown';
 import { requestManagerPasswordReset, resendManagerSignupConfirmation } from '../utils/managerAuthEmail';
@@ -36,6 +37,8 @@ import {
   ensurePartnerSlugBranding,
   partnerSlugFromName,
   readCachedPartnerSlugBranding,
+  refreshPartnerSlugBranding,
+  subscribePartnerSlugBranding,
 } from '../utils/partnerSlugBrandingCache';
 import {
   instantPartnerBrandingFromSlug,
@@ -227,6 +230,50 @@ export default function Signup() {
     };
   }, [partnerSlug]);
 
+  // Live allowlist updates: subscribe to cross-tab storage changes, focus, visibility, and interval polling.
+  useEffect(() => {
+    if (!partnerSlug) return undefined;
+    const normalized = partnerSlug.toLowerCase();
+
+    const unsubscribe = subscribePartnerSlugBranding((updatedSlug, branding) => {
+      if (updatedSlug !== normalized || !branding) return;
+      setSlugBranding((prev) => ({
+        partnerName: branding.partnerName || prev?.partnerName,
+        logoDataUrl: branding.logoDataUrl ?? prev?.logoDataUrl ?? null,
+      }));
+      setPartnerAllowedDomains(
+        Array.isArray(branding.allowedDomains) ? branding.allowedDomains : [],
+      );
+      setPartnerAccessReady(true);
+    });
+
+    const refreshCurrentDomains = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        refreshPartnerSlugBranding(normalized);
+      }
+    };
+
+    window.addEventListener('focus', refreshCurrentDomains);
+    document.addEventListener('visibilitychange', refreshCurrentDomains);
+
+    // 5-second interval poll so tabs on separate devices/browsers or background tabs update promptly
+    const pollInterval = window.setInterval(refreshCurrentDomains, 5000);
+
+    return () => {
+      unsubscribe();
+      window.removeEventListener('focus', refreshCurrentDomains);
+      document.removeEventListener('visibilitychange', refreshCurrentDomains);
+      window.clearInterval(pollInterval);
+    };
+  }, [partnerSlug]);
+
+  // Clear stale email domain restriction error as soon as domain becomes allowed
+  useEffect(() => {
+    if (!emailDomainError && errorMsg === MANAGER_EMAIL_DOMAIN_NOT_ALLOWED_MESSAGE) {
+      setErrorMsg('');
+    }
+  }, [emailDomainError, errorMsg]);
+
   useLayoutEffect(() => {
     if (!user || role !== 'manager') {
       setSessionBrandingReady(true);
@@ -254,21 +301,37 @@ export default function Signup() {
 
   useEffect(() => {
     let active = true;
-    ensureManagerAllowedDomains()
-      .then((domains) => {
-        if (!active) return;
-        setAllowedDomains(domains);
-        setDomainsReady(true);
-      })
-      .catch(() => {
-        if (!active) return;
-        setAllowedDomains(null);
-        setDomainsReady(false);
-      });
+    const fetchGlobal = () => {
+      ensureManagerAllowedDomains({ force: true })
+        .then((domains) => {
+          if (!active) return;
+          setAllowedDomains(domains);
+          setDomainsReady(true);
+        })
+        .catch(() => {
+          if (!active) return;
+          setAllowedDomains(null);
+          setDomainsReady(false);
+        });
+    };
+
+    fetchGlobal();
+
+    const handleFocus = () => {
+      if (!partnerSlug && typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        fetchGlobal();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleFocus);
+
     return () => {
       active = false;
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleFocus);
     };
-  }, []);
+  }, [partnerSlug]);
 
   useEffect(() => {
     if (location.state?.mode === 'signin') {
@@ -567,6 +630,7 @@ export default function Signup() {
     try {
       const { exists } = await checkManagerAccountExists(validated.value.email, {
         enforceDomain: appConfig.enforceDomainCheck,
+        allowedDomains: authAllowedDomains,
       });
 
       if (exists) {
@@ -576,8 +640,11 @@ export default function Signup() {
 
       const result = await registerManager(formData, {
         enforceDomain: appConfig.enforceDomainCheck,
+        allowedDomains: authAllowedDomains,
         isHealthFitness: terms.isHealthFitness,
         isGll: terms.isGll,
+        partnerSlug: partnerSlug || undefined,
+        partnerId: partnerBranding?.partnerId || undefined,
       });
 
       if (result.needsConfirmation) {
@@ -585,7 +652,7 @@ export default function Signup() {
       } else {
         queueManagerPortalIntro(partnerBranding);
         if (!partnerBranding?.partnerName) {
-          await prefetchManagerPortalBranding(validated.value.email);
+          await prefetchManagerPortalBranding(validated.value.email, partnerSlug);
         }
       }
     } catch (err) {
@@ -612,6 +679,7 @@ export default function Signup() {
     try {
       const result = await resendManagerSignupConfirmation(registeredEmail, {
         enforceDomain: appConfig.enforceDomainCheck,
+        allowedDomains: authAllowedDomains,
       });
       setOtpCooldown(result.email);
       setCooldownMs(getOtpCooldownRemaining(result.email));
@@ -641,6 +709,7 @@ export default function Signup() {
     try {
       const result = await requestManagerPasswordReset(resetEmail, {
         enforceDomain: appConfig.enforceDomainCheck,
+        allowedDomains: authAllowedDomains,
       });
       setOtpCooldown(result.email);
       setCooldownMs(getOtpCooldownRemaining(result.email));
@@ -693,6 +762,7 @@ export default function Signup() {
     try {
       await signInManager(signInEmail, signInPassword, {
         enforceDomain: appConfig.enforceDomainCheck,
+        allowedDomains: authAllowedDomains,
       });
       queueManagerPortalIntro(partnerBranding);
       navigate('/submit', { replace: true });
@@ -753,6 +823,7 @@ export default function Signup() {
     try {
       const result = await requestManagerPasswordReset(forgotEmail, {
         enforceDomain: appConfig.enforceDomainCheck,
+        allowedDomains: authAllowedDomains,
       });
       setOtpCooldown(forgotEmail);
       setCooldownMs(getOtpCooldownRemaining(forgotEmail));

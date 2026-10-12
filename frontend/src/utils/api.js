@@ -1,23 +1,23 @@
 // Backend base URL.
 // - Local dev: same-origin /api/* via Vite proxy (see vite.config.js).
 // - VITE_API_URL overrides both if the backend ever lives elsewhere.
-const API_BASE =
-  import.meta.env.VITE_API_URL ?? (import.meta.env.PROD ? '' : '');
+const env = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env : {};
+const API_BASE = env.VITE_API_URL ?? (env.PROD ? '' : '');
 
-const DEFAULT_TIMEOUT_MS = import.meta.env.PROD ? 45000 : 12000;
+const DEFAULT_TIMEOUT_MS = env.PROD ? 45000 : 12000;
 
 const DEV_BACKEND_HINT =
   'Check that the backend is running: cd backend && .venv/bin/python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000';
 
 function timeoutErrorMessage() {
-  if (import.meta.env.PROD) {
+  if (env.PROD) {
     return 'The server is taking longer than usual. Please wait a moment and refresh, or try again shortly.';
   }
   return `The API did not respond in time. ${DEV_BACKEND_HINT}`;
 }
 
 function networkErrorMessage() {
-  if (import.meta.env.PROD) {
+  if (env.PROD) {
     return 'Could not reach the server. Check your connection and try again.';
   }
   return `Could not reach the API. Start the backend: ${DEV_BACKEND_HINT}`;
@@ -36,15 +36,34 @@ export const getApiUrl = (path) => {
 };
 
 import { readStoredSession } from './authBootstrap';
+import { readAuthCache } from './authCache';
 
 function getActivePartnerContext() {
   if (typeof window === 'undefined') return {};
   try {
+    const session = readStoredSession();
+    if (session?.user?.id) {
+      const cachedAuth = readAuthCache(session.user.id);
+      if (cachedAuth?.profile?.partner_id) {
+        return {
+          partnerId: cachedAuth.profile.partner_id,
+          partnerSlug: cachedAuth.profile.partner_slug || undefined,
+        };
+      }
+      const meta = session.user.user_metadata;
+      if (meta?.partner_id || meta?.partnerId) {
+        return {
+          partnerId: meta.partner_id || meta.partnerId,
+          partnerSlug: meta.partner_slug || meta.partnerSlug || undefined,
+        };
+      }
+    }
+
     const rawIntro = sessionStorage.getItem('manager-portal-intro-branding');
     if (rawIntro) {
       const parsed = JSON.parse(rawIntro);
       if (parsed?.partnerId) {
-        return { partnerId: parsed.partnerId };
+        return { partnerId: parsed.partnerId, partnerSlug: parsed.partnerSlug };
       }
     }
     const slug = sessionStorage.getItem('manager-intended-partner-slug');

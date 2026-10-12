@@ -201,7 +201,7 @@ export function clearCachedManagerPortalBranding() {
 }
 
 /** Prefetch public partner branding before navigating to /submit. */
-export async function prefetchManagerPortalBranding(email) {
+export async function prefetchManagerPortalBranding(email, partnerSlug = null) {
   const cached = readCachedManagerPortalBranding();
   if (cached?.partnerName) return cached;
 
@@ -209,7 +209,7 @@ export async function prefetchManagerPortalBranding(email) {
   if (!normalized.includes('@')) return null;
 
   try {
-    const data = await getPublicPartnerBranding(normalized);
+    const data = await getPublicPartnerBranding(normalized, partnerSlug);
     if (data?.partnerName) cacheManagerPortalBranding(data);
     return data;
   } catch {

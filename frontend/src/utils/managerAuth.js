@@ -1,5 +1,5 @@
-import { isAdminEmail } from './adminAccess';
-import { fetchJson } from './api';
+import { isAdminEmail } from './adminAccess.js';
+import { fetchJson } from './api.js';
 
 const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 const HTML_TAG = /<[^>]+>/;

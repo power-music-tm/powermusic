@@ -17,6 +17,7 @@ class PowermusicUser(Base):
     last_name = Column(String, nullable=True)
     club = Column(String, nullable=True)
     role = Column(String, nullable=False)
+    partner_id = Column(String, ForeignKey("partners.id"), nullable=True, index=True)
     manager_request_total = Column(Integer, nullable=False, server_default="0")
     manager_request_pending = Column(Integer, nullable=False, server_default="0")
 

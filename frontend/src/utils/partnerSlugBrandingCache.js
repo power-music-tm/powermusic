@@ -1,5 +1,5 @@
-import { getPublicCustomForm } from './pilot2Api';
-import { normalizeAllowedDomainSuffixes } from './managerAuth';
+import { getPublicCustomForm } from './pilot2Api.js';
+import { normalizeAllowedDomainSuffixes } from './managerAuth.js';
 
 const CACHE_PREFIX = 'pm_partner_slug_branding:';
 const inflight = new Map();
@@ -240,6 +240,56 @@ export function readCachedPartnerSlugBranding(slug) {
   );
 }
 
+export const DOMAIN_SYNC_SIGNAL_KEY = 'pm_partner_domains_signal';
+const slugSubscribers = new Set();
+const requestVersionBySlug = new Map();
+
+/**
+ * Subscribe to live partner branding / domain updates.
+ * Fires whenever branding is updated locally or via cross-tab storage events.
+ */
+export function subscribePartnerSlugBranding(callback) {
+  if (typeof callback !== 'function') return () => {};
+  slugSubscribers.add(callback);
+  return () => {
+    slugSubscribers.delete(callback);
+  };
+}
+
+function notifySubscribers(slug, branding) {
+  if (!slug || !branding) return;
+  const normalizedSlug = slug.toLowerCase();
+  for (const cb of slugSubscribers) {
+    try {
+      cb(normalizedSlug, branding);
+    } catch (err) {
+      console.error('Error notifying partner slug branding subscriber:', err);
+    }
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event) => {
+    if (!event.key) return;
+    if (event.key.startsWith(CACHE_PREFIX)) {
+      const slug = event.key.slice(CACHE_PREFIX.length);
+      const updated = readCachedPartnerSlugBranding(slug);
+      if (updated) {
+        notifySubscribers(slug, updated);
+      }
+    } else if (event.key === DOMAIN_SYNC_SIGNAL_KEY) {
+      try {
+        const payload = JSON.parse(event.newValue || '{}');
+        if (payload?.slug) {
+          fetchAndCachePartnerSlugBranding(payload.slug, { force: true });
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+}
+
 /**
  * Merge into the slug branding cache. Only fields explicitly provided are
  * updated; omitted fields (undefined) keep their existing cached value. Pass an
@@ -259,13 +309,24 @@ export function cachePartnerSlugBranding(slug, branding) {
         : existing?.logoDataUrl ?? null,
     allowedDomains:
       branding.allowedDomains !== undefined
-        ? branding.allowedDomains
+        ? normalizeAllowedDomainSuffixes(branding.allowedDomains)
         : existing?.allowedDomains ?? [],
   };
 
   writeStorage(localStorage, slug, merged);
   writeStorage(sessionStorage, slug, merged);
   preloadLogo(merged.logoDataUrl ?? null);
+
+  try {
+    localStorage.setItem(
+      DOMAIN_SYNC_SIGNAL_KEY,
+      JSON.stringify({ slug: slug.toLowerCase(), timestamp: Date.now() }),
+    );
+  } catch {
+    /* ignore */
+  }
+
+  notifySubscribers(slug, merged);
 }
 
 function brandingFromApiResponse(data) {
@@ -294,25 +355,42 @@ export function prefetchPartnerSlugBranding(slugOrPath) {
   return fetchAndCachePartnerSlugBranding(slug);
 }
 
-// Always hits the network and refreshes the cache (deduped per slug).
-function fetchAndCachePartnerSlugBranding(slug) {
+// Hits the network, enforces monotonic version order, and notifies subscribers.
+export function fetchAndCachePartnerSlugBranding(slug, { force = false } = {}) {
   if (!slug) return Promise.resolve(null);
-  if (inflight.has(slug)) return inflight.get(slug);
+  const normalizedSlug = slug.toLowerCase();
+  const nextVersion = (requestVersionBySlug.get(normalizedSlug) || 0) + 1;
+  requestVersionBySlug.set(normalizedSlug, nextVersion);
 
-  const promise = getPublicCustomForm(slug)
+  if (!force && inflight.has(normalizedSlug)) {
+    return inflight.get(normalizedSlug);
+  }
+
+  const promise = getPublicCustomForm(normalizedSlug)
     .then((data) => {
+      inflight.delete(normalizedSlug);
+      // Stale response protection: if a newer request was dispatched, discard older response
+      if (requestVersionBySlug.get(normalizedSlug) !== nextVersion) {
+        return null;
+      }
       const branding = brandingFromApiResponse(data);
-      if (branding) cachePartnerSlugBranding(slug, branding);
-      inflight.delete(slug);
+      if (branding) {
+        cachePartnerSlugBranding(normalizedSlug, branding);
+      }
       return branding;
     })
-    .catch(() => {
-      inflight.delete(slug);
+    .catch((err) => {
+      inflight.delete(normalizedSlug);
       return null;
     });
 
-  inflight.set(slug, promise);
+  inflight.set(normalizedSlug, promise);
   return promise;
+}
+
+export function refreshPartnerSlugBranding(slug) {
+  if (!slug) return Promise.resolve(null);
+  return fetchAndCachePartnerSlugBranding(slug, { force: true });
 }
 
 export function prefetchPartnerSlugBrandingFromLocation() {
@@ -320,17 +398,22 @@ export function prefetchPartnerSlugBrandingFromLocation() {
   return prefetchPartnerSlugBranding(window.location.pathname);
 }
 
-export function ensurePartnerSlugBranding(slug) {
+export function ensurePartnerSlugBranding(slug, { force = false } = {}) {
   if (!slug) return Promise.resolve(null);
-  const cached = readCachedPartnerSlugBranding(slug);
+  const normalizedSlug = slug.toLowerCase();
+  const cached = readCachedPartnerSlugBranding(normalizedSlug);
+
+  if (force) {
+    return fetchAndCachePartnerSlugBranding(normalizedSlug, { force: true });
+  }
+
   // Complete cache entry: return it instantly, but revalidate in the background
-  // so admin edits (e.g. a removed domain) self-heal on the next visit.
+  // and notify subscribers when fresh data arrives so already-open pages stay live.
   if (cached?.partnerName && cached.allowedDomains?.length) {
-    fetchAndCachePartnerSlugBranding(slug);
+    fetchAndCachePartnerSlugBranding(normalizedSlug);
     return Promise.resolve(cached);
   }
-  // Missing/empty domains (old or clobbered cache entries): always hit the
-  // network and wait. Do NOT fall back to prefetch here — prefetch returns the
-  // stale cached entry first, which would keep the empty domain list.
-  return fetchAndCachePartnerSlugBranding(slug);
+
+  // Missing/empty domains: hit the network and wait.
+  return fetchAndCachePartnerSlugBranding(normalizedSlug);
 }
