@@ -6,4 +6,4 @@ export function formatRequestDisplayId(displayId) {
 export {
   formatAdminDateTime,
   formatAdminDate,
-} from './dateTime';
+} from './dateTime.js';

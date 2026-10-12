@@ -63,7 +63,7 @@ class ManagerRequest(Base):
     tags = Column(ARRAY(String), nullable=False, server_default="{}")
     status = Column(String, nullable=False)
     outcome = Column(String, nullable=True)
-    source_email_id = Column(String, ForeignKey("emails.id"), nullable=True, unique=True)
+    source_email_id = Column(String, nullable=True, unique=True)
     source_gmail_message_id = Column(String, nullable=True, unique=True)
     intake_persons = Column(JSONB, nullable=False, server_default="{}")
     partner_id = Column(String, ForeignKey("partners.id"), nullable=True, index=True)

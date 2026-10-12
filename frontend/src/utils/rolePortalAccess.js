@@ -1,5 +1,5 @@
-import { isAdminEmail } from './adminAccess';
-import { readAuthCache } from './authCache';
+import { isAdminEmail } from './adminAccess.js';
+import { readAuthCache } from './authCache.js';
 
 export function readCachedAuthRole(userId) {
   if (!userId) return null;

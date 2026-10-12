@@ -291,6 +291,8 @@ function ControlsBar({
                 value={dateFilter}
                 onChange={setDateFilter}
                 variant="slot"
+                showAllTime
+                clearTo={{ type: 'all', value: null }}
               />
             </div>
             {activeFilterCount > 0 && (

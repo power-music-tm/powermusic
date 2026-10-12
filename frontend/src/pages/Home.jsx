@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef, useLayoutEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { formatDashboardActivity } from '../utils/dateTime';
 import {
@@ -12,10 +12,16 @@ import {
   Users,
 } from 'lucide-react';
 import PageHeader from '../components/layout/PageHeader';
-import { loadWithCache, getDashboard } from '../utils/pilot2Api';
+import { loadWithCache, getDashboard, getDashboardPeriod } from '../utils/pilot2Api';
 import { AdminPageScroll, DottedScroll, PanelListSkeleton, DateFilter } from '../components/ui';
 import StatusTag from '../components/ui/Tag';
 import { calculateDateBounds, getDateFilterLabel } from '../utils/dateFilters';
+import {
+  formatTrendTooltipDate,
+  getRequestFlowFillLayout,
+  getVisibleLabelIndicesForWidth,
+  niceTicks,
+} from '../utils/requestFlowChart';
 import {
   TAG_ALREADY_EXISTS,
   TAG_ALREADY_REMOVED,
@@ -83,7 +89,10 @@ function InsightCard({ label, badge, value, hint, icon: Icon, accent, onClick })
               {label}
             </p>
             {badge ? (
-              <span className="inline-flex items-center rounded-md bg-[var(--color-brand-accent)]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[var(--color-brand-accent)] truncate max-w-[130px]">
+              <span
+                title={badge}
+                className="inline-flex max-w-[min(100%,11rem)] items-center rounded-md bg-[var(--color-brand-accent)]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[var(--color-brand-accent)] truncate"
+              >
                 {badge}
               </span>
             ) : null}
@@ -113,7 +122,10 @@ function ChartCard({ title, badge, subtitle, legend, children, className = '' })
           <div className="flex items-center gap-2 min-w-0">
             <h2 className="min-w-0 text-sm font-bold text-[var(--color-text-primary)]">{title}</h2>
             {badge && (
-              <span className="px-2 py-0.5 rounded text-xs font-semibold text-red-600 bg-red-50 border border-red-200 shrink-0">
+              <span
+                title={badge}
+                className="max-w-[min(100%,14rem)] truncate px-2 py-0.5 rounded text-xs font-semibold text-red-600 bg-red-50 border border-red-200 shrink-0"
+              >
                 {badge}
               </span>
             )}
@@ -176,78 +188,72 @@ function LegendDot({ color, label }) {
   );
 }
 
-function niceTicks(maxValue, count = 3) {
-  const capped = Math.max(1, maxValue);
-  const rough = capped / Math.max(1, count - 1);
-  const magnitude = 10 ** Math.floor(Math.log10(rough));
-  const normalized = rough / magnitude;
-  const stepBase = normalized <= 1.5 ? 1 : normalized <= 3 ? 2 : normalized <= 7 ? 5 : 10;
-  const step = stepBase * magnitude;
-  const top = Math.ceil(capped / step) * step;
-  const ticks = [];
-  for (let value = 0; value <= top + 1e-9; value += step) {
-    ticks.push(Math.round(value));
-  }
-  if (ticks[ticks.length - 1] !== top) ticks.push(top);
-  return { ticks, top: Math.max(top, 1) };
-}
-
-function RequestFlowChart({ days }) {
+function RequestFlowChart({ days, granularity = 'daily' }) {
+  const wrapRef = useRef(null);
+  const tooltipRef = useRef(null);
+  const [plotWidth, setPlotWidth] = useState(640);
   const [hoveredIdx, setHoveredIdx] = useState(null);
+
+  const leftPad = 36;
+  const rightPad = 16;
+  const chartH = 110;
+  const topPad = 8;
+  const bottomPad = 24;
+  const height = chartH + topPad + bottomPad;
+
+  useLayoutEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return undefined;
+    const measure = () => {
+      const w = el.clientWidth;
+      setPlotWidth(Math.max(120, w - leftPad - rightPad));
+    };
+    measure();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    ro?.observe(el);
+    window.addEventListener('resize', measure);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, []);
+
   const rawMax = Math.max(1, ...days.flatMap((d) => [d.received, d.handled]));
   const { ticks, top } = niceTicks(rawMax, 4);
   const count = Math.max(days.length, 1);
-  const chartH = 110;
-  const topPad = 8;
-  const leftPad = 36;
-  const rightPad = 16;
-  const bottomPad = 24;
-
-  let barW = 10;
-  let gap = 14;
-  if (count > 25) {
-    barW = 5;
-    gap = 7;
-  } else if (count > 16) {
-    barW = 7;
-    gap = 10;
-  } else if (count > 8) {
-    barW = 10;
-    gap = 14;
-  } else if (count <= 4) {
-    barW = 16;
-    gap = 24;
-  }
-
-  const groupW = barW * 2 + 3;
-  const stepSize = groupW + gap;
-  const totalGroupsWidth = count * groupW + (count - 1) * gap;
-  const plotW = Math.max(totalGroupsWidth + 12, 280);
-  const width = leftPad + plotW + rightPad;
-  const height = chartH + topPad + bottomPad;
-  const startX = leftPad + 8;
-
-  const minLabelSpacing = 48;
-  const labelStride = count <= 7 ? 1 : Math.max(1, Math.ceil(minLabelSpacing / stepSize));
-
-  const visibleIndices = new Set();
-  for (let i = 0; i < count; i += labelStride) {
-    visibleIndices.add(i);
-  }
-  const lastIndex = count - 1;
-  const lastVisible = Math.floor((count - 1) / labelStride) * labelStride;
-  if (lastIndex !== lastVisible && (lastIndex - lastVisible) * stepSize >= minLabelSpacing * 0.75) {
-    visibleIndices.add(lastIndex);
-  }
-
-  // Minimum visible bar height (in pixels) for any non-zero count to ensure easy visibility & hoverability
+  const { barW, groupW, slotW } = getRequestFlowFillLayout(count, plotWidth);
+  const width = leftPad + plotWidth + rightPad;
+  const { visibleIndices: visibleIndexList } = getVisibleLabelIndicesForWidth(
+    count,
+    plotWidth,
+    56,
+  );
+  const visibleIndices = new Set(visibleIndexList);
   const MIN_BAR_H = 7;
+  const hovered = hoveredIdx != null ? days[hoveredIdx] : null;
+  const tooltipLeftPct = hoveredIdx == null
+    ? 50
+    : ((leftPad + hoveredIdx * slotW + slotW / 2) / width) * 100;
+
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current;
+    const tip = tooltipRef.current;
+    if (!wrap || !tip || hoveredIdx == null) return undefined;
+    tip.style.transform = 'translateX(-50%)';
+    const wrapBox = wrap.getBoundingClientRect();
+    const tipBox = tip.getBoundingClientRect();
+    let shift = 0;
+    if (tipBox.left < wrapBox.left + 8) shift = wrapBox.left + 8 - tipBox.left;
+    if (tipBox.right > wrapBox.right - 8) shift = wrapBox.right - 8 - tipBox.right;
+    tip.style.transform = `translateX(calc(-50% + ${shift}px))`;
+    return undefined;
+  }, [hoveredIdx, plotWidth, hovered?.date]);
 
   return (
-    <div className="flex h-full w-full min-h-[9.5rem] items-end overflow-x-auto scrollbar-hide">
+    <div ref={wrapRef} className="relative flex h-full w-full min-h-[9.5rem] items-end">
       <svg
         viewBox={`0 0 ${width} ${height}`}
-        className="h-[9.5rem] w-full min-w-[280px]"
+        className="h-[9.5rem] w-full"
         role="img"
         aria-label="Request flow: received versus handled requests"
         preserveAspectRatio="xMidYMid meet"
@@ -285,8 +291,10 @@ function RequestFlowChart({ days }) {
           strokeWidth="1"
         />
         {days.map((day, index) => {
-          const x = startX + index * (groupW + gap);
-          
+          // Center each group in its equal-width slot across the full plot.
+          const slotX = leftPad + index * slotW;
+          const x = slotX + (slotW - groupW) / 2;
+
           const receivedH = day.received > 0 ? Math.max((day.received / top) * chartH, MIN_BAR_H) : 0;
           const handledH = day.handled > 0 ? Math.max((day.handled / top) * chartH, MIN_BAR_H) : 0;
           const receivedY = topPad + chartH - receivedH;
@@ -294,6 +302,7 @@ function RequestFlowChart({ days }) {
 
           const showLabel = visibleIndices.has(index);
           const isHovered = hoveredIdx === index;
+          const labelX = slotX + slotW / 2;
 
           return (
             <g
@@ -302,20 +311,16 @@ function RequestFlowChart({ days }) {
               onMouseEnter={() => setHoveredIdx(index)}
               onMouseLeave={() => setHoveredIdx(null)}
             >
-              {/* Interactive full-height hit area for effortless hoverability */}
               <rect
-                x={x - 2}
+                x={slotX}
                 y={topPad}
-                width={groupW + 4}
+                width={slotW}
                 height={chartH + 2}
                 fill={isHovered ? 'rgba(44, 95, 143, 0.05)' : 'transparent'}
                 rx="4"
                 pointerEvents="all"
-              >
-                <title>{`${day.label}\nReceived: ${day.received}\nHandled: ${day.handled}`}</title>
-              </rect>
+              />
 
-              {/* Received Bar */}
               {day.received > 0 && (
                 <rect
                   x={x}
@@ -326,12 +331,9 @@ function RequestFlowChart({ days }) {
                   fill={CHART.blue}
                   opacity={isHovered ? 0.85 : 1}
                   className="transition-opacity"
-                >
-                  <title>{`${day.label}: ${day.received} received`}</title>
-                </rect>
+                />
               )}
 
-              {/* Handled Bar */}
               {day.handled > 0 && (
                 <rect
                   x={x + barW + 2}
@@ -342,27 +344,66 @@ function RequestFlowChart({ days }) {
                   fill={CHART.pink}
                   opacity={isHovered ? 0.85 : 1}
                   className="transition-opacity"
-                >
-                  <title>{`${day.label}: ${day.handled} handled`}</title>
-                </rect>
+                />
               )}
 
-              {/* X-Axis Date Label */}
               {showLabel ? (
-                <text
-                  x={x + groupW / 2}
-                  y={topPad + chartH + 16}
-                  textAnchor="middle"
-                  className={isHovered ? 'fill-[var(--color-brand-secondary)] font-bold' : 'fill-[var(--color-text-muted)]'}
-                  style={{ fontSize: 10, fontWeight: isHovered ? 700 : 600 }}
-                >
-                  {day.label}
-                </text>
+                <>
+                  <line
+                    x1={labelX}
+                    x2={labelX}
+                    y1={topPad + chartH}
+                    y2={topPad + chartH + 4}
+                    stroke={CHART.track}
+                    strokeWidth="1"
+                  />
+                  <text
+                    x={labelX}
+                    y={topPad + chartH + 16}
+                    textAnchor="middle"
+                    className={isHovered ? 'fill-[var(--color-brand-secondary)] font-bold' : 'fill-[var(--color-text-muted)]'}
+                    style={{ fontSize: 10, fontWeight: isHovered ? 700 : 600 }}
+                  >
+                    {day.label}
+                  </text>
+                </>
               ) : null}
             </g>
           );
         })}
       </svg>
+      {hovered ? (
+        <div
+          ref={tooltipRef}
+          role="tooltip"
+          className="pointer-events-none absolute top-1 z-20 min-w-[10.5rem] rounded-xl border border-[var(--color-border-default)] bg-white px-3 py-2.5 shadow-[var(--shadow-modal)]"
+          style={{ left: `${tooltipLeftPct}%` }}
+        >
+          <p className="text-[11px] font-semibold tracking-tight text-[var(--color-text-primary)]">
+            {formatTrendTooltipDate(hovered.date, granularity)}
+          </p>
+          <div className="mt-2 space-y-1.5">
+            <div className="flex items-center justify-between gap-4">
+              <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[var(--color-text-secondary)]">
+                <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: CHART.blue }} aria-hidden="true" />
+                Received
+              </span>
+              <span className="text-[11px] font-semibold tabular-nums text-[var(--color-text-primary)]">
+                {hovered.received}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[var(--color-text-secondary)]">
+                <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: CHART.pink }} aria-hidden="true" />
+                Handled
+              </span>
+              <span className="text-[11px] font-semibold tabular-nums text-[var(--color-text-primary)]">
+                {hovered.handled}
+              </span>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -517,7 +558,14 @@ export default function Home() {
   const [activity, setActivity] = useState([]);
   const [ready, setReady] = useState(false);
   const [fetching, setFetching] = useState(false);
-  const [dateFilter, setDateFilter] = useState({ type: 'all', value: null });
+  const [dateFilter, setDateFilter] = useState({ type: 'thisMonth', value: null });
+  // Bumped when a stale full-dashboard response arrives after the user changed the filter.
+  const [periodEpoch, setPeriodEpoch] = useState(0);
+  // Skip one period fetch only when the full dashboard already applied matching bounds.
+  const skipPeriodFetchRef = useRef(true);
+  const dateFilterRef = useRef(dateFilter);
+  dateFilterRef.current = dateFilter;
+  const readyRef = useRef(false);
 
   const activePeriodLabel = useMemo(() => getDateFilterLabel(dateFilter), [dateFilter]);
 
@@ -526,38 +574,119 @@ export default function Home() {
     [profile, user],
   );
 
+  // Full dashboard (pending queue + directory) — partner / navigation only.
+  // Period chart fields are owned by the period effect once the user changes dates.
   useEffect(() => {
-    const bounds = calculateDateBounds(dateFilter.type, dateFilter.value);
-    const startIso = bounds.start ? bounds.start.toISOString() : '';
-    const endIso = bounds.end ? bounds.end.toISOString() : '';
+    let cancelled = false;
+    readyRef.current = false;
+    skipPeriodFetchRef.current = true;
 
-    const applyDashboard = (data) => {
-      setPendingRequests(data.pendingRequests || []);
-      setKpis(data.kpis || { pendingRequests: 0, usersInLedger: 0 });
-      setInsights(data.insights || EMPTY_INSIGHTS);
-      setActivity(data.activity || []);
-      setReady(true);
-      setFetching(false);
-    };
     const load = () => {
-      setFetching(true);
+      if (cancelled) return;
+      const bounds = calculateDateBounds(dateFilterRef.current.type, dateFilterRef.current.value);
+      const startIso = bounds.start ? bounds.start.toISOString() : '';
+      const endIso = bounds.end ? bounds.end.toISOString() : '';
+      const cacheKey = `home_dashboard_v4:${selectedPartnerId || ''}:${startIso}:${endIso}`;
+
+      const applyDashboard = (data) => {
+        if (cancelled) return;
+        setPendingRequests(data.pendingRequests || []);
+        setKpis(data.kpis || { pendingRequests: 0, usersInLedger: 0 });
+        setActivity(data.activity || []);
+
+        const cur = calculateDateBounds(dateFilterRef.current.type, dateFilterRef.current.value);
+        const curStart = cur.start ? cur.start.toISOString() : '';
+        const curEnd = cur.end ? cur.end.toISOString() : '';
+        const boundsMatch = curStart === startIso && curEnd === endIso;
+        const incoming = data.insights || EMPTY_INSIGHTS;
+
+        if (boundsMatch) {
+          setInsights(incoming);
+          skipPeriodFetchRef.current = true;
+        } else {
+          // Late/slow full response for an old range — never clobber the active chart.
+          setInsights((prev) => ({
+            ...prev,
+            pendingAdd: incoming.pendingAdd,
+            pendingRemove: incoming.pendingRemove,
+            awaitingPartner: incoming.awaitingPartner,
+            duplicates: incoming.duplicates,
+            autoMail: incoming.autoMail,
+            partnerReq: incoming.partnerReq,
+            usersInLedger: incoming.usersInLedger,
+            usersArchived: incoming.usersArchived,
+            usersAdded: incoming.usersAdded,
+            usersRemoved: incoming.usersRemoved,
+          }));
+          skipPeriodFetchRef.current = false;
+          setPeriodEpoch((n) => n + 1);
+        }
+
+        readyRef.current = true;
+        setReady(true);
+      };
+
       loadWithCache(
-        `home_dashboard_v3:${selectedPartnerId || ''}:${startIso}:${endIso}`,
+        cacheKey,
         () => getDashboard(selectedPartnerId, startIso, endIso),
         applyDashboard,
       ).catch((err) => {
+        if (cancelled) return;
         console.error(err);
+        readyRef.current = true;
         setReady(true);
-        setFetching(false);
       });
     };
     load();
-    const refresh = () => {
-      if (!document.hidden) load();
+    return () => {
+      cancelled = true;
     };
-    window.addEventListener('focus', refresh);
-    return () => window.removeEventListener('focus', refresh);
-  }, [location.key, selectedPartnerId, dateFilter]);
+  }, [location.key, selectedPartnerId]);
+
+  // Fast path: date filter refreshes chart + handled counts (skips pending serialize).
+  useEffect(() => {
+    if (!ready) return undefined;
+    if (skipPeriodFetchRef.current) {
+      skipPeriodFetchRef.current = false;
+      return undefined;
+    }
+    let cancelled = false;
+    const bounds = calculateDateBounds(dateFilter.type, dateFilter.value);
+    const startIso = bounds.start ? bounds.start.toISOString() : '';
+    const endIso = bounds.end ? bounds.end.toISOString() : '';
+    const cacheKey = `home_dashboard_period_v3:${selectedPartnerId || ''}:${startIso}:${endIso}`;
+
+    setFetching(true);
+    loadWithCache(
+      cacheKey,
+      () => getDashboardPeriod(selectedPartnerId, startIso, endIso),
+      (periodInsights) => {
+        if (cancelled || !periodInsights) return;
+        setInsights((prev) => ({
+          ...prev,
+          weeklyTrend: Array.isArray(periodInsights.weeklyTrend)
+            ? periodInsights.weeklyTrend
+            : prev.weeklyTrend,
+          granularity: periodInsights.granularity ?? prev.granularity,
+          handledInPeriod: periodInsights.handledInPeriod ?? prev.handledInPeriod,
+          receivedInPeriod: periodInsights.receivedInPeriod ?? prev.receivedInPeriod,
+          handledThisWeek: periodInsights.handledThisWeek ?? prev.handledThisWeek,
+          receivedThisWeek: periodInsights.receivedThisWeek ?? prev.receivedThisWeek,
+        }));
+      },
+    )
+      .catch((err) => {
+        if (cancelled) return;
+        console.error(err);
+      })
+      .finally(() => {
+        if (!cancelled) setFetching(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [dateFilter, ready, periodEpoch, selectedPartnerId]);
 
   const priorityAlerts = useMemo(() => {
     const list = Array.isArray(pendingRequests) ? pendingRequests : [];
@@ -721,7 +850,7 @@ export default function Home() {
                   </div>
                 )}
               >
-                <RequestFlowChart days={trendDays} />
+                <RequestFlowChart days={trendDays} granularity={insights.granularity || 'daily'} />
               </ChartCard>
             </div>
 

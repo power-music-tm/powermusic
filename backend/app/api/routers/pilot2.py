@@ -56,12 +56,6 @@ def _purge_never_connected_inboxes(db: Session) -> None:
     if not placeholders:
         return
     for account in placeholders:
-        db.query(models.EmailTemplate).filter(
-            models.EmailTemplate.account_email == account.email
-        ).delete(synchronize_session=False)
-        db.query(models.Email).filter(
-            models.Email.account_email == account.email
-        ).delete(synchronize_session=False)
         db.delete(account)
     db.commit()
 
@@ -92,6 +86,15 @@ def get_overview(db: Session = Depends(get_db), _admin=Depends(require_admin)):
     )
     inbox_titles = {acc.email: acc.title for acc in connected_accounts}
     connected_emails = set(inbox_titles.keys())
+    del connected_emails, inbox_titles
+
+    return {
+        "newEmails": 0,
+        "flaggedEmails": 0,
+        "templatesActive": 0,
+        "activity": [],
+        "flaggedAlerts": [],
+    }
 
     if connected_emails:
         new_emails = ignore_list.count_inbox_tab_emails(db, account_emails=connected_emails)
@@ -188,6 +191,7 @@ def list_intents(db: Session = Depends(get_db), _admin=Depends(require_admin)):
 @router.get("/workspace", response_model=schemas.Pilot2WorkspaceOut)
 def get_workspace(db: Session = Depends(get_db), _admin=Depends(require_admin)):
     inboxes = db.query(models.EmailAccount).order_by(models.EmailAccount.id).all()
+    return {"emails": [], "inboxes": inboxes, "pendingAiCount": 0}
     # Emails awaiting AI (Imported/Processing) are withheld: the queue must
     # only ever grow. An email appears once, fully classified, instead of
     # showing up and then vanishing when the classifier marks it Ignored.
@@ -451,14 +455,6 @@ def delete_inbox(inbox_id: str, db: Session = Depends(get_db), _admin=Depends(re
         account.status = "Disconnected"
         account.oauth_refresh_token = None
         account.watch_expiration = None
-    db.query(models.EmailTemplate).filter(
-        models.EmailTemplate.account_email == email
-    ).delete(synchronize_session=False)
-    # Remove the inbox's imported emails too, otherwise they linger as
-    # orphans in the workspace payload after the inbox is gone.
-    db.query(models.Email).filter(
-        models.Email.account_email == email
-    ).delete(synchronize_session=False)
     db.delete(account)
     pipeline.log(db, "inbox_deleted", f"Inbox {email} removed.")
     db.commit()
@@ -1419,7 +1415,14 @@ def renew_watches(
     """
     require_cron_secret(request, secret)
     summary = sync.renew_watches(db, cushion=timedelta(hours=cushion_hours))
-    result = {**summary, "pushEnabled": config.gmail_push_enabled()}
+    from app.api.rate_limit import prune_old_rate_limit_buckets
+
+    pruned = prune_old_rate_limit_buckets(db)
+    result = {
+        **summary,
+        "pushEnabled": config.gmail_push_enabled(),
+        "prunedRateLimitBuckets": pruned,
+    }
     if not config.gmail_push_enabled():
         result["warning"] = (
             "Gmail push not configured. Set PILOT2_GMAIL_MODE=live and "

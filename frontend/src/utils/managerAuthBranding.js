@@ -1,4 +1,4 @@
-import { readCachedPartnerSlugBranding } from './partnerSlugBrandingCache';
+import { readCachedPartnerSlugBranding } from './partnerSlugBrandingCache.js';
 
 export function isHealthFitnessPartner(partnerName, partnerSlug = '') {
   const name = (partnerName || '').toLowerCase();

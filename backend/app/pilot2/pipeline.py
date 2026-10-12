@@ -30,25 +30,17 @@ def next_id(db: Session, model, prefix: str) -> str:
 
 
 def log(db: Session, type_: str, description: str, email_id: Optional[str] = None) -> None:
-    db.add(models.ProcessingLog(
-        timestamp=datetime.now(timezone.utc),
-        type=type_,
-        description=description,
-        email_id=email_id,
-    ))
+    # processing_logs was dropped with the AI inbox product.
+    logger.info("%s: %s", type_, description)
+    del db, email_id
 
 
 def known_intent_names(db: Session) -> list:
     """Every intent the system knows: the seed list plus any the AI has already
     named on an email or template. New intents auto-persist here — once a novel
     intent is stored on an email, it is a known intent for every later email."""
-    names: dict = {name: None for name in config.INTENTS}
-    for source in (models.Email.intent, models.EmailTemplate.intent):
-        for (value,) in db.query(source).filter(source.isnot(None)).distinct():
-            cleaned = (value or "").strip()
-            if cleaned:
-                names.setdefault(cleaned, None)
-    return list(names.keys())
+    del db
+    return list(config.INTENTS)
 
 
 def persist_attachments(db: Session, email_id: str, attachments) -> None:
@@ -122,17 +114,6 @@ def process_incoming(
     Idempotent per Gmail message: the scheduler and the manual poll endpoint
     can race, so a message that is already stored is returned as-is.
     """
-    if gmail_message_id:
-        existing = (
-            db.query(models.Email)
-            .filter(models.Email.gmail_message_id == gmail_message_id)
-            .first()
-        )
-        if existing:
-            if existing.draft_status == "Imported":
-                return run_ai_for_email(db, existing)
-            return existing
-
     from app.automated_person_intake import intake_puregym_roster_message
 
     if intake_puregym_roster_message(
@@ -145,11 +126,19 @@ def process_incoming(
         gmail_message_id=gmail_message_id,
         inbox_email=account_email,
     ):
-        email = models.Email(
-            id=next_id(db, models.Email, "email"),
+        log(
+            db,
+            "automated_intake",
+            f"Roster email → manager request from {from_email}.",
+        )
+        db.commit()
+        from app.partner_requests_realtime import notify_admin_requests_changed
+
+        notify_admin_requests_changed("auto_mail")
+        return models.Email(
+            id="auto-mail",
             account_email=account_email,
             gmail_message_id=gmail_message_id,
-            gmail_thread_id=gmail_thread_id,
             from_name=from_name,
             from_email=from_email,
             subject=subject,
@@ -159,28 +148,8 @@ def process_incoming(
             archived=True,
             read=True,
         )
-        if label_ids is not None:
-            from app.pilot2 import gmail_labels
 
-            flags = gmail_labels.derive_label_flags(
-                label_ids,
-                account_email=account_email,
-                from_email=from_email,
-            )
-            gmail_labels.apply_label_flags(email, flags)
-        db.add(email)
-        log(
-            db,
-            "automated_intake",
-            f"Roster email → manager request from {from_email}.",
-            email.id,
-        )
-        db.commit()
-        db.refresh(email)
-        from app.partner_requests_realtime import notify_admin_requests_changed
-
-        notify_admin_requests_changed("auto_mail")
-        return email
+    raise RuntimeError("AI inbox ingest is disabled; only allowlisted auto-mail is stored.")
 
     email = models.Email(
         id=next_id(db, models.Email, "email"),
@@ -514,6 +483,7 @@ def _sync_states_from_gmail(db: Session, account: models.EmailAccount) -> None:
     """
     from app.pilot2 import gmail_labels
 
+    return
     now = datetime.now(timezone.utc)
     rows = (
         db.query(models.Email)

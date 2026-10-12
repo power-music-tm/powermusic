@@ -40,10 +40,9 @@
     { "source": "/(.*)", "destination": { "service": "frontend" } }
   ],
   "crons": [
-
     {
-      "path": "/api/pilot2/learning/distill",
-      "schedule": "0 2 * * *"
+      "path": "/api/jobs/process-manager-submissions",
+      "schedule": "0 3 * * *"
     },
     {
       "path": "/api/pilot2/gmail/watch/renew",

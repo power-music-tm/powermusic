@@ -1,16 +1,20 @@
 import {
   startOfWeek,
-  endOfWeek,
   subDays,
-  startOfMonth,
-  endOfMonth,
-  startOfYear,
-  endOfYear,
-  startOfDay,
-  endOfDay,
   parseISO,
   format,
 } from 'date-fns';
+
+/** End of "today" in UTC — never chart future empty days for open-ended presets. */
+function endOfTodayUtc(now = new Date()) {
+  return new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999));
+}
+
+function clampEndToToday(end, now = new Date()) {
+  if (!end) return end;
+  const todayEnd = endOfTodayUtc(now);
+  return end.getTime() > todayEnd.getTime() ? todayEnd : end;
+}
 
 /**
  * Calculate the start and end Date objects for a given filter.
@@ -24,26 +28,25 @@ export function calculateDateBounds(type, value) {
       return { start: null, end: null };
     case 'thisWeek': {
       const s = startOfWeek(now, { weekStartsOn: 1 });
-      const e = endOfWeek(now, { weekStartsOn: 1 });
       return {
         start: new Date(Date.UTC(s.getFullYear(), s.getMonth(), s.getDate(), 0, 0, 0, 0)),
-        end: new Date(Date.UTC(e.getFullYear(), e.getMonth(), e.getDate(), 23, 59, 59, 999)),
+        end: endOfTodayUtc(now),
       };
     }
     case 'last30Days': {
       const past = subDays(now, 29);
       return {
         start: new Date(Date.UTC(past.getFullYear(), past.getMonth(), past.getDate(), 0, 0, 0, 0)),
-        end: new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)),
+        end: endOfTodayUtc(now),
       };
     }
     case 'thisMonth': {
       const y = now.getFullYear();
       const m = now.getMonth();
-      const lastDay = new Date(y, m + 1, 0).getDate();
       return {
         start: new Date(Date.UTC(y, m, 1, 0, 0, 0, 0)),
-        end: new Date(Date.UTC(y, m, lastDay, 23, 59, 59, 999)),
+        // Through today only — otherwise Oct 13–31 empty space looks like "half data".
+        end: endOfTodayUtc(now),
       };
     }
     case 'month': {
@@ -55,7 +58,7 @@ export function calculateDateBounds(type, value) {
       const lastDay = new Date(y, m + 1, 0).getDate();
       return {
         start: new Date(Date.UTC(y, m, 1, 0, 0, 0, 0)),
-        end: new Date(Date.UTC(y, m, lastDay, 23, 59, 59, 999)),
+        end: clampEndToToday(new Date(Date.UTC(y, m, lastDay, 23, 59, 59, 999)), now),
       };
     }
     case 'year': {
@@ -64,7 +67,7 @@ export function calculateDateBounds(type, value) {
       const y = parseInt(value, 10);
       return {
         start: new Date(Date.UTC(y, 0, 1, 0, 0, 0, 0)),
-        end: new Date(Date.UTC(y, 11, 31, 23, 59, 59, 999)),
+        end: clampEndToToday(new Date(Date.UTC(y, 11, 31, 23, 59, 59, 999)), now),
       };
     }
     case 'custom': {
@@ -74,7 +77,7 @@ export function calculateDateBounds(type, value) {
       const [ey, em, ed] = value.end.split('-').map(Number);
       return {
         start: new Date(Date.UTC(sy, sm - 1, sd, 0, 0, 0, 0)),
-        end: new Date(Date.UTC(ey, em - 1, ed, 23, 59, 59, 999)),
+        end: clampEndToToday(new Date(Date.UTC(ey, em - 1, ed, 23, 59, 59, 999)), now),
       };
     }
     default:

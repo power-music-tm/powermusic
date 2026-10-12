@@ -148,33 +148,10 @@ def _backfill_auto_mail_from_gmail(
 
 def _prefetch_source_emails(
     db: Session, requests: List[models.ManagerRequest],
-) -> Dict[str, models.Email]:
-    """Map request id → source Email row in one/two queries (list path)."""
-    by_req: Dict[str, models.Email] = {}
-    email_ids = [r.source_email_id for r in requests if r.source_email_id]
-    gmail_ids = [
-        r.source_gmail_message_id
-        for r in requests
-        if not r.source_email_id and r.source_gmail_message_id
-    ]
-    by_id: Dict[Any, models.Email] = {}
-    by_gmail: Dict[str, models.Email] = {}
-    if email_ids:
-        for row in db.query(models.Email).filter(models.Email.id.in_(email_ids)).all():
-            by_id[row.id] = row
-    if gmail_ids:
-        for row in (
-            db.query(models.Email)
-            .filter(models.Email.gmail_message_id.in_(gmail_ids))
-            .all()
-        ):
-            by_gmail[row.gmail_message_id] = row
-    for req in requests:
-        if req.source_email_id and req.source_email_id in by_id:
-            by_req[req.id] = by_id[req.source_email_id]
-        elif req.source_gmail_message_id and req.source_gmail_message_id in by_gmail:
-            by_req[req.id] = by_gmail[req.source_gmail_message_id]
-    return by_req
+) -> Dict[str, Any]:
+    """AI inbox `emails` table is gone — auto-mail meta lives on the request."""
+    del db, requests
+    return {}
 
 
 def _automated_email_meta(
@@ -194,20 +171,7 @@ def _automated_email_meta(
     """
     from app.intake_persons import get_auto_mail_meta, set_auto_mail_meta
 
-    if email_row is None:
-        if req.source_email_id:
-            email_row = (
-                db.query(models.Email)
-                .filter(models.Email.id == req.source_email_id)
-                .first()
-            )
-        elif req.source_gmail_message_id:
-            email_row = (
-                db.query(models.Email)
-                .filter(models.Email.gmail_message_id == req.source_gmail_message_id)
-                .first()
-            )
-
+    # emails table dropped — do not look up source Email rows.
     meta = get_auto_mail_meta(req)
     inbox_email = (
         (email_row.account_email if email_row else None)

@@ -281,6 +281,16 @@ export const getDashboard = (partnerId, startDate, endDate) => {
   const qs = params.toString();
   return request(`/api/dashboard${qs ? `?${qs}` : ''}`);
 };
+
+/** Fast Overview date-filter refresh (chart + handled counts only). */
+export const getDashboardPeriod = (partnerId, startDate, endDate) => {
+  const params = new URLSearchParams();
+  if (partnerId) params.append('partner_id', partnerId);
+  if (startDate) params.append('start_date', startDate);
+  if (endDate) params.append('end_date', endDate);
+  const qs = params.toString();
+  return request(`/api/dashboard/period${qs ? `?${qs}` : ''}`);
+};
 export const getPilot2Overview = () => request('/api/pilot2/overview');
 export const getNewRequestsPage = (partnerId = '') => {
   const query = partnerId ? `?partner_id=${encodeURIComponent(partnerId)}` : '';

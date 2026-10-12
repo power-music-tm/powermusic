@@ -93,33 +93,8 @@ def import_message(
     *,
     queue_ai: bool = True,
 ) -> Optional[models.Email]:
-    """Idempotent fast import — AI runs separately when queue_ai=True."""
-    existing = (
-        db.query(models.Email)
-        .filter(models.Email.gmail_message_id == message.gmail_message_id)
-        .first()
-    )
-    if existing:
-        flags = gmail_labels.derive_label_flags(
-            message.label_ids,
-            account_email=account.email,
-            from_email=message.from_email,
-        )
-        gmail_labels.apply_label_flags(existing, flags)
-        return existing
-
-    # Gmail also echoes back messages Andrea sent from this app (SENT label
-    # arrives via history sync). We record the outbound copy on the original
-    # inbound row's `sent_gmail_message_id` at send-time, so we can suppress
-    # the reimport here instead of creating a duplicate row for her own send.
-    sent_dupe = (
-        db.query(models.Email)
-        .filter(models.Email.sent_gmail_message_id == message.gmail_message_id)
-        .first()
-    )
-    if sent_dupe:
-        return sent_dupe
-
+    """Roster intake only — AI inbox rows are no longer persisted."""
+    del queue_ai
     if intake_puregym_roster_message(
         db,
         from_email=message.from_email,
@@ -136,60 +111,8 @@ def import_message(
         notify_admin_requests_changed("auto_mail")
         return None
 
-    if getattr(account, "roster_only", True):
-        # Dedicated roster inboxes do not persist non-roster emails or attachments into emails/email_attachments
-        return None
-
-    if _should_skip_import(db, account, message):
-        return None
-
-    rules = ignore_list.load_rules_for_inbox(db, account.email)
-    if ignore_list.is_message_ignored(
-        message.from_email,
-        account.email,
-        rules,
-        original_from_email=message.original_from_email,
-    ):
-        return None
-
-    flags = gmail_labels.derive_label_flags(
-        message.label_ids,
-        account_email=account.email,
-        from_email=message.from_email,
-    )
-    ai = queue_ai and _eligible_for_ai(db, account, message)
-
-    email = models.Email(
-        id=pipeline.next_id(db, models.Email, "email"),
-        account_email=account.email,
-        gmail_message_id=message.gmail_message_id,
-        gmail_thread_id=message.gmail_thread_id,
-        from_name=message.from_name,
-        from_email=message.from_email,
-        to_emails=list(message.to_emails or []),
-        cc_emails=list(message.cc_emails or []),
-        subject=message.subject,
-        body=message.body,
-        html_body=message.html_body,
-        snippet=message.snippet,
-        received_at=message.received_at,
-        message_id_header=message.message_id_header,
-        in_reply_to_header=message.in_reply_to_header,
-        references_header=message.references_header,
-        is_forward=message.is_forward,
-        forwarded_by_name=message.forwarded_by_name,
-        forwarded_by_email=message.forwarded_by_email,
-        original_from_name=message.original_from_name,
-        original_from_email=message.original_from_email,
-        draft_status="Imported" if ai else "No Draft",
-        **flags,
-    )
-    gmail_labels.apply_label_flags(email, flags)
-    db.add(email)
-    db.flush()
-    pipeline.persist_attachments(db, email.id, message.attachments)
-
-    return email
+    # Non-roster mail is ignored. The AI inbox / emails table was removed.
+    return None
 
 
 def run_backfill(
@@ -527,7 +450,6 @@ def _apply_history_record(
     record: dict,
 ) -> int:
     applied = 0
-    now = datetime.now(timezone.utc)
 
     for item in record.get("messagesAdded", []) or []:
         ref = item.get("message") or {}
@@ -541,18 +463,12 @@ def _apply_history_record(
             continue
         if message is None:
             continue
-        before = (
-            db.query(models.Email)
-            .filter(models.Email.gmail_message_id == message_id)
-            .count()
-        )
         from app.processed_gmail_messages import is_gmail_message_processed
         if is_gmail_message_processed(db, message_id):
             continue
         try:
             import_message(db, account, message, queue_ai=True)
-            if before == 0:
-                applied += 1
+            applied += 1
         except Exception:
             logger.exception("History import failed for message %s in account %s", message_id, account.email)
             try:
@@ -561,123 +477,13 @@ def _apply_history_record(
                 pass
             continue
 
-    for item in record.get("labelsAdded", []) or []:
-        applied += _apply_label_change(db, account, item, added=item.get("labelIds") or [])
-
-    for item in record.get("labelsRemoved", []) or []:
-        applied += _apply_label_change(
-            db, account, item, removed=item.get("labelIds") or []
-        )
-
-    for item in record.get("messagesDeleted", []) or []:
-        ref = item.get("message") or {}
-        message_id = ref.get("id")
-        if not message_id:
-            continue
-        row = (
-            db.query(models.Email)
-            .filter(models.Email.gmail_message_id == message_id)
-            .first()
-        )
-        if row:
-            row.deleted = True
-            row.deleted_at = now
-            applied += 1
-
     return applied
 
 
-def _apply_label_change(
-    db: Session,
-    account: models.EmailAccount,
-    item: dict,
-    *,
-    added: list | None = None,
-    removed: list | None = None,
-) -> int:
-    ref = item.get("message") or {}
-    message_id = ref.get("id")
-    if not message_id:
-        return 0
-    now = datetime.now(timezone.utc)
-    row = (
-        db.query(models.Email)
-        .filter(
-            models.Email.gmail_message_id == message_id,
-            models.Email.account_email == account.email,
-        )
-        .first()
-    )
-    if row is None:
-        try:
-            message = gmail.get_message(account, message_id)
-        except Exception:
-            return 0
-        if message is None:
-            return 0
-        row = import_message(db, account, message, queue_ai=False)
-        if row is None:
-            return 0
-    merged = gmail_labels.merge_label_delta(
-        row.gmail_label_ids,
-        added=added,
-        removed=removed,
-    )
-    flags = gmail_labels.derive_label_flags(
-        merged,
-        account_email=account.email,
-        from_email=row.from_email,
-    )
-    gmail_labels.apply_label_flags(row, flags, now=now)
-    return 1
-
-
-_ai_batch_lock = threading.Lock()
-
-
 def process_ai_batch(db: Session, *, deadline: Optional[float] = None) -> int:
-    """Drain the AI queue: classify + compose imported messages.
-
-    The "queue" is just the emails in Imported/Processing/Drafting state; this
-    drains up to AI_BATCH_SIZE of them. `deadline` (a time.monotonic() value)
-    time-boxes the drain so it can run inside the push webhook without ever
-    blowing the serverless timeout — whatever is left stays queued and drains on
-    the next push or poll. Also reclaims rows orphaned by an interrupted run
-    (the lock guarantees one batch per process, so a committed Processing/
-    Drafting row seen here was interrupted and must be retried).
-    """
-    if not _ai_batch_lock.acquire(blocking=False):
-        return 0
-    try:
-        rows = (
-            db.query(models.Email)
-            .filter(models.Email.draft_status.in_(["Imported", "Processing", "Drafting"]))
-            .order_by(models.Email.received_at.asc())
-            .limit(config.AI_BATCH_SIZE)
-            .all()
-        )
-        processed = 0
-        for email in rows:
-            if deadline is not None and time.monotonic() >= deadline:
-                logger.info("AI batch hit time budget after %d emails; rest stay queued", processed)
-                break
-            email.draft_status = "Processing"
-            db.commit()
-            try:
-                pipeline.run_ai_for_email(db, email)
-                processed += 1
-            except Exception:
-                db.rollback()
-                email = db.query(models.Email).filter(models.Email.id == email.id).first()
-                if email:
-                    email.draft_status = "Flagged"
-                    email.flagged = True
-                    email.flag_reason = "AI processing failed"
-                    db.commit()
-                logger.exception("AI batch failed for %s", email.id if email else "?")
-        return processed
-    finally:
-        _ai_batch_lock.release()
+    """AI classify/compose was removed with the inbox product."""
+    del db, deadline
+    return 0
 
 
 # ── Gmail push (watch) lifecycle ─────────────────────────────

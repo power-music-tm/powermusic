@@ -76,19 +76,13 @@ def is_email_ignored(email: models.Email, rules: Iterable[models.EmailIgnoreRule
 
 
 def load_rules_for_inbox(db: Session, account_email: str) -> List[models.EmailIgnoreRule]:
-    return (
-        db.query(models.EmailIgnoreRule)
-        .filter(models.EmailIgnoreRule.account_email == account_email)
-        .order_by(models.EmailIgnoreRule.created_at.desc())
-        .all()
-    )
+    del db, account_email
+    return []
 
 
 def load_rules_grouped(db: Session) -> dict[str, List[models.EmailIgnoreRule]]:
-    grouped: dict[str, List[models.EmailIgnoreRule]] = {}
-    for rule in db.query(models.EmailIgnoreRule).all():
-        grouped.setdefault(rule.account_email, []).append(rule)
-    return grouped
+    del db
+    return {}
 
 
 def filter_emails_by_ignore_list(
@@ -110,6 +104,8 @@ def count_inbox_tab_emails(
     account_emails: Optional[Iterable[str]] = None,
 ) -> int:
     """Emails on the Inbox tab in Email responses (per-inbox rules, summed when scoped)."""
+    del db, account_emails
+    return 0
     visible = models.Email.draft_status.notin_(["Ignored", "Imported", "Processing"])
     query = (
         db.query(models.Email)
@@ -130,6 +126,8 @@ def count_inbox_tab_emails(
 
 def list_flagged_workspace_emails(db: Session) -> List[models.Email]:
     """Flagged emails visible in Email responses (workspace + flagged tab rules)."""
+    del db
+    return []
     visible = models.Email.draft_status.notin_(["Ignored", "Imported", "Processing"])
     rows = (
         db.query(models.Email)

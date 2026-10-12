@@ -1,4 +1,4 @@
-import { normalizeManagerEmail } from './managerAuth';
+import { normalizeManagerEmail } from './managerAuth.js';
 
 const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 const HTML_TAG = /<[^>]+>/;

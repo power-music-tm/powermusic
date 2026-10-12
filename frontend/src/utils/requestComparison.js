@@ -1,4 +1,4 @@
-import { TAG_AUTO_MAIL, TAG_PARTNER_REQUEST, TAG_SENT_BY_ADMIN } from './requestTags';
+import { TAG_AUTO_MAIL, TAG_PARTNER_REQUEST, TAG_SENT_BY_ADMIN } from './requestTags.js';
 
 export function hasDiffs(match) {
   return Boolean(match?.fields?.some((field) => field.status === 'differs'));

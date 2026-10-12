@@ -64,6 +64,9 @@ Return ONLY a JSON object:
 
 
 def run_distillation(db: Session) -> DistillResult:
+    del db
+    return DistillResult()
+
     result = DistillResult()
 
     edits = (

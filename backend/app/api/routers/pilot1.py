@@ -682,6 +682,27 @@ def get_dashboard(
         "insights": insights,
     }
 
+
+@router.get("/api/dashboard/period", response_model=schemas.DashboardInsightsOut)
+def get_dashboard_period(
+    partner_id: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    db: Session = Depends(get_db),
+    _admin=Depends(require_admin),
+):
+    """Fast date-filter refresh: received/handled trend only (no pending serialize)."""
+    return build_dashboard_insights(
+        db,
+        pending=[],
+        pending_payloads=[],
+        partner_id=partner_id,
+        start_date=start_date,
+        end_date=end_date,
+        period_only=True,
+    )
+
+
 @router.get("/api/activity", response_model=List[schemas.ActivityOut])
 def get_activity(db: Session = Depends(get_db), _admin=Depends(require_admin)):
     return list_partner_activity(db, limit=10)

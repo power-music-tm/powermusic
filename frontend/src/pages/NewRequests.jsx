@@ -919,6 +919,20 @@ export default function Requests() {
     filterStatus !== 'All',
   ].filter(Boolean).length;
 
+  const emptyListMessage = (() => {
+    const actionLabel = actionTab === 'All' ? '' : `${actionTab.toLowerCase()} `;
+    if (newRequests.length === 0) {
+      return `No ${actionLabel}requests waiting for ${partnerLabel}.`;
+    }
+    if (actionTab !== 'All' && actionTabRows.length === 0) {
+      return `No ${actionLabel}requests waiting.`;
+    }
+    if (activeFilterCount > 0 || searchQuery.trim()) {
+      return `No ${actionLabel}requests matching your filters.`;
+    }
+    return `No ${actionLabel}requests to show.`;
+  })();
+
   // ── Manual form submit ──
   const isModalFormValid = personValidation.ok;
 
@@ -1624,7 +1638,7 @@ export default function Requests() {
       <NewRequestsMobileList
         rows={pageItems}
         loading={tableLoading}
-        emptyMessage={`No ${actionTab === 'All' ? '' : `${actionTab.toLowerCase()} `}requests matching your filters.`}
+        emptyMessage={emptyListMessage}
         onOpenRequest={handleOpenRequest}
         onMarkAs={(row) => {
           if (row.duplicateGroupId) {
@@ -1644,7 +1658,7 @@ export default function Requests() {
           rows={pageItems}
           onRowClick={handleOpenRequest}
           getRowClassName={getRequestRowClassName}
-          emptyMessage={`No ${actionTab === 'All' ? '' : `${actionTab.toLowerCase()} `}requests matching your filters.`}
+          emptyMessage={emptyListMessage}
           compact
           centerHeaders
           accent

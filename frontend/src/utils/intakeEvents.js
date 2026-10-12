@@ -1,7 +1,7 @@
-import { formatPersonFields, formatPersonName } from './personDisplay';
-import { formatAdminDateTime } from './requestDisplayId';
-import { formatAttributedManagerFields } from './manualEntry';
-import { getPartnerTerminology } from './managerAuthBranding';
+import { formatPersonFields, formatPersonName } from './personDisplay.js';
+import { formatAdminDateTime } from './requestDisplayId.js';
+import { formatAttributedManagerFields } from './manualEntry.js';
+import { getPartnerTerminology } from './managerAuthBranding.js';
 
 export const INTAKE_EVENT_MANAGER = 'manager';
 export const INTAKE_EVENT_ADMIN = 'admin';

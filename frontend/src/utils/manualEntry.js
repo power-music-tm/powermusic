@@ -1,9 +1,9 @@
-import { getPartnerTerminology } from './managerAuthBranding';
+import { getPartnerTerminology } from './managerAuthBranding.js';
 import {
   isAwaitingManagerSubmission,
   TAG_PARTNER_REQUEST,
   TAG_VERIFIED,
-} from './requestTags';
+} from './requestTags.js';
 
 export const AWAITING_MANAGER_LABEL = 'Auto Email Request';
 export const AWAITING_MANAGER_HINT = '';

@@ -90,17 +90,11 @@ def start() -> None:
         "coalesce": True,
         "misfire_grace_time": 60,
     }
-    if config.GMAIL_MODE == "live":
+        if config.GMAIL_MODE == "live":
         _scheduler.add_job(
             _poll_job,
             "interval",
             seconds=config.POLL_INTERVAL_SECONDS,
-            **job_defaults,
-        )
-        _scheduler.add_job(
-            _ai_job,
-            "interval",
-            seconds=config.AI_JOB_INTERVAL_SECONDS,
             **job_defaults,
         )
         # Keep Gmail push alive: watches expire after 7 days, so re-arm daily.
@@ -112,13 +106,6 @@ def start() -> None:
                 minute=0,
                 **job_defaults,
             )
-    _scheduler.add_job(
-        _distill_job,
-        "cron",
-        hour=config.DISTILL_HOUR_UTC,
-        minute=0,
-        **job_defaults,
-    )
     _scheduler.start()
 
 

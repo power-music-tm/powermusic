@@ -12,7 +12,12 @@ from app import models, schemas
 from app.intake_persons import bootstrap_intake_persons, get_auto_mail_snapshot, get_partner_snapshot
 from app.manager_request_tags import TAG_ALREADY_EXISTS
 from app.person_match import person_from_model, same_person, same_person_for_partner
-from app.duplicate_matching import is_healthtech_partner, is_gll_partner, are_requests_dismissed
+from app.duplicate_matching import (
+    are_requests_dismissed,
+    get_all_dismissed_pairs,
+    is_gll_partner,
+    is_healthtech_partner,
+)
 
 # Only true Directory ledger outcomes. GroupResolved (and similar) are
 # historical merge inputs and must never appear as Directory people.
@@ -181,16 +186,23 @@ def _dedupe_current_outcome(
     *,
     partner_id: Optional[str] = None,
     db: Optional[Session] = None,
+    dismissed_set: Optional[set] = None,
 ) -> List[models.ManagerRequest]:
     is_ht = is_healthtech_partner(db, partner_id) if db and partner_id else False
     gll = _is_gll(db, partner_id)
+    # One round-trip for dismissed pairs — per-pair DB lookups dominate Overview latency.
+    if dismissed_set is None and db is not None:
+        dismissed_set = get_all_dismissed_pairs(db)
     roster: List[models.ManagerRequest] = []
     represented: List[models.ManagerRequest] = []
 
     for row in sorted(rows, key=_handled_at_sort_key, reverse=True):
         if any(
             same_person_for_partner(row, prior, is_healthtech=is_ht, is_gll=gll)
-            and not (db and are_requests_dismissed(db, row.id, prior.id))
+            and not (
+                db
+                and are_requests_dismissed(db, row.id, prior.id, dismissed_set=dismissed_set)
+            )
             for prior in represented
         ):
             continue
@@ -200,8 +212,16 @@ def _dedupe_current_outcome(
     return roster
 
 
-def _dedupe_latest_roster(rows: List[models.ManagerRequest], *, partner_id: Optional[str] = None, db: Optional[Session] = None) -> List[models.ManagerRequest]:
-    return _dedupe_current_outcome(rows, "Added", partner_id=partner_id, db=db)
+def _dedupe_latest_roster(
+    rows: List[models.ManagerRequest],
+    *,
+    partner_id: Optional[str] = None,
+    db: Optional[Session] = None,
+    dismissed_set: Optional[set] = None,
+) -> List[models.ManagerRequest]:
+    return _dedupe_current_outcome(
+        rows, "Added", partner_id=partner_id, db=db, dismissed_set=dismissed_set
+    )
 
 
 def find_latest_directory_match(
@@ -300,15 +320,26 @@ def roster_snapshot_rows(
     return _dedupe_latest_roster(rows, partner_id=partner_id, db=db)[:limit]
 
 
-def _dedupe_latest_person(rows: List[models.ManagerRequest], *, partner_id: Optional[str] = None, db: Optional[Session] = None) -> List[models.ManagerRequest]:
+def _dedupe_latest_person(
+    rows: List[models.ManagerRequest],
+    *,
+    partner_id: Optional[str] = None,
+    db: Optional[Session] = None,
+    dismissed_set: Optional[set] = None,
+) -> List[models.ManagerRequest]:
     """Keep the most recent handled row per person, regardless of Added/Removed."""
     is_ht = is_healthtech_partner(db, partner_id) if db and partner_id else False
     gll = _is_gll(db, partner_id)
+    if dismissed_set is None and db is not None:
+        dismissed_set = get_all_dismissed_pairs(db)
     represented: List[models.ManagerRequest] = []
     for row in sorted(rows, key=_handled_at_sort_key, reverse=True):
         if any(
             same_person_for_partner(row, prior, is_healthtech=is_ht, is_gll=gll)
-            and not (db and are_requests_dismissed(db, row.id, prior.id))
+            and not (
+                db
+                and are_requests_dismissed(db, row.id, prior.id, dismissed_set=dismissed_set)
+            )
             for prior in represented
         ):
             continue
@@ -321,6 +352,7 @@ def directory_ledger_rows(
     *,
     limit: int = 1000,
     partner_id: Optional[str] = None,
+    dismissed_set: Optional[set] = None,
 ) -> List[models.ManagerRequest]:
     """Active Directory ledger: latest non-archived Added state per person."""
     query = db.query(models.ManagerRequest).filter(
@@ -331,7 +363,9 @@ def directory_ledger_rows(
     if partner_id:
         query = query.filter(models.ManagerRequest.partner_id == partner_id)
     rows = query.order_by(models.ManagerRequest.handled_at.desc()).limit(max(limit * 4, limit)).all()
-    return _dedupe_latest_roster(rows, partner_id=partner_id, db=db)[:limit]
+    return _dedupe_latest_roster(
+        rows, partner_id=partner_id, db=db, dismissed_set=dismissed_set
+    )[:limit]
 
 
 def removed_snapshot_rows(
@@ -356,6 +390,7 @@ def archived_snapshot_rows(
     *,
     limit: int = 1000,
     partner_id: Optional[str] = None,
+    dismissed_set: Optional[set] = None,
 ) -> List[models.ManagerRequest]:
     """People currently archived or removed from the directory."""
     query = db.query(models.ManagerRequest).filter(
@@ -369,7 +404,9 @@ def archived_snapshot_rows(
     if partner_id:
         query = query.filter(models.ManagerRequest.partner_id == partner_id)
     rows = query.order_by(models.ManagerRequest.handled_at.desc(), models.ManagerRequest.archived_at.desc()).limit(max(limit * 4, limit)).all()
-    return _dedupe_latest_person(rows, partner_id=partner_id, db=db)[:limit]
+    return _dedupe_latest_person(
+        rows, partner_id=partner_id, db=db, dismissed_set=dismissed_set
+    )[:limit]
 
 
 def active_roster_rows(db: Session, *, partner_id: Optional[str] = None) -> List[models.ManagerRequest]:

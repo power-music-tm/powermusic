@@ -12,9 +12,8 @@ from app import models
 from app.directory_person_match import (
     archived_snapshot_rows,
     directory_ledger_rows,
-    removed_snapshot_rows,
-    roster_snapshot_rows,
 )
+from app.duplicate_matching import get_all_dismissed_pairs
 from app.manager_request_tags import (
     TAG_ALREADY_EXISTS,
     TAG_AUTO_MAIL,
@@ -30,6 +29,23 @@ def _day_start(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+def _month_span(start: date, end: date) -> int:
+    return (end.year - start.year) * 12 + (end.month - start.month) + 1
+
+
+def trend_granularity_for_span(days_delta: int, month_span: int = 1) -> str:
+    """Bucket size for Request flow. Multi-month custom ranges use months, not empty weeks."""
+    days = max(int(days_delta), 1)
+    months = max(int(month_span), 1)
+    if months >= 24 or days > 730:
+        return "yearly"
+    if months >= 3 or days > 90:
+        return "monthly"
+    if days > 35:
+        return "weekly"
+    return "daily"
+
+
 def build_dashboard_insights(
     db: Session,
     *,
@@ -38,31 +54,60 @@ def build_dashboard_insights(
     partner_id: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    period_only: bool = False,
 ) -> dict:
-    pending_add = sum(1 for row in pending if (row.action or "").lower() == "add")
-    pending_remove = sum(1 for row in pending if (row.action or "").lower() == "remove")
+    """Build Overview insights.
 
-    # Prefer API payloads so "already exists" matches New requests (includes
-    # directory-derived tags, not only rows that stored the tag in the DB).
-    tag_rows = pending_payloads if pending_payloads is not None else [
-        {"tags": list(row.tags or [])} for row in pending
-    ]
-    duplicates = sum(1 for row in tag_rows if TAG_ALREADY_EXISTS in (row.get("tags") or []))
-    auto_mail = sum(1 for row in tag_rows if TAG_AUTO_MAIL in (row.get("tags") or []))
-    partner_req = sum(1 for row in tag_rows if TAG_PARTNER_REQUEST in (row.get("tags") or []))
-    awaiting_partner = sum(
-        1
-        for row in tag_rows
-        if TAG_UNVERIFIED in (row.get("tags") or [])
-        and TAG_AUTO_MAIL in (row.get("tags") or [])
-        and TAG_PARTNER_REQUEST not in (row.get("tags") or [])
-        and TAG_VERIFIED not in (row.get("tags") or [])
-    )
+    period_only=True skips pending-tag + directory work (date-filter refreshes).
+    """
+    if period_only:
+        pending_add = 0
+        pending_remove = 0
+        duplicates = 0
+        auto_mail = 0
+        partner_req = 0
+        awaiting_partner = 0
+        users_in_ledger = 0
+        users_archived = 0
+        users_added = 0
+        users_removed = 0
+    else:
+        pending_add = sum(1 for row in pending if (row.action or "").lower() == "add")
+        pending_remove = sum(1 for row in pending if (row.action or "").lower() == "remove")
 
-    users_in_ledger = len(directory_ledger_rows(db, limit=10_000, partner_id=partner_id))
-    users_archived = len(archived_snapshot_rows(db, limit=10_000, partner_id=partner_id))
-    users_added = len(roster_snapshot_rows(db, limit=10_000, partner_id=partner_id))
-    users_removed = len(removed_snapshot_rows(db, limit=10_000, partner_id=partner_id))
+        # Prefer API payloads so "already exists" matches New requests (includes
+        # directory-derived tags, not only rows that stored the tag in the DB).
+        tag_rows = pending_payloads if pending_payloads is not None else [
+            {"tags": list(row.tags or [])} for row in pending
+        ]
+        duplicates = sum(1 for row in tag_rows if TAG_ALREADY_EXISTS in (row.get("tags") or []))
+        auto_mail = sum(1 for row in tag_rows if TAG_AUTO_MAIL in (row.get("tags") or []))
+        partner_req = sum(1 for row in tag_rows if TAG_PARTNER_REQUEST in (row.get("tags") or []))
+        awaiting_partner = sum(
+            1
+            for row in tag_rows
+            if TAG_UNVERIFIED in (row.get("tags") or [])
+            and TAG_AUTO_MAIL in (row.get("tags") or [])
+            and TAG_PARTNER_REQUEST not in (row.get("tags") or [])
+            and TAG_VERIFIED not in (row.get("tags") or [])
+        )
+
+        # Directory KPIs are filter-independent but were the Overview bottleneck:
+        # each snapshot dedupe used to hit the DB once per person-pair.
+        dismissed_set = get_all_dismissed_pairs(db)
+        users_in_ledger = len(
+            directory_ledger_rows(
+                db, limit=10_000, partner_id=partner_id, dismissed_set=dismissed_set
+            )
+        )
+        users_archived = len(
+            archived_snapshot_rows(
+                db, limit=10_000, partner_id=partner_id, dismissed_set=dismissed_set
+            )
+        )
+        # Not shown on Overview — skip the extra roster/removed scans on every filter change.
+        users_added = 0
+        users_removed = 0
 
     now = datetime.now(timezone.utc)
     is_custom_or_filtered = bool(start_date and end_date)
@@ -70,6 +115,9 @@ def build_dashboard_insights(
     if is_custom_or_filtered:
         filter_start = datetime.fromisoformat(start_date.replace("Z", "+00:00")).astimezone(timezone.utc)
         filter_end = datetime.fromisoformat(end_date.replace("Z", "+00:00")).astimezone(timezone.utc)
+        # Never extend past "now" — avoids empty future days/months on the right of the chart.
+        if filter_end > now:
+            filter_end = now
     else:
         # "All Time": find earliest received_at or handled_at in DB
         min_recv_q = db.query(func.min(models.ManagerRequest.received_at))
@@ -89,15 +137,7 @@ def build_dashboard_insights(
             filter_start = _day_start(now) - timedelta(days=29)
         filter_end = now
 
-    received_query = db.query(func.count(models.ManagerRequest.id)).filter(
-        models.ManagerRequest.received_at >= filter_start,
-        models.ManagerRequest.received_at <= filter_end,
-    )
-    handled_query = db.query(func.count(models.ManagerRequest.id)).filter(
-        models.ManagerRequest.status == "handled",
-        models.ManagerRequest.handled_at >= filter_start,
-        models.ManagerRequest.handled_at <= filter_end,
-    )
+    # Timestamps only — counts come from len(); avoids 2 extra ~300ms round-trips.
     received_rows_query = db.query(models.ManagerRequest.received_at).filter(
         models.ManagerRequest.received_at >= filter_start,
         models.ManagerRequest.received_at <= filter_end,
@@ -109,15 +149,13 @@ def build_dashboard_insights(
     )
 
     if partner_id:
-        received_query = received_query.filter(models.ManagerRequest.partner_id == partner_id)
-        handled_query = handled_query.filter(models.ManagerRequest.partner_id == partner_id)
         received_rows_query = received_rows_query.filter(models.ManagerRequest.partner_id == partner_id)
         handled_rows_query = handled_rows_query.filter(models.ManagerRequest.partner_id == partner_id)
 
-    received_in_period = received_query.scalar() or 0
-    handled_in_period = handled_query.scalar() or 0
     received_rows = received_rows_query.all()
     handled_rows = handled_rows_query.all()
+    received_in_period = len(received_rows)
+    handled_in_period = len(handled_rows)
 
     # Collect UTC datetimes for received and handled
     received_timestamps: List[datetime] = []
@@ -135,12 +173,12 @@ def build_dashboard_insights(
             handled_timestamps.append(ts.astimezone(timezone.utc))
 
     days_delta = max((filter_end.date() - filter_start.date()).days + 1, 1)
+    month_span = _month_span(filter_start.date(), filter_end.date())
+    granularity = trend_granularity_for_span(days_delta, month_span)
 
     weekly_trend = []
-    granularity = "daily"
 
-    if days_delta <= 35:
-        granularity = "daily"
+    if granularity == "daily":
         received_by_day: dict[str, int] = {}
         handled_by_day: dict[str, int] = {}
         for ts in received_timestamps:
@@ -163,8 +201,7 @@ def build_dashboard_insights(
                 }
             )
 
-    elif 36 <= days_delta <= 120:
-        granularity = "weekly"
+    elif granularity == "weekly":
         # Bucket by weeks (Monday through Sunday)
         cur_week_start = filter_start.date() - timedelta(days=filter_start.date().weekday())
         while cur_week_start <= filter_end.date():
@@ -191,8 +228,7 @@ def build_dashboard_insights(
             )
             cur_week_start += timedelta(days=7)
 
-    elif 121 <= days_delta <= 730:
-        granularity = "monthly"
+    elif granularity == "monthly":
         cur_year, cur_month = filter_start.year, filter_start.month
         end_year, end_month = filter_end.year, filter_end.month
         is_multi_year = (filter_start.year != filter_end.year)
