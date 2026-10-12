@@ -10,8 +10,12 @@ const MIN_CLUB_LOCATION_LENGTH = 2;
 
 /** @type {string[] | null} */
 let cachedManagerDomains = null;
+/** @type {string | null} */
+let cachedManagerDomainsKey = null;
 /** @type {Promise<string[]> | null} */
 let managerDomainsLoadPromise = null;
+/** @type {string | null} */
+let managerDomainsLoadKey = null;
 
 /** Normalize API domain list to `@example.com` suffixes. */
 export function normalizeAllowedDomainSuffixes(domains) {
@@ -27,30 +31,56 @@ export function getCachedManagerAllowedDomains() {
 
 export function clearManagerAllowedDomainsCache() {
   cachedManagerDomains = null;
+  cachedManagerDomainsKey = null;
   managerDomainsLoadPromise = null;
+  managerDomainsLoadKey = null;
 }
 
 export function setManagerAllowedDomainsCache(domains) {
   cachedManagerDomains = normalizeAllowedDomainSuffixes(domains);
+  cachedManagerDomainsKey = null;
   return cachedManagerDomains;
 }
 
-/** Fetch allowed manager domains from the API (cached). */
-export async function ensureManagerAllowedDomains({ force = false } = {}) {
-  if (!force && cachedManagerDomains) {
+/**
+ * Fetch allowed manager domains scoped to an email and/or partner slug.
+ * Unscoped global dumps are no longer supported by the API.
+ */
+export async function ensureManagerAllowedDomains({
+  force = false,
+  email = null,
+  partnerSlug = null,
+} = {}) {
+  const addr = (email || '').trim().toLowerCase();
+  const slug = (partnerSlug || '').trim().toLowerCase();
+  if (!addr && !slug) {
+    throw new Error(MANAGER_DOMAINS_UNAVAILABLE_MESSAGE);
+  }
+
+  const cacheKey = `${slug}|${addr}`;
+  if (!force && cachedManagerDomains && cachedManagerDomainsKey === cacheKey) {
     return cachedManagerDomains;
   }
-  if (!force && managerDomainsLoadPromise) {
+  if (!force && managerDomainsLoadPromise && managerDomainsLoadKey === cacheKey) {
     return managerDomainsLoadPromise;
   }
 
-  managerDomainsLoadPromise = fetchJson('/api/manager/allowed-domains')
+  const params = new URLSearchParams();
+  if (addr) params.set('email', addr);
+  if (slug) params.set('partner_slug', slug);
+
+  managerDomainsLoadKey = cacheKey;
+  managerDomainsLoadPromise = fetchJson(`/api/manager/allowed-domains?${params}`)
     .then((data) => {
       cachedManagerDomains = normalizeAllowedDomainSuffixes(data?.domains);
+      cachedManagerDomainsKey = cacheKey;
       return cachedManagerDomains;
     })
     .catch((err) => {
-      managerDomainsLoadPromise = null;
+      if (managerDomainsLoadKey === cacheKey) {
+        managerDomainsLoadPromise = null;
+        managerDomainsLoadKey = null;
+      }
       throw err;
     });
 

@@ -301,8 +301,9 @@ export default function Signup() {
 
   useEffect(() => {
     let active = true;
-    const fetchGlobal = () => {
-      ensureManagerAllowedDomains({ force: true })
+    // Domains are scoped per email/partner — no global catalog preload.
+    if (partnerSlug) {
+      ensureManagerAllowedDomains({ force: true, partnerSlug })
         .then((domains) => {
           if (!active) return;
           setAllowedDomains(domains);
@@ -311,27 +312,17 @@ export default function Signup() {
         .catch(() => {
           if (!active) return;
           setAllowedDomains(null);
-          setDomainsReady(false);
+          setDomainsReady(Boolean(partnerAllowedDomains?.length));
         });
-    };
-
-    fetchGlobal();
-
-    const handleFocus = () => {
-      if (!partnerSlug && typeof document !== 'undefined' && document.visibilityState === 'visible') {
-        fetchGlobal();
-      }
-    };
-
-    window.addEventListener('focus', handleFocus);
-    document.addEventListener('visibilitychange', handleFocus);
+    } else {
+      setAllowedDomains(null);
+      setDomainsReady(true);
+    }
 
     return () => {
       active = false;
-      window.removeEventListener('focus', handleFocus);
-      document.removeEventListener('visibilitychange', handleFocus);
     };
-  }, [partnerSlug]);
+  }, [partnerSlug, partnerAllowedDomains]);
 
   useEffect(() => {
     if (location.state?.mode === 'signin') {
@@ -551,22 +542,25 @@ export default function Signup() {
       return;
     }
 
-    if (appConfig.enforceDomainCheck && !domainsReady) {
-      setErrorMsg(MANAGER_DOMAINS_UNAVAILABLE_MESSAGE);
-      return;
-    }
-
-    const emailResult = validateManagerEmail(emailGateEmail, {
-      enforceDomain: appConfig.enforceDomainCheck,
-      allowedDomains,
-    });
-    if (!emailResult.ok) {
-      setErrorMsg(emailResult.error);
-      return;
-    }
-
     setEmailGateLoading(true);
     try {
+      let domainsForCheck = allowedDomains;
+      if (appConfig.enforceDomainCheck && !domainsForCheck) {
+        domainsForCheck = await ensureManagerAllowedDomains({
+          force: true,
+          email: emailGateEmail,
+        });
+      }
+
+      const emailResult = validateManagerEmail(emailGateEmail, {
+        enforceDomain: appConfig.enforceDomainCheck,
+        allowedDomains: domainsForCheck,
+      });
+      if (!emailResult.ok) {
+        setErrorMsg(emailResult.error);
+        return;
+      }
+
       const branding = await getPublicPartnerBranding(emailResult.value);
       const slug = partnerSlugFromName(branding?.partnerName);
       if (!slug) {
@@ -848,10 +842,10 @@ export default function Signup() {
   if (!partnerSlug) {
     return (
       <ManagerAuthShell partnerBranding={null}>
-        <h2 className="text-center text-base font-semibold text-[var(--color-text-primary)]">
+        <h2 className="text-base font-semibold text-[var(--color-text-primary)]">
           Enter your work email
         </h2>
-        <p className="mt-1 mb-6 text-center text-sm text-[var(--color-text-secondary)]">
+        <p className="mt-1 mb-6 text-sm text-[var(--color-text-secondary)]">
           Use the email domain your partner has approved for portal access.
         </p>
 
@@ -1111,10 +1105,10 @@ export default function Signup() {
 
     return (
       <ManagerAuthShell partnerBranding={partnerBranding}>
-        <h2 className="text-center text-base font-semibold text-[var(--color-text-primary)]">
+        <h2 className="text-base font-semibold text-[var(--color-text-primary)]">
           {managerAuthHeading(partnerLabel, 'signin', partnerSlug)}
         </h2>
-        <p className="mt-1 mb-6 text-center text-sm text-[var(--color-text-secondary)]">
+        <p className="mt-1 mb-6 text-sm text-[var(--color-text-secondary)]">
           Use the email and password you chose when you signed up.
         </p>
 
@@ -1235,10 +1229,10 @@ export default function Signup() {
 
   return (
     <ManagerAuthShell wide partnerBranding={partnerBranding}>
-      <h2 className="text-center text-base font-semibold text-[var(--color-text-primary)]">
+      <h2 className="text-base font-semibold text-[var(--color-text-primary)]">
         {managerAuthHeading(partnerLabel, 'signup', partnerSlug)}
       </h2>
-      <p className="mt-1 mb-6 text-center text-sm text-[var(--color-text-secondary)]">
+      <p className="mt-1 mb-6 text-sm text-[var(--color-text-secondary)]">
         Fill in your details and choose a password. You may need to confirm your email once.
       </p>
 

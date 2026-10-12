@@ -13,6 +13,8 @@ import {
   PanelLeftClose,
   X,
   Plus,
+  KeyRound,
+  UserRound,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { usePartners } from '../../context/PartnerContext';
@@ -20,6 +22,15 @@ import { useToast } from '../ui/useToast';
 import { Modal, HoverTip, DottedScroll } from '../ui';
 import { clearAdminIntroSeen } from '../admin/AdminPortalIntro';
 import { clearCache } from '../../utils/pilot2Api';
+import { getSupabase } from '../../supabaseClient';
+import {
+  isPasswordStrongEnough,
+  validatePassword,
+  validatePersonName,
+} from '../../utils/managerAuth';
+import { resolveAdminDisplayName } from '../../utils/adminDisplayName';
+import PasswordInput from '../auth/PasswordInput';
+import PasswordRequirements, { PasswordMatchHint } from '../auth/PasswordRequirements';
 
 function partnerInitials(name) {
   const parts = String(name || '')
@@ -208,7 +219,7 @@ export default function Sidebar({
   expanded = true,
   onExpandedChange,
 }) {
-  const { logout, user } = useAuth();
+  const { logout, user, profile, updateDisplayName } = useAuth();
   const { partners, partnerLogos, selectedPartnerId, selectedPartnerLogo, setSelectedPartnerId, partnerLabel, createPartner } = usePartners();
   const { clearToasts, showToast } = useToast();
   const navigate = useNavigate();
@@ -216,6 +227,16 @@ export default function Sidebar({
   const [signingOut, setSigningOut] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const accountRef = useRef(null);
+
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [displayNameDraft, setDisplayNameDraft] = useState('');
+  const [nameError, setNameError] = useState('');
+  const [savingName, setSavingName] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+  const [savingPassword, setSavingPassword] = useState(false);
 
   const [partnerCreateOpen, setPartnerCreateOpen] = useState(false);
   const [partnerCreateName, setPartnerCreateName] = useState('');
@@ -257,11 +278,7 @@ export default function Sidebar({
     }
   };
 
-  const displayName =
-    user?.user_metadata?.full_name
-    || user?.user_metadata?.firstName
-    || user?.email?.split('@')[0]
-    || 'Admin';
+  const displayName = resolveAdminDisplayName(profile, user);
 
   // Mobile drawer always shows full labels; desktop respects expand/collapse.
   const showExpanded = expanded || mobileOpen;
@@ -287,6 +304,137 @@ export default function Sidebar({
   useEffect(() => {
     if (!showExpanded) setMenuOpen(false);
   }, [showExpanded]);
+
+  const resetAccountForm = () => {
+    setDisplayNameDraft((profile?.full_name || '').trim() || '');
+    setNameError('');
+    setSavingName(false);
+    setCurrentPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setPasswordError('');
+    setSavingPassword(false);
+  };
+
+  const openManageAccount = () => {
+    setMenuOpen(false);
+    onMobileClose?.();
+    setNameError('');
+    setSavingName(false);
+    setCurrentPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setPasswordError('');
+    setSavingPassword(false);
+    setDisplayNameDraft((profile?.full_name || '').trim() || '');
+    setAccountOpen(true);
+  };
+
+  const handleSaveDisplayName = async () => {
+    if (savingName) return;
+    setNameError('');
+    const validated = validatePersonName(displayNameDraft, 'Display name');
+    if (!validated.ok) {
+      setNameError(validated.error);
+      return;
+    }
+    if (validated.value === (profile?.full_name || '').trim()) {
+      showToast('Name is already up to date.', 'success');
+      return;
+    }
+
+    setSavingName(true);
+    try {
+      await updateDisplayName(validated.value);
+      showToast('Display name updated.', 'success');
+      setAccountOpen(false);
+    } catch (err) {
+      setNameError(err.message || 'Could not update name. Check that the API is running, then try again.');
+    } finally {
+      setSavingName(false);
+    }
+  };
+
+  const handleChangePassword = async () => {
+    if (savingPassword) return;
+    setPasswordError('');
+
+    if (!currentPassword) {
+      setPasswordError('Enter your current password.');
+      return;
+    }
+    if (!user?.email) {
+      setPasswordError('Could not determine your account email. Sign out and sign in again.');
+      return;
+    }
+    const validated = validatePassword(newPassword, { email: user.email });
+    if (validated.error) {
+      setPasswordError(validated.error);
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError('New passwords do not match.');
+      return;
+    }
+    if (currentPassword === newPassword) {
+      setPasswordError('Choose a new password that is different from your current one.');
+      return;
+    }
+    if (!isPasswordStrongEnough(newPassword, { email: user.email })) {
+      setPasswordError('Please meet all password requirements.');
+      return;
+    }
+
+    const supabase = getSupabase();
+    if (!supabase) {
+      setPasswordError('Authentication is not configured.');
+      return;
+    }
+
+    setSavingPassword(true);
+    try {
+      const { error: reauthError } = await supabase.auth.signInWithPassword({
+        email: user.email,
+        password: currentPassword,
+      });
+      if (reauthError) {
+        setPasswordError('Current password is incorrect.');
+        return;
+      }
+
+      const { error: updateError } = await supabase.auth.updateUser({ password: newPassword });
+      if (updateError) {
+        setPasswordError(updateError.message || 'Could not update password.');
+        return;
+      }
+
+      const email = user.email;
+      // Invalidate every session (this device + others), then force a fresh sign-in.
+      try {
+        await supabase.auth.signOut({ scope: 'global' });
+      } catch {
+        /* local logout below still clears this client */
+      }
+      await logout();
+      clearToasts();
+      setAccountOpen(false);
+      resetAccountForm();
+      // sessionStorage survives auth remounts that wipe React Router location.state
+      sessionStorage.setItem(
+        'adminPasswordUpdated',
+        JSON.stringify({ email: email || '' }),
+      );
+      navigate('/admin/login', {
+        replace: true,
+        state: { passwordUpdated: true, email },
+      });
+      return;
+    } catch (err) {
+      setPasswordError(err.message || 'Could not update password.');
+    } finally {
+      setSavingPassword(false);
+    }
+  };
 
   const handleConfirmLogout = async () => {
     if (signingOut) return;
@@ -588,6 +736,15 @@ export default function Sidebar({
                 <button
                   type="button"
                   role="menuitem"
+                  onClick={openManageAccount}
+                  className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-sm font-medium text-[var(--color-text-primary)] transition-colors hover:bg-[var(--color-surface-highlight)] focus:outline-none focus-visible:bg-[var(--color-surface-highlight)]"
+                >
+                  <UserRound className="h-4 w-4 shrink-0 text-[var(--color-text-secondary)]" aria-hidden="true" />
+                  Manage account
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
                   onClick={() => {
                     setMenuOpen(false);
                     onMobileClose?.();
@@ -603,6 +760,189 @@ export default function Sidebar({
           </div>
         </div>
       </aside>
+
+      <Modal
+        isOpen={accountOpen}
+        onClose={() => {
+          if (savingPassword || savingName) return;
+          setAccountOpen(false);
+          resetAccountForm();
+        }}
+        title="Manage account"
+        footer={
+          <button
+            type="button"
+            onClick={() => {
+              if (savingPassword || savingName) return;
+              setAccountOpen(false);
+              resetAccountForm();
+            }}
+            disabled={savingPassword || savingName}
+            className="rounded-lg border border-[var(--color-border-default)] px-4 py-2 text-sm font-semibold text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-highlight)] disabled:opacity-50"
+          >
+            Close
+          </button>
+        }
+      >
+        <div className="space-y-6">
+          <section className="space-y-4">
+            <div>
+              <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">Profile</h3>
+              <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
+                Update how your name appears in the admin dashboard.
+              </p>
+            </div>
+            {user?.email && (
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-[var(--color-text-primary)]">
+                  Email
+                </label>
+                <input
+                  type="email"
+                  value={user.email}
+                  disabled
+                  className="w-full h-11 px-3.5 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-surface-panel)] text-sm text-[var(--color-text-secondary)]"
+                />
+              </div>
+            )}
+            <div>
+              <label htmlFor="admin-display-name" className="mb-1.5 block text-sm font-medium text-[var(--color-text-primary)]">
+                Display name
+              </label>
+              <input
+                id="admin-display-name"
+                name="display-name"
+                type="text"
+                autoComplete="name"
+                value={displayNameDraft}
+                onChange={(e) => {
+                  setDisplayNameDraft(e.target.value);
+                  if (nameError) setNameError('');
+                }}
+                disabled={savingName || savingPassword}
+                className="w-full h-11 px-3.5 rounded-lg border border-[var(--color-border-default)] bg-white text-sm text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] focus:outline-none focus-visible:border-[var(--color-brand-primary)] focus-visible:ring-2 focus-visible:ring-[var(--color-brand-primary)]/20 disabled:opacity-60"
+                placeholder="Your name"
+              />
+            </div>
+            {nameError && (
+              <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+                {nameError}
+              </p>
+            )}
+            <button
+              type="button"
+              onClick={handleSaveDisplayName}
+              disabled={savingName || savingPassword || !displayNameDraft.trim()}
+              className="inline-flex min-w-[8.5rem] items-center justify-center gap-2 rounded-lg bg-[var(--color-brand-primary)] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[var(--color-surface-sidebar-hover)] disabled:opacity-50"
+            >
+              {savingName ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  Saving…
+                </>
+              ) : (
+                'Save name'
+              )}
+            </button>
+          </section>
+
+          <div className="border-t border-[var(--color-border-default)]" />
+
+          <section className="space-y-4">
+            <div>
+              <h3 className="flex items-center gap-2 text-sm font-semibold text-[var(--color-text-primary)]">
+                <KeyRound className="h-4 w-4 text-[var(--color-text-secondary)]" aria-hidden="true" />
+                Change password
+              </h3>
+              <p className="mt-1 text-sm text-[var(--color-text-secondary)]">
+                Enter your current password, then choose a new one. You&apos;ll be signed out everywhere and must sign in again with the new password.
+              </p>
+            </div>
+            {passwordError && (
+              <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+                {passwordError}
+              </p>
+            )}
+            <div>
+              <label htmlFor="admin-current-password" className="mb-1.5 block text-sm font-medium text-[var(--color-text-primary)]">
+                Current password
+              </label>
+              <PasswordInput
+                id="admin-current-password"
+                name="current-password"
+                autoComplete="current-password"
+                value={currentPassword}
+                onChange={(e) => {
+                  setCurrentPassword(e.target.value);
+                  if (passwordError) setPasswordError('');
+                }}
+                disabled={savingPassword || savingName}
+              />
+            </div>
+            <div>
+              <label htmlFor="admin-new-password" className="mb-1.5 block text-sm font-medium text-[var(--color-text-primary)]">
+                New password
+              </label>
+              <PasswordInput
+                id="admin-new-password"
+                name="new-password"
+                autoComplete="new-password"
+                value={newPassword}
+                onChange={(e) => {
+                  setNewPassword(e.target.value);
+                  if (passwordError) setPasswordError('');
+                }}
+                disabled={savingPassword || savingName}
+              />
+              <div className="mt-2">
+                <PasswordRequirements password={newPassword} email={user?.email} />
+              </div>
+            </div>
+            <div>
+              <label htmlFor="admin-confirm-password" className="mb-1.5 block text-sm font-medium text-[var(--color-text-primary)]">
+                Confirm new password
+              </label>
+              <PasswordInput
+                id="admin-confirm-password"
+                name="confirm-password"
+                autoComplete="new-password"
+                value={confirmPassword}
+                onChange={(e) => {
+                  setConfirmPassword(e.target.value);
+                  if (passwordError) setPasswordError('');
+                }}
+                disabled={savingPassword || savingName}
+              />
+              <div className="mt-2">
+                <PasswordMatchHint password={newPassword} confirmPassword={confirmPassword} />
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleChangePassword}
+              disabled={
+                savingPassword
+                || savingName
+                || !currentPassword
+                || !newPassword
+                || !confirmPassword
+                || newPassword !== confirmPassword
+                || !isPasswordStrongEnough(newPassword, { email: user?.email })
+              }
+              className="inline-flex min-w-[8.5rem] items-center justify-center gap-2 rounded-lg bg-[var(--color-brand-primary)] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[var(--color-surface-sidebar-hover)] disabled:opacity-50"
+            >
+              {savingPassword ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  Saving…
+                </>
+              ) : (
+                'Update password'
+              )}
+            </button>
+          </section>
+        </div>
+      </Modal>
 
       <Modal
         isOpen={confirmOpen}

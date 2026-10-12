@@ -25,6 +25,8 @@ import {
   TAG_AUTO_MAIL,
 } from '../utils/requestTags';
 import { usePartners } from '../context/PartnerContext';
+import { useAuth } from '../context/AuthContext';
+import { resolveAdminFirstName } from '../utils/adminDisplayName';
 
 const CHART = {
   pink: '#e94560',
@@ -508,6 +510,7 @@ export default function Home() {
   const navigate = useNavigate();
   const location = useLocation();
   const { selectedPartnerId, partnerLabel } = usePartners();
+  const { profile, user } = useAuth();
   const [pendingRequests, setPendingRequests] = useState([]);
   const [kpis, setKpis] = useState({ pendingRequests: 0, usersInLedger: 0 });
   const [insights, setInsights] = useState(EMPTY_INSIGHTS);
@@ -517,6 +520,11 @@ export default function Home() {
   const [dateFilter, setDateFilter] = useState({ type: 'all', value: null });
 
   const activePeriodLabel = useMemo(() => getDateFilterLabel(dateFilter), [dateFilter]);
+
+  const helloName = useMemo(
+    () => resolveAdminFirstName(profile, user),
+    [profile, user],
+  );
 
   useEffect(() => {
     const bounds = calculateDateBounds(dateFilter.type, dateFilter.value);
@@ -650,7 +658,7 @@ export default function Home() {
     >
       <PageHeader
         section="Overview"
-        title="Hello Andrea."
+        title={`Hello ${helloName}.`}
         description={`A live view of ${partnerLabel} requests, Users Directory, and what needs your attention.`}
         borderless
         className="shrink-0"

@@ -1,8 +1,9 @@
 import { createClient } from '@supabase/supabase-js';
 
 function readEnv() {
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-  const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+  const env = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env : {};
+  const supabaseUrl = env.VITE_SUPABASE_URL || '';
+  const supabaseAnonKey = env.VITE_SUPABASE_ANON_KEY || '';
   return { supabaseUrl, supabaseAnonKey };
 }
 
@@ -19,7 +20,8 @@ let client = null;
 export function getSupabase() {
   const { supabaseUrl, supabaseAnonKey } = readEnv();
   if (!supabaseUrl || !supabaseAnonKey) {
-    if (import.meta.env.DEV) {
+    const env = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env : {};
+    if (env.DEV) {
       console.warn(
         'Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in frontend/.env.local, then restart Vite.'
       );

@@ -1,8 +1,9 @@
-import { isSupabaseConfigured, SUPABASE_AUTH_STORAGE_KEY } from '../supabaseClient';
-import { readAuthCache } from './authCache';
+import { isSupabaseConfigured, SUPABASE_AUTH_STORAGE_KEY } from '../supabaseClient.js';
+import { readAuthCache } from './authCache.js';
 
 function getLegacyStorageKey() {
-  const url = import.meta.env.VITE_SUPABASE_URL || '';
+  const env = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env : {};
+  const url = env.VITE_SUPABASE_URL || '';
   try {
     const ref = new URL(url).hostname.split('.')[0];
     return `sb-${ref}-auth-token`;

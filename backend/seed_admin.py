@@ -10,35 +10,19 @@ import uuid
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
-DEV_DEFAULT_EMAIL = "onboarding@powermusic.com"
-DEV_DEFAULT_PASSWORD = "Powermusic1_"
-
-
-def is_production() -> bool:
-    return os.getenv("VERCEL_ENV") == "production" or os.getenv("ENVIRONMENT") == "production"
-
-
 def resolve_admin_credentials():
-    email = os.getenv("ADMIN_EMAIL")
+    """Require ADMIN_EMAIL + ADMIN_PASSWORD — no baked-in defaults."""
+    email = (os.getenv("ADMIN_EMAIL") or "").strip()
     password = os.getenv("ADMIN_PASSWORD")
-
-    if is_production():
-        if not email or not password:
-            print(
-                "Error: production seed requires ADMIN_EMAIL and ADMIN_PASSWORD. "
-                "Run manually with secrets — never on deploy.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        return email, password
 
     if not email or not password:
         print(
-            "WARNING: DEV ONLY — using default admin credentials. "
-            "Set ADMIN_EMAIL and ADMIN_PASSWORD for production.",
+            "Error: ADMIN_EMAIL and ADMIN_PASSWORD are required.\n"
+            "  ADMIN_EMAIL=you@example.com ADMIN_PASSWORD='...' python backend/seed_admin.py\n"
+            "Never bake passwords into the repo; never set these on Vercel runtime env.",
             file=sys.stderr,
         )
-        return email or DEV_DEFAULT_EMAIL, password or DEV_DEFAULT_PASSWORD
+        sys.exit(1)
 
     return email, password
 

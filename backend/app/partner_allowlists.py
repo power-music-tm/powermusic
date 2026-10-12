@@ -137,6 +137,9 @@ def email_matches_manager_domains(email: str, domains: Sequence[str]) -> bool:
     addr = (email or "").strip().lower()
     if not addr or "@" not in addr:
         return False
+    local, _, domain_part = addr.partition("@")
+    if not local or not domain_part:
+        return False
     return any(addr.endswith(f"@{domain.lower().lstrip('@')}") for domain in domains)
 
 

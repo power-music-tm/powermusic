@@ -27,9 +27,7 @@ if (isProduction() && process.env.VERCEL === '1') {
   process.exit(1);
 }
 
-const { email: adminEmail, password: adminPassword } = resolveAdminCredentials({
-  allowDevDefaultPassword: true,
-});
+const { email: adminEmail, password: adminPassword } = resolveAdminCredentials();
 let finalPassword = adminPassword;
 
 if (!finalPassword) {

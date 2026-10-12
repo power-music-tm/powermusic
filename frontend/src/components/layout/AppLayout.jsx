@@ -7,6 +7,7 @@ import AdminPortalIntro, {
   markAdminIntroSeen,
   shouldShowAdminPortalIntro,
 } from '../admin/AdminPortalIntro';
+import { resolveAdminDisplayName, resolveAdminFirstName } from '../../utils/adminDisplayName';
 
 const SIDEBAR_EXPANDED_KEY = 'adminSidebarExpanded';
 
@@ -27,14 +28,13 @@ export default function AppLayout({ children }) {
   const [portalIntro, setPortalIntro] = useState(null);
   const introCheckedRef = useRef(false);
 
-  const adminDetails = useMemo(() => {
-    const fullName = (profile?.full_name || '').trim();
-    const nameParts = fullName.split(/\s+/).filter(Boolean);
-    return {
-      firstName: nameParts[0] || '',
-      fullName,
-    };
-  }, [profile, user]);
+  const adminDetails = useMemo(
+    () => ({
+      firstName: resolveAdminFirstName(profile, user),
+      fullName: resolveAdminDisplayName(profile, user),
+    }),
+    [profile, user],
+  );
 
   useEffect(() => {
     if (!user?.id) {

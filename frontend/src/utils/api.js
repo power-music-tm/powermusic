@@ -35,8 +35,8 @@ export const getApiUrl = (path) => {
   return `${API_BASE}${cleanPath}`;
 };
 
-import { readStoredSession } from './authBootstrap';
-import { readAuthCache } from './authCache';
+import { readStoredSession } from './authBootstrap.js';
+import { readAuthCache } from './authCache.js';
 
 function getActivePartnerContext() {
   if (typeof window === 'undefined') return {};

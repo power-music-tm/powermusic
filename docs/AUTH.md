@@ -139,9 +139,9 @@ The admin account is **not** created through the UI. Run the seed script once wi
 ```bash
 SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co \
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key \
-ADMIN_EMAIL=andrea@your-domain.com \
+ADMIN_EMAIL=you@your-domain.com \
 ADMIN_PASSWORD='YourStrongPasswordHere!' \
-ADMIN_FULL_NAME=Andrea \
+ADMIN_FULL_NAME=Admin \
 node scripts/seed-admin.mjs
 ```
 
@@ -153,7 +153,11 @@ npm run seed:admin
 
 (with the same env vars set in your shell or a local `.env` file loaded by your terminal)
 
-If `ADMIN_PASSWORD` is omitted, the script generates a strong password and prints it once — save it securely before deployment.
+**Do not** put `ADMIN_EMAIL` / `ADMIN_PASSWORD` on Vercel — they are seed-only. Login uses Supabase Auth + the admin role in the database.
+
+Also set `VITE_ADMIN_ALLOWED_EMAILS` (comma-separated) in `frontend/.env.local` and on Vercel for admin magic-link allowlisting. There is no hardcoded default.
+
+If `ADMIN_PASSWORD` is omitted in local/dev, the Node seed generates a strong password and prints it once — save it securely. The Python seed always requires both email and password.
 
 The script is idempotent: if an admin already exists, it exits without creating another.
 

@@ -50,7 +50,7 @@ async function managerAccountExists(
 ) {
   let allowedDomains = explicitAllowedDomains;
   if (enforceDomain && !allowedDomains) {
-    allowedDomains = await ensureManagerAllowedDomains({ force: true });
+    allowedDomains = await ensureManagerAllowedDomains({ force: true, email });
   }
   const validated = validateManagerEmail(email, { enforceDomain, allowedDomains });
   if (!validated.ok) {

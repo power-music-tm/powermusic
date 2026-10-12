@@ -16,15 +16,40 @@ import { signOutToAdminAuth } from '../utils/managerPartnerConflictSignOut';
 const inputClass =
   'w-full h-11 px-3.5 bg-white text-sm rounded-lg border border-[var(--color-border-default)] text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] transition-colors focus:outline-none focus-visible:border-[var(--color-brand-primary)] focus-visible:ring-2 focus-visible:ring-[var(--color-brand-primary)]/20 disabled:opacity-60 disabled:cursor-not-allowed';
 
-function consumeSignedOutFlash() {
+function readSignedOutFlash() {
   const raw = sessionStorage.getItem('adminSignedOut');
   if (!raw) return null;
-  sessionStorage.removeItem('adminSignedOut');
   try {
     return JSON.parse(raw);
   } catch {
     return { name: null };
   }
+}
+
+/** Survives logout remounts / Strict Mode — router state alone is not enough. */
+function readPasswordUpdatedFlash(locationState) {
+  const raw = sessionStorage.getItem('adminPasswordUpdated');
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      return {
+        email: typeof parsed?.email === 'string' ? parsed.email : '',
+        message: 'Your password was updated. Sign in with your new password.',
+      };
+    } catch {
+      return {
+        email: '',
+        message: 'Your password was updated. Sign in with your new password.',
+      };
+    }
+  }
+  if (locationState?.passwordUpdated) {
+    return {
+      email: typeof locationState?.email === 'string' ? locationState.email : '',
+      message: 'Your password was updated. Sign in with your new password.',
+    };
+  }
+  return null;
 }
 
 export default function AdminLogin() {
@@ -34,21 +59,36 @@ export default function AdminLogin() {
   const navigate = useNavigate();
   const location = useLocation();
   const from = location.state?.from || '/';
-  const [signedOutNotice] = useState(() => consumeSignedOutFlash());
+  const [signedOutNotice] = useState(() => readSignedOutFlash());
+  const [passwordFlash] = useState(() => readPasswordUpdatedFlash(location.state));
 
   const formId = useId();
   const emailId = `${formId}-email`;
   const passwordId = `${formId}-password`;
 
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(
+    () => passwordFlash?.email || location.state?.email || '',
+  );
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [signingOut, setSigningOut] = useState(false);
+  const [passwordUpdatedMsg, setPasswordUpdatedMsg] = useState(
+    () => passwordFlash?.message || '',
+  );
 
   useEffect(() => {
     clearToasts();
   }, [clearToasts]);
+
+  // Clear one-time flashes after mount so Strict Mode remounts still see them once.
+  useEffect(() => {
+    sessionStorage.removeItem('adminSignedOut');
+    sessionStorage.removeItem('adminPasswordUpdated');
+    if (location.state?.passwordUpdated || location.state?.email) {
+      navigate(location.pathname, { replace: true, state: null });
+    }
+  }, [location.pathname, location.state, navigate]);
 
   const redirectingAdmin = Boolean(user && role === 'admin');
 
@@ -138,6 +178,19 @@ export default function AdminLogin() {
         </div>
       )}
 
+      {passwordUpdatedMsg && (
+        <div
+          role="status"
+          className="mb-5 flex items-start gap-2.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-3 text-sm text-emerald-900"
+        >
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+          <div>
+            <p className="font-medium">Password updated</p>
+            <p className="mt-0.5 text-emerald-800/90">{passwordUpdatedMsg}</p>
+          </div>
+        </div>
+      )}
+
       <h2 className="text-base font-semibold text-[var(--color-text-primary)]">Sign in</h2>
       <p className="mt-1 mb-6 text-sm text-[var(--color-text-secondary)]">
         Use your admin email and password to access the dashboard.
@@ -165,9 +218,12 @@ export default function AdminLogin() {
             autoComplete="email"
             inputMode="email"
             spellCheck={false}
-            placeholder="andrea@powermusic.com"
+            placeholder="admin@example.com"
             value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            onChange={(e) => {
+              setEmail(e.target.value);
+              if (passwordUpdatedMsg) setPasswordUpdatedMsg('');
+            }}
             disabled={loading}
             className={inputClass}
             required
@@ -183,7 +239,10 @@ export default function AdminLogin() {
             name="password"
             autoComplete="current-password"
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={(e) => {
+              setPassword(e.target.value);
+              if (passwordUpdatedMsg) setPasswordUpdatedMsg('');
+            }}
             disabled={loading}
             required
           />

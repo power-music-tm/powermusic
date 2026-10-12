@@ -63,6 +63,7 @@ from app.partner_allowlists import (
     list_partners,
     list_manager_domain_strings,
     list_manager_domains,
+    email_matches_manager_domains,
     normalize_manager_domain,
     resolve_partner_for_manager_email,
     update_partner_name,
@@ -1420,9 +1421,36 @@ def search_persons_for_manager(
 
 
 @router.get("/api/manager/allowed-domains", response_model=schemas.ManagerAllowedDomainsPublicOut)
-def public_manager_allowed_domains(db: Session = Depends(get_db)):
-    """Public list used by the manager signup / login UI."""
-    return {"domains": list_manager_domain_strings(db)}
+def public_manager_allowed_domains(
+    email: Optional[str] = None,
+    partner_slug: Optional[str] = None,
+    partner_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Scoped allowlist for manager signup/login — never dumps the global catalog."""
+    resolved_partner_id = partner_id
+    if not resolved_partner_id and partner_slug:
+        partner = get_partner_by_slug(db, partner_slug)
+        if not partner:
+            raise HTTPException(status_code=404, detail="Partner not found")
+        resolved_partner_id = partner.id
+
+    if resolved_partner_id:
+        return {"domains": list_manager_domain_strings(db, partner_id=resolved_partner_id)}
+
+    addr = (email or "").strip().lower()
+    if not addr or "@" not in addr:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide email or partner_slug to check allowed domains.",
+        )
+
+    matched = [
+        domain
+        for domain in list_manager_domain_strings(db)
+        if email_matches_manager_domains(addr, [domain])
+    ]
+    return {"domains": matched}
 
 
 @router.get("/api/public/partner-branding")
@@ -2235,27 +2263,21 @@ def update_partner_custom_form(
 
 @router.get("/api/public/custom-form/{partner_slug}")
 def get_public_custom_form(partner_slug: str, db: Session = Depends(get_db)):
-    import re
-    partners = db.query(models.Partner).all()
-
-    target_partner = None
-    for p in partners:
-        slug = re.sub(r'[^a-z0-9-]', '', re.sub(r'\s+', '-', p.name.lower()))
-        if slug == partner_slug:
-            target_partner = p
-            break
-
+    target_partner = get_partner_by_slug(db, partner_slug)
     if not target_partner:
         raise HTTPException(status_code=404, detail="Partner not found")
 
-    form = db.query(models.PartnerCustomForm).filter(models.PartnerCustomForm.partner_id == target_partner.id).first()
+    form = (
+        db.query(models.PartnerCustomForm)
+        .filter(models.PartnerCustomForm.partner_id == target_partner.id)
+        .first()
+    )
     if form:
         migrate_inline_logo_to_storage(db, form)
     logo = resolve_partner_logo(form)
     return {
         "partnerName": target_partner.name,
         "logoUrl": logo,
-        "logoDataUrl": logo,
         "fields": form.fields if form else [],
         "allowedDomains": list_manager_domain_strings(db, partner_id=target_partner.id),
     }

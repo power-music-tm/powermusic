@@ -11,8 +11,9 @@ import {
 import { getAuthCallbackUrl } from '../utils/authRedirect';
 import { clearAuthCache, readAuthCache, writeAuthCache } from '../utils/authCache';
 import { readInitialAuthState, clearStoredSession, readStoredSession, isSessionExpired } from '../utils/authBootstrap';
-import { setAccessTokenProvider, getApiUrl } from '../utils/api';
+import { setAccessTokenProvider, getApiUrl, fetchJson } from '../utils/api';
 import { requestManagerPasswordReset, resendManagerSignupConfirmation } from '../utils/managerAuthEmail';
+import { validatePersonName } from '../utils/managerAuth';
 
 const AuthContext = createContext(null);
 
@@ -553,7 +554,7 @@ export function AuthProvider({ children }) {
 
     let allowedDomains = explicitAllowedDomains;
     if (enforceDomain && !allowedDomains) {
-      allowedDomains = await ensureManagerAllowedDomains({ force: true });
+      allowedDomains = await ensureManagerAllowedDomains({ force: true, email });
     }
     const validated = validateManagerEmail(email, { enforceDomain, allowedDomains });
     if (!validated.ok) {
@@ -606,7 +607,7 @@ export function AuthProvider({ children }) {
 
     let allowedDomains = explicitAllowedDomains;
     if (enforceDomain && !allowedDomains) {
-      allowedDomains = await ensureManagerAllowedDomains({ force: true });
+      allowedDomains = await ensureManagerAllowedDomains({ force: true, email });
     }
     const validated = validateManagerEmail(email, { enforceDomain, allowedDomains });
     if (!validated.ok) {
@@ -652,8 +653,13 @@ export function AuthProvider({ children }) {
     }
 
     let allowedDomains = explicitAllowedDomains;
+    const pendingEmail = fields?.email;
     if (enforceDomain && !allowedDomains) {
-      allowedDomains = await ensureManagerAllowedDomains({ force: true });
+      allowedDomains = await ensureManagerAllowedDomains({
+        force: true,
+        email: pendingEmail,
+        partnerSlug,
+      });
     }
     const validated = validateManagerSignupFields(fields, {
       enforceDomain,
@@ -736,6 +742,62 @@ export function AuthProvider({ children }) {
     };
   };
 
+  /** Update display name on the server profile (role/partner stay server-owned). */
+  const updateDisplayName = async (rawName) => {
+    const validated = validatePersonName(rawName, 'Display name');
+    if (!validated.ok) {
+      throw new Error(validated.error);
+    }
+
+    const parts = validated.value.split(/\s+/).filter(Boolean);
+    const previousProfile = profile;
+    const optimistic = {
+      ...(previousProfile || {}),
+      id: previousProfile?.id || user?.id,
+      email: previousProfile?.email || user?.email,
+      role: previousProfile?.role || role || 'admin',
+      full_name: validated.value,
+      first_name: parts[0] || validated.value,
+      last_name: parts.length > 1 ? parts.slice(1).join(' ') : null,
+    };
+    // Show the new name immediately in Hello / sidebar while the API saves.
+    applyProfile(setRole, setProfile, optimistic);
+
+    let profileData;
+    try {
+      profileData = await fetchJson('/api/auth/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fullName: validated.value }),
+      });
+    } catch (err) {
+      // Revert optimistic update if the server rejected the change.
+      if (previousProfile) applyProfile(setRole, setProfile, previousProfile);
+      throw err;
+    }
+
+    applyProfile(setRole, setProfile, profileData);
+
+    const supabase = getSupabase();
+    if (supabase) {
+      try {
+        const { data, error } = await supabase.auth.updateUser({
+          data: {
+            full_name: validated.value,
+            firstName: profileData.first_name || parts[0] || '',
+          },
+        });
+        if (!error && data?.user) {
+          setUser(data.user);
+        }
+      } catch {
+        /* DB profile is source of truth for the sidebar */
+      }
+    }
+
+    return profileData;
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -756,6 +818,7 @@ export function AuthProvider({ children }) {
         signInManager,
         resetManagerPassword,
         registerManager,
+        updateDisplayName,
       }}
     >
       {children}

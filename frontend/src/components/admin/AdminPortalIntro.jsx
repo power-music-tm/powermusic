@@ -7,18 +7,9 @@ const FADE_MS = 700;
 const brandMarkBoxClass =
   'flex h-14 w-14 shrink-0 overflow-hidden rounded-xl border border-white/15 bg-white shadow-lg sm:h-16 sm:w-16';
 
-const DEFAULT_ADMIN_NAME = 'Andrea';
-
 function displayAdminWelcomeName(firstName, fullName) {
   const parts = (fullName || '').trim().split(/\s+/).filter(Boolean);
-  const candidate = (firstName || parts[0] || '').trim();
-
-  // Treat generic account labels as non-personal so we greet the admin by name.
-  if (candidate && !/^(power|admin)$/i.test(candidate)) {
-    return candidate;
-  }
-
-  return DEFAULT_ADMIN_NAME;
+  return (firstName || parts[0] || '').trim();
 }
 
 /**
@@ -83,7 +74,7 @@ export default function AdminPortalIntro({
             className="text-[clamp(2.25rem,8vw,4.5rem)] font-bold leading-[1.05] tracking-tight text-white animate-[manager-intro-rise_0.8s_ease-out_both]"
             style={{ animationDelay: '0.15s' }}
           >
-            Welcome, {welcomeName}
+            {welcomeName ? `Welcome, ${welcomeName}` : 'Welcome'}
           </h1>
 
           <p

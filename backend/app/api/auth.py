@@ -20,8 +20,9 @@ from jwt import PyJWKClient
 from jwt.exceptions import PyJWKClientConnectionError
 from sqlalchemy.orm import Session
 
-from app import models
+from app import models, schemas
 from app.database import get_db
+from app.input_validation import normalize_person_name
 from app.partner_allowlists import (
     assert_manager_email_allowed,
     get_partner_by_slug,
@@ -324,15 +325,7 @@ def get_authenticated_user(
 auth_router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
-@auth_router.get("/me")
-def get_current_profile(
-    user: AuthenticatedUser = Depends(get_authenticated_user),
-    db: Session = Depends(get_db),
-):
-    profile = db.query(models.Profile).filter(models.Profile.id == user.id).first()
-    if profile is None:
-        raise HTTPException(status_code=403, detail="User profile not found")
-
+def _profile_payload(profile: models.Profile, user: AuthenticatedUser, db: Session) -> dict:
     partner_name = None
     partner_slug = None
     if profile.partner_id:
@@ -353,6 +346,49 @@ def get_current_profile(
         "partner_name": partner_name,
         "partner_slug": partner_slug,
     }
+
+
+@auth_router.get("/me")
+def get_current_profile(
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+    db: Session = Depends(get_db),
+):
+    profile = db.query(models.Profile).filter(models.Profile.id == user.id).first()
+    if profile is None:
+        raise HTTPException(status_code=403, detail="User profile not found")
+    return _profile_payload(profile, user, db)
+
+
+@auth_router.patch("/me")
+def update_current_profile(
+    payload: schemas.ProfileUpdateIn,
+    user: AuthenticatedUser = Depends(get_authenticated_user),
+    db: Session = Depends(get_db),
+):
+    """Update the signed-in user's display name. Role and partner stay server-owned."""
+    try:
+        user_uuid = uuid.UUID(str(user.id))
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=401, detail="Invalid user identity") from exc
+
+    profile = db.query(models.Profile).filter(models.Profile.id == user_uuid).first()
+    if profile is None:
+        raise HTTPException(status_code=403, detail="User profile not found")
+
+    try:
+        full_name = normalize_person_name(payload.fullName, field_name="Display name", required=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    parts = full_name.split()
+    profile.full_name = full_name
+    profile.first_name = parts[0] if parts else None
+    profile.last_name = " ".join(parts[1:]) if len(parts) > 1 else None
+    # Role / partner_id are intentionally never taken from the request body.
+    db.commit()
+    db.refresh(profile)
+    invalidate_auth_cache(str(profile.id))
+    return _profile_payload(profile, user, db)
 
 
 def require_admin(

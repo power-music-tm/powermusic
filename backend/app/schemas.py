@@ -825,3 +825,9 @@ class PartnerLogoUploadIn(BaseModel):
 class PartnerLogoUploadOut(BaseModel):
     partner_id: str
     logo_url: str
+
+
+class ProfileUpdateIn(BaseModel):
+    """Self-service profile edits. Role/partner are never taken from the client."""
+
+    fullName: str = Field(..., min_length=1, max_length=100)
