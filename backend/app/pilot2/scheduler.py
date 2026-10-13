@@ -90,7 +90,7 @@ def start() -> None:
         "coalesce": True,
         "misfire_grace_time": 60,
     }
-        if config.GMAIL_MODE == "live":
+    if config.GMAIL_MODE == "live":
         _scheduler.add_job(
             _poll_job,
             "interval",
