@@ -6,6 +6,7 @@ import {
   findFormMatchCandidates,
   formHasMatchCriteria,
   isUsableSearchQuery,
+  mergeFormMatchRows,
   normalizeDirectoryPerson,
   personMatchesQuery,
 } from '../src/utils/managerDirectory.js';
@@ -81,4 +82,14 @@ test('form match criteria and ranking', () => {
   });
   assert.equal(matches[0].id, '1');
   assert.ok(matches[0].matchReasons.includes('Email'));
+});
+
+test('mergeFormMatchRows merges reasons and user row labels', () => {
+  const merged = mergeFormMatchRows([
+    { formIndex: 0, rows: [{ id: 'a', matchReasons: ['Email'] }] },
+    { formIndex: 1, rows: [{ id: 'a', matchReasons: ['Name'] }] },
+  ]);
+  assert.equal(merged.formMatchResults.length, 1);
+  assert.deepEqual(new Set(merged.formMatchResults[0].matchReasons), new Set(['Email', 'Name']));
+  assert.deepEqual(merged.formMatchUsersByRowId.get('a'), [1, 2]);
 });

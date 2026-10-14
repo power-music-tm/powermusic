@@ -230,6 +230,37 @@ function getMatchFields(form, person) {
   return fields;
 }
 
+export function mergeFormMatchRows(rowsByFormIndex) {
+  const byId = new Map();
+  const usersByRowId = new Map();
+
+  rowsByFormIndex.forEach(({ formIndex, rows }) => {
+    const userLabel = formIndex + 1;
+    for (const row of rows) {
+      if (!row?.id) continue;
+      const existing = byId.get(row.id);
+      const reasons = new Set([
+        ...(existing?.matchReasons || []),
+        ...(row.matchReasons || []),
+      ]);
+      byId.set(row.id, {
+        ...(existing || {}),
+        ...row,
+        matchReasons: [...reasons],
+      });
+
+      const users = usersByRowId.get(row.id) || [];
+      if (!users.includes(userLabel)) users.push(userLabel);
+      usersByRowId.set(row.id, users);
+    }
+  });
+
+  return {
+    formMatchResults: Array.from(byId.values()),
+    formMatchUsersByRowId: usersByRowId,
+  };
+}
+
 export function findFormMatchCandidates(people, personForm, limit = 15) {
   const form = {
     email: personForm.email.trim().toLowerCase(),

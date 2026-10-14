@@ -30,7 +30,7 @@ function withTimeout(promise, ms, message) {
 
 async function fetchUserProfileViaBackend(accessToken, email) {
   const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => controller.abort(), 12000);
+  const timeoutId = window.setTimeout(() => controller.abort(), 120000);
   try {
     const res = await fetch(getApiUrl('/api/auth/me'), {
       headers: { Authorization: `Bearer ${accessToken}` },

@@ -24,8 +24,6 @@ import {
   normalizePersonFormsFromDraft,
 } from '../utils/managerFormDraft';
 import {
-  filterDirectorySearch,
-  findFormMatchCandidates,
   formHasMatchCriteria,
   getSearchQueryHint,
   isUsableSearchQuery,
@@ -52,6 +50,7 @@ import { getPublicPartnerBranding } from '../utils/pilot2Api';
 import { getPartnerTerminology } from '../utils/managerAuthBranding';
 import { FlowGradientBackground } from '../components/ui/flow-gradient-hero-section';
 import { useManagerDirectory } from '../hooks/useManagerDirectory';
+import { useManagerDirectoryLiveLookup } from '../hooks/useManagerDirectoryLiveLookup';
 import ManagerPartnerLinkConflict from '../components/auth/ManagerPartnerLinkConflict';
 import { ManagerAuthLoading } from '../components/auth/ManagerAuthShell';
 import {
@@ -309,6 +308,21 @@ export default function ManagerForm() {
   const isHealthFitness = terms.isHealthFitness;
   const isGll = terms.isGll;
   const isJdGyms = terms.isJdGyms;
+
+  const {
+    serverSearchResults: searchResults,
+    formMatchResults,
+    formMatchUsersByRowId,
+    searchLoading: directoryServerSearchLoading,
+    matchLoading: directoryMatchLoading,
+  } = useManagerDirectoryLiveLookup({
+    searchInput,
+    personForms,
+    partnerId: partnerBranding?.partnerId ?? null,
+    rosterOutcome: directoryOutcome,
+    localSnapshot: directoryPeople,
+    enabled: formActive && !submitted && Boolean(session?.access_token),
+  });
 
   const managerGridClass = isGll
     ? 'grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4'
@@ -771,47 +785,6 @@ export default function ManagerForm() {
   const searchQueryHint = getSearchQueryHint(searchInput);
   const isSearchTooBroad = hasSearchInput && !hasSearchQuery;
 
-  const searchResults = useMemo(
-    () => filterDirectorySearch(directoryPeople, searchInput),
-    [directoryPeople, searchInput],
-  );
-
-  const formMatchResults = useMemo(() => {
-    const byId = new Map();
-
-    for (const personForm of personForms) {
-      for (const row of findFormMatchCandidates(directoryPeople, personForm)) {
-        if (!row?.id) continue;
-        const existing = byId.get(row.id);
-        const reasons = new Set([
-          ...(existing?.matchReasons || []),
-          ...(row.matchReasons || []),
-        ]);
-        byId.set(row.id, {
-          ...(existing || {}),
-          ...row,
-          matchReasons: [...reasons],
-        });
-      }
-    }
-
-    return Array.from(byId.values());
-  }, [directoryPeople, personForms]);
-
-  const formMatchUsersByRowId = useMemo(() => {
-    const map = new Map();
-    personForms.forEach((form, index) => {
-      for (const row of findFormMatchCandidates(directoryPeople, form)) {
-        if (!row?.id) continue;
-        const users = map.get(row.id) || [];
-        const label = index + 1;
-        if (!users.includes(label)) users.push(label);
-        map.set(row.id, users);
-      }
-    });
-    return map;
-  }, [directoryPeople, personForms]);
-
   const defaultLocationPeople = useMemo(() => {
     if (isHealthFitness || isGll) {
       return directoryPeople;
@@ -903,6 +876,9 @@ export default function ManagerForm() {
   });
 
   const showInitialDirectoryLoading = directoryLoading && directoryPeople.length === 0;
+  const showDirectoryLookupLoading =
+    (directoryServerSearchLoading && hasSearchQuery) ||
+    (directoryMatchLoading && hasFormMatchCriteria);
   const multipleUsers = personForms.length > 1;
   const userSectionTitle =
     action === 'Add'
@@ -1242,7 +1218,9 @@ export default function ManagerForm() {
                 <div className="space-y-4">
                   {personForms.map((personForm, index) => {
                     const rowIds = personFieldIds(index);
-                    const rowMatches = findFormMatchCandidates(directoryPeople, personForm);
+                    const rowMatches = formMatchResults.filter((row) =>
+                      (formMatchUsersByRowId.get(row.id) || []).includes(index + 1),
+                    );
                     const showRowLabel = personForms.length > 1;
 
                     return (
@@ -1552,6 +1530,12 @@ export default function ManagerForm() {
                       aria-live="polite"
                     >
                       {directoryLiveStatus}
+                      {showDirectoryLookupLoading ? (
+                        <span className="mt-1 flex items-center gap-1.5 text-[var(--color-text-muted)]">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                          Checking full directory…
+                        </span>
+                      ) : null}
                     </p>
                   </div>
 
