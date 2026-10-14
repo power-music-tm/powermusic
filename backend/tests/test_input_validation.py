@@ -25,10 +25,8 @@ def test_normalize_person_name_accepts_unicode_hyphen():
     assert normalize_person_name("Marie-Claire", field_name="User First Name") == "Marie-Claire"
 
 
-def test_normalize_roster_person_name_rejects_numbers_and_short_values():
-    with pytest.raises(ValueError, match="letters and spaces only"):
-        normalize_roster_person_name("John2", field_name="User First Name")
-    with pytest.raises(ValueError, match="letters and spaces only"):
+def test_normalize_roster_person_name_rejects_short_values():
+    with pytest.raises(ValueError, match="hyphens, and apostrophes"):
         normalize_roster_person_name("r", field_name="User First Name")
 
 
@@ -36,7 +34,7 @@ def test_normalize_roster_person_name_accepts_unicode_letters():
     assert normalize_roster_person_name("José", field_name="User First Name") == "José"
 
 
-def test_normalize_roster_person_name_accepts_spaces_rejects_hyphens():
+def test_normalize_roster_person_name_accepts_spaces_hyphens_apostrophes():
     assert (
         normalize_roster_person_name("Anna Lisa", field_name="User First Name")
         == "Anna Lisa"
@@ -45,12 +43,33 @@ def test_normalize_roster_person_name_accepts_spaces_rejects_hyphens():
         normalize_roster_person_name("Van Der Berg", field_name="User Last Name")
         == "Van Der Berg"
     )
-    with pytest.raises(ValueError, match="letters and spaces only"):
+    assert (
         normalize_roster_person_name("Anna-Lisa", field_name="User First Name")
-    with pytest.raises(ValueError, match="letters and spaces only"):
+        == "Anna-Lisa"
+    )
+    assert (
         normalize_roster_person_name("O'Neil", field_name="User First Name")
-    with pytest.raises(ValueError, match="letters and spaces only"):
+        == "O'Neil"
+    )
+    assert (
         normalize_roster_person_name("Smith-Jones", field_name="User Last Name")
+        == "Smith-Jones"
+    )
+    assert (
+        normalize_roster_person_name("Smith'Ogon", field_name="User Last Name")
+        == "Smith'Ogon"
+    )
+    assert (
+        normalize_roster_person_name("Mary-Jane O'Neil", field_name="User First Name")
+        == "Mary-Jane O'Neil"
+    )
+
+
+def test_normalize_roster_person_name_rejects_digits_and_symbols():
+    with pytest.raises(ValueError, match="hyphens, and apostrophes"):
+        normalize_roster_person_name("John2", field_name="User First Name")
+    with pytest.raises(ValueError, match="hyphens, and apostrophes"):
+        normalize_roster_person_name("Smith@Jones", field_name="User Last Name")
 
 
 def test_normalize_roster_person_location_accepts_multiword_rejects_digits_and_hyphens():
@@ -76,6 +95,16 @@ def test_person_info_accepts_multiword_roster_names():
     assert person.firstName == "Anna Lisa"
     assert person.lastName == "Van Der Berg"
     assert person.location == "Donyngs Leisure Centre"
+
+
+def test_person_update_in_accepts_apostrophe_in_last_name():
+    payload = schemas.PersonUpdateIn(
+        firstName="Anna",
+        lastName="Smith'Ogon",
+        email="user@example.com",
+        location="London Gym",
+    )
+    assert payload.lastName == "Smith'Ogon"
 
 
 def test_normalize_roster_person_location_rejects_symbols_and_numbers():

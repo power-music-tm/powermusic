@@ -6,7 +6,7 @@ Verifies:
 2. Source verification: NewRequests.jsx completeRequest suppresses request, scrubs cache, and awaits API before success toast.
 3. Source verification: GroupDetail.jsx handleResolved suppresses resolved duplicate groups and scrubs sessionStorage cache.
 4. Source verification: GroupDetail.jsx handleResolved clears cache when a member is unlinked to New Requests.
-5. Source verification: NewRequests.jsx handleCreateRequest immediately adds manual Remove requests to local queue.
+5. Source verification: NewRequests.jsx handleCreateRequest sends manual Add/Remove straight to Directory (archive refresh for Remove).
 6. Source verification: NewRequests.jsx dismiss and bulk dismiss handlers suppress IDs and scrub cache with rollback on failure.
 7. Source verification: pilot2Api.js applyNewRequestsSuppressions preserves tombstones for their full TTL.
 8. Source verification: unlink router endpoint calls notify_admin_requests_changed('unlink').
@@ -43,6 +43,8 @@ from app.api.routers.pilot1 import (
     mark_request_handled,
     AuthenticatedUser,
 )
+from app.directory_person_match import archived_snapshot_rows, directory_ledger_rows
+from app.manager_request_intake import create_handled_manual_request
 
 FRONTEND_SRC = Path(__file__).resolve().parent.parent.parent / "frontend" / "src"
 
@@ -122,13 +124,21 @@ def test_group_detail_suppresses_resolved_groups_and_cleans_cache():
     assert "clearCache(requestsCacheKey)" in content, "unlinked_new_requests must clear requestsCacheKey"
 
 
-def test_new_requests_manual_create_immediately_updates_queue():
-    """Verify handleCreateRequest updates newRequests queue immediately when action === 'Remove'."""
+def test_new_requests_manual_create_refreshes_directory_for_add_and_remove():
+    """Manual Add/Remove both refresh Directory caches; Remove must not enqueue New Requests."""
     content = (FRONTEND_SRC / "pages" / "NewRequests.jsx").read_text(encoding="utf-8")
-    
-    # Must update local queue with created requests
-    assert "setNewRequests(next)" in content
-    assert "pendingCreatedIdsRef.current.add(r.id)" in content
+
+    handle_pos = content.find("const handleCreateRequest = async")
+    assert handle_pos != -1
+    manual_block = content[handle_pos : handle_pos + 4500]
+
+    assert "/api/admin/requests/manual" in manual_block
+    assert "/api/persons/archived" in manual_block
+    assert "pm_directory_pending_tab" in manual_block
+    assert "Directory (Archive)" in content
+    assert "pendingCreatedIdsRef.current.add(r.id)" not in manual_block
+    assert "Add to Directory" in content
+    assert "Create Request" not in content
 
 
 def test_pilot2api_suppression_preserves_tombstones():
@@ -151,6 +161,35 @@ def test_unlink_router_notifies_realtime():
 
 
 # ─── BACKEND DATABASE LIFECYCLE TESTS ───────────────────────────────────────
+
+def test_manual_remove_creates_handled_archived_directory_row(db: Session, admin_user: AuthenticatedUser):
+    """Admin manual Remove lands in Directory archive, not the New Requests queue."""
+    partner_id = "partner-001"
+    person = schemas.PersonInfo(
+        firstName="Sam",
+        lastName="RemovedManual",
+        email=f"manual-remove-{uuid.uuid4().hex[:8]}@example.com",
+        location="London Gym",
+    )
+    row = create_handled_manual_request(
+        db,
+        person=person,
+        action="Remove",
+        admin_id=str(admin_user.id),
+        partner_id=partner_id,
+    )
+    db.commit()
+    db.refresh(row)
+
+    assert row.status == "handled"
+    assert row.outcome == "Removed"
+    assert row.archived_at is not None
+
+    active = directory_ledger_rows(db, partner_id=partner_id)
+    assert not any(r.person_email == person.email for r in active)
+    archived = archived_snapshot_rows(db, partner_id=partner_id)
+    assert any(r.id == row.id for r in archived)
+
 
 def test_backend_mark_handled_status_and_outcome(db: Session, admin_user: AuthenticatedUser):
     """Verify mark_request_handled updates database record cleanly without delay."""

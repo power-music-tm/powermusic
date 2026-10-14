@@ -11,6 +11,7 @@ _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 _HTML_TAG = re.compile(r"<[^>]+>")
 _NAME_ALLOWED_EXTRA = {" ", "'", ".", "-"}
+_ROSTER_NAME_ALLOWED_EXTRA = {" ", "-", "'"}
 _ROSTER_NAME_MIN_LENGTH = 2
 _ROSTER_LOCATION_MIN_LENGTH = 2
 
@@ -93,7 +94,7 @@ def _is_valid_roster_person_name(value: str) -> bool:
     if _letter_count(value) < _ROSTER_NAME_MIN_LENGTH:
         return False
     for char in value:
-        if char == " ":
+        if char in _ROSTER_NAME_ALLOWED_EXTRA:
             continue
         if not _is_letter_or_mark(char):
             return False
@@ -129,7 +130,8 @@ def normalize_roster_person_name(
     if not _is_valid_roster_person_name(cleaned):
         raise ValueError(
             f"{field_name} must be at least {_ROSTER_NAME_MIN_LENGTH} characters "
-            "and contain letters and spaces only (no numbers or symbols)."
+            "and contain letters, spaces, hyphens, and apostrophes only "
+            "(no numbers or other symbols)."
         )
     return cleaned
 

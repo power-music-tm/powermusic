@@ -2,9 +2,9 @@ import { normalizeManagerEmail } from './managerAuth.js';
 
 const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 const HTML_TAG = /<[^>]+>/;
-const NAME_CHARS = /[^\p{L}\p{M}\s]/gu;
+const NAME_CHARS = /[^\p{L}\p{M}\s'-]/gu;
 const LOCATION_CHARS = /[^\p{L}\p{M}\s]/gu;
-const ROSTER_NAME_RE = /^[\p{L}\p{M}]+(?: [\p{L}\p{M}]+)*$/u;
+const ROSTER_NAME_RE = /^[\p{L}\p{M}\s'-]+$/u;
 const ROSTER_LOCATION_RE = /^[\p{L}\p{M}]+(?: [\p{L}\p{M}]+)*$/u;
 const MIN_ROSTER_LETTERS_RE = /[\p{L}\p{M}]/gu;
 
@@ -77,7 +77,7 @@ export function validateRosterPersonName(raw, fieldName, fieldKey) {
   if (!ROSTER_NAME_RE.test(cleaned)) {
     return {
       ok: false,
-      error: `${fieldName} must contain letters and spaces only (no numbers or symbols).`,
+      error: `${fieldName} must contain letters, spaces, hyphens, and apostrophes only (no numbers or other symbols).`,
     };
   }
   return { ok: true, value: cleaned };

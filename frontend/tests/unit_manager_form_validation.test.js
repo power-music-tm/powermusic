@@ -22,6 +22,7 @@ test('roster name and location rules', () => {
   assert.equal(validateRosterPersonName('J', 'User First Name', 'firstName').ok, false);
   assert.equal(sanitizePersonFieldInput('firstName', 'Mary Ann'), 'Mary Ann');
   assert.equal(validateRosterPersonName('Mary Ann', 'User First Name', 'firstName').ok, true);
+  assert.equal(validateRosterPersonName("Smith'Ogon", 'User Last Name', 'lastName').ok, true);
   assert.equal(validatePersonLocation('Pure Gym London').ok, true);
   assert.equal(validatePersonLocation('Gym 12').ok, false);
   assert.equal(validatePersonLocation('').ok, false);

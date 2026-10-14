@@ -1141,41 +1141,24 @@ def create_manual_requests(req_in: schemas.ManualRequestIn, db: Session = Depend
         email=req_in.submittedBy.email,
         club=req_in.submittedBy.club,
     )
-    if req_in.action == "Add":
-        new_requests = [
-            create_handled_manual_request(
-                db,
-                person=person_in,
-                action=req_in.action,
-                submitted_by=manual_submitter,
-                manager_notes=person_in.notes or req_in.notes,
-                admin_id=admin.id,
-                partner_id=req_in.partnerId,
-            )
-            for person_in in req_in.people
-        ]
-    else:
-        # Keep existing pending-request behavior for manual removals.
-        new_requests = [
-            _create_manager_request_row(
-                db,
-                submitted_by=manual_submitter,
-                person=person_in,
-                action=req_in.action,
-                notes=person_in.notes or req_in.notes,
-                partner_id=req_in.partnerId,
-                new_id=None,
-            )
-            for person_in in req_in.people
-        ]
+    new_requests = [
+        create_handled_manual_request(
+            db,
+            person=person_in,
+            action=req_in.action,
+            submitted_by=manual_submitter,
+            manager_notes=person_in.notes or req_in.notes,
+            admin_id=admin.id,
+            partner_id=req_in.partnerId,
+        )
+        for person_in in req_in.people
+    ]
 
     db.commit()
 
     for req in new_requests:
         db.refresh(req)
     hydrate_request_display(new_requests)
-    if req_in.action != "Add":
-        notify_admin_requests_changed("admin_manual")
     return requests_to_api_dicts(db, new_requests)
 
 

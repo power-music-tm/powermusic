@@ -949,7 +949,7 @@ export default function Requests() {
         ref?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
         showToast(firstInvalid.message, 'error');
       } else {
-        showToast('Fix the highlighted fields to create the request.', 'error');
+        showToast('Fix the highlighted fields to add to Directory.', 'error');
       }
       return;
     }
@@ -975,40 +975,45 @@ export default function Requests() {
         })
       });
 
-      if (action === 'Add') {
-        const directoryRows = await fetchJson(`/api/persons${selectedPartnerId ? `?partner_id=${encodeURIComponent(selectedPartnerId)}` : ''}`);
-        const nextDirectory = Array.isArray(directoryRows) ? directoryRows : [];
-        setLiveDirectory(nextDirectory);
-        writeCache(directoryCacheKey, nextDirectory);
-        if (profile?.id) {
-          writeDirectoryCache(profile.id, nextDirectory, 'Added', selectedPartnerId || '');
-        }
-        sessionStorage.setItem('pm_directory_pending_tab', 'Added');
-        refreshRequestsPage({ networkOnly: true });
-      } else {
-        if (Array.isArray(created) && created.length > 0) {
-          created.forEach((r) => {
-            if (r.id) pendingCreatedIdsRef.current.add(r.id);
-          });
-          const next = [...created, ...newRequests];
-          setNewRequests(next);
-          patchCache(requestsCacheKey, { requests: next });
-          bumpCacheEpoch(requestsCacheKey);
-        }
-        refreshRequestsPage({ networkOnly: true });
+      const partnerQuery = selectedPartnerId ? `?partner_id=${encodeURIComponent(selectedPartnerId)}` : '';
+      const archivedCacheKey = selectedPartnerId
+        ? `directory_persons_archived:${selectedPartnerId}`
+        : 'directory_persons_archived';
+
+      const directoryRows = await fetchJson(`/api/persons${partnerQuery}`);
+      const nextDirectory = Array.isArray(directoryRows) ? directoryRows : [];
+      setLiveDirectory(nextDirectory);
+      writeCache(directoryCacheKey, nextDirectory);
+
+      const archivedRows = await fetchJson(`/api/persons/archived${partnerQuery}`);
+      const nextArchived = Array.isArray(archivedRows) ? archivedRows : [];
+      writeCache(archivedCacheKey, nextArchived);
+
+      const outcome = action === 'Add' ? 'Added' : 'Removed';
+      if (profile?.id) {
+        writeDirectoryCache(
+          profile.id,
+          outcome === 'Added' ? nextDirectory : nextArchived,
+          outcome,
+          selectedPartnerId || '',
+        );
       }
+      sessionStorage.setItem('pm_directory_pending_tab', outcome);
+      refreshRequestsPage({ networkOnly: true });
 
       showToast(
         action === 'Add'
           ? (created.length === 1 ? 'Added to Directory.' : `${created.length} users added to Directory.`)
-          : (created.length === 1 ? 'Request created.' : `${created.length} requests created.`),
+          : (created.length === 1
+            ? 'Added to Directory (Archive).'
+            : `${created.length} users added to Directory (Archive).`),
         'success',
       );
       setShowAddManualModal(false);
       resetManualForm();
     } catch (err) {
       console.error(err);
-      showToast(action === 'Add' ? 'Failed to add to Directory.' : 'Failed to create request.', 'error');
+      showToast('Failed to add to Directory.', 'error');
     }
   };
 
@@ -1718,9 +1723,9 @@ export default function Requests() {
                   : 'bg-gray-300'
               }`}
             >
-              {action === 'Add'
-                ? (personForms.length === 1 ? 'Add to Directory' : `Add ${personForms.length} Users to Directory`)
-                : (personForms.length === 1 ? 'Create Request' : `Create ${personForms.length} Requests`)}
+              {personForms.length === 1
+                ? 'Add to Directory'
+                : `Add ${personForms.length} Users to Directory`}
             </button>
           </>
         }

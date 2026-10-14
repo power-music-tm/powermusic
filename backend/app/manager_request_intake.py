@@ -499,7 +499,12 @@ def create_handled_manual_request(
     )
     row.status = "handled"
     row.outcome = outcome or ("Added" if action == "Add" else "Removed")
-    row.handled_at = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
+    row.handled_at = now
+    if row.outcome == "Removed":
+        row.archived_at = now
+    else:
+        row.archived_at = None
     if admin_id and admin_id != "dev-bypass":
         row.handled_by_admin_id = admin_id
     if submitted_by is not None:
