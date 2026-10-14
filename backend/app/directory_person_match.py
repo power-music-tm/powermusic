@@ -224,6 +224,51 @@ def _dedupe_latest_roster(
     )
 
 
+def _dedupe_gll_latest_added(
+    rows: List[models.ManagerRequest],
+    *,
+    limit: int,
+) -> List[models.ManagerRequest]:
+    """O(n) Added-roster dedupe for GLL (identity is email-centric; bulk imports are huge)."""
+    represented: List[models.ManagerRequest] = []
+    seen_emails: set[str] = set()
+    seen_name_only: set[str] = set()
+
+    for row in sorted(rows, key=_handled_at_sort_key, reverse=True):
+        email = (row.person_email or "").strip().lower()
+        name_key = (
+            f"{(row.person_first_name or '').strip().lower()}"
+            f"\0{(row.person_last_name or '').strip().lower()}"
+        )
+        if email:
+            if email in seen_emails:
+                continue
+            seen_emails.add(email)
+        elif name_key in seen_name_only:
+            continue
+        else:
+            seen_name_only.add(name_key)
+        represented.append(row)
+        if len(represented) >= limit:
+            break
+    return represented
+
+
+def _dedupe_added_roster_limited(
+    db: Session,
+    rows: List[models.ManagerRequest],
+    *,
+    partner_id: Optional[str] = None,
+    limit: int,
+    dismissed_set: Optional[set] = None,
+) -> List[models.ManagerRequest]:
+    if _is_gll(db, partner_id):
+        return _dedupe_gll_latest_added(rows, limit=limit)
+    return _dedupe_latest_roster(
+        rows, partner_id=partner_id, db=db, dismissed_set=dismissed_set
+    )[:limit]
+
+
 def find_latest_directory_match(
     person: schemas.PersonInfo,
     directory_rows: List[models.ManagerRequest],
@@ -317,7 +362,7 @@ def roster_snapshot_rows(
     if partner_id:
         query = query.filter(models.ManagerRequest.partner_id == partner_id)
     rows = query.order_by(models.ManagerRequest.handled_at.desc()).limit(max(limit * 4, limit)).all()
-    return _dedupe_latest_roster(rows, partner_id=partner_id, db=db)[:limit]
+    return _dedupe_added_roster_limited(db, rows, partner_id=partner_id, limit=limit)
 
 
 def _dedupe_latest_person(
@@ -363,9 +408,13 @@ def directory_ledger_rows(
     if partner_id:
         query = query.filter(models.ManagerRequest.partner_id == partner_id)
     rows = query.order_by(models.ManagerRequest.handled_at.desc()).limit(max(limit * 4, limit)).all()
-    return _dedupe_latest_roster(
-        rows, partner_id=partner_id, db=db, dismissed_set=dismissed_set
-    )[:limit]
+    return _dedupe_added_roster_limited(
+        db,
+        rows,
+        partner_id=partner_id,
+        limit=limit,
+        dismissed_set=dismissed_set,
+    )
 
 
 def removed_snapshot_rows(

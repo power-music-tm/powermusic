@@ -10,9 +10,11 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.directory_person_match import (
+    _probe_handled_rows,
     find_directory_conflict,
     request_person_for_match,
 )
+from app.duplicate_matching import is_gll_partner, is_healthtech_partner
 from app.duplicate_group_service import compute_group_classification_summary
 from app.manager_request_views import is_request_unread
 from app.manager_request_tags import (
@@ -493,12 +495,8 @@ def request_to_api_dict(
 def requests_to_api_dicts(db: Session, requests: List[models.ManagerRequest]) -> List[Dict[str, Any]]:
     rows = list(requests)
     hydrate_request_users(db, rows)
-    # One directory load for the whole page — per-row probes were ~0.4s each over
-    # the remote DB and made /admin/requests/page exceed the frontend timeout.
-    from app.directory_person_match import handled_directory_rows
     from app import models as _models
 
-    directory_rows = handled_directory_rows(db) if rows else []
     email_by_req = _prefetch_source_emails(db, rows) if rows else {}
     connected_inbox = _connected_inbox_email(db) if rows else ""
 
@@ -537,10 +535,15 @@ def requests_to_api_dicts(db: Session, requests: List[models.ManagerRequest]) ->
     results: List[Dict[str, Any]] = []
     for req in rows:
         person = request_person_for_match(req)
+        partner_id = req.partner_id
+        is_ht = is_healthtech_partner(db, partner_id) if partner_id else False
+        gll = is_gll_partner(db, partner_id) if partner_id else False
         directory_row = find_directory_conflict(
             person=person,
             action=req.action or "",
-            directory_rows=[row for row in directory_rows if not req.partner_id or row.partner_id == req.partner_id],
+            directory_rows=_probe_handled_rows(db, person, partner_id=partner_id),
+            is_healthtech=is_ht,
+            is_gll=gll,
             db=db,
             req_id=req.id,
         )
