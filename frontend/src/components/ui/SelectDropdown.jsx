@@ -64,6 +64,19 @@ export default function SelectDropdown({
     return options.filter((opt) => String(opt.label ?? '').toLowerCase().includes(q));
   }, [options, query, searchable]);
 
+  /** One hidden row for width — never mount thousands of measure nodes (Directory-scale filters). */
+  const widestLabel = useMemo(() => {
+    let longest = String(selected?.label ?? '');
+    for (const opt of filteredOptions) {
+      const label = String(opt.label ?? '');
+      if (label.length > longest.length) longest = label;
+    }
+    if (searchable && searchPlaceholder.length > longest.length) {
+      return searchPlaceholder;
+    }
+    return longest;
+  }, [filteredOptions, selected?.label, searchable, searchPlaceholder]);
+
   const viewportCap = () => Math.max(160, window.innerWidth - 32);
 
   // Closed control: grow with selected label up to cap (no horizontal scroll).
@@ -93,7 +106,7 @@ export default function SelectDropdown({
     });
 
     setMenuWidth(Math.min(Math.max(widest, triggerW), cap));
-  }, [open, filteredOptions, query]);
+  }, [open, widestLabel, query]);
 
   const handleSelect = (nextValue) => {
     onChange(nextValue);
@@ -145,17 +158,14 @@ export default function SelectDropdown({
         <div
           ref={measureRef}
           aria-hidden="true"
-          className="pointer-events-none fixed left-[-10000px] top-0 whitespace-nowrap"
+          className="pointer-events-none absolute left-0 top-0 -z-10 h-0 w-0 overflow-hidden opacity-0"
         >
-          {filteredOptions.map((opt) => (
-            <div
-              key={`measure-${String(opt.value)}`}
-              data-measure-option
-              className="inline-block px-3 py-2 text-sm font-medium"
-            >
-              {opt.label}
-            </div>
-          ))}
+          <div
+            data-measure-option
+            className="inline-block whitespace-nowrap px-3 py-2 text-sm font-medium"
+          >
+            {widestLabel}
+          </div>
         </div>
       )}
 
