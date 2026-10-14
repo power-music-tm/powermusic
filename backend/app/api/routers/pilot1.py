@@ -199,13 +199,29 @@ def _find_related_people(
     location: str,
     partner_id: Optional[str] = None,
 ) -> list[tuple[models.ManagerRequest, set[str]]]:
+    from app.directory_person_match import manager_form_directory_overlap_reasons
+
     probe = schemas.PersonInfo(
         firstName=first_name,
         lastName=last_name,
         email=email,
         location=location,
     )
-    return [(row, {"Match"}) for row in roster_match_candidates(db, probe, partner_id=partner_id)]
+    rows = roster_match_candidates(db, probe, partner_id=partner_id)
+    return [
+        (
+            row,
+            manager_form_directory_overlap_reasons(
+                email=email,
+                first=first_name,
+                last=last_name,
+                location=location,
+                row=row,
+            )
+            or {"Match"},
+        )
+        for row in rows
+    ]
 
 
 def _related_person_candidates(

@@ -63,6 +63,72 @@ def _person_probe_fields(person: schemas.PersonInfo) -> tuple[str, str, str, str
     )
 
 
+def _row_person_fields(row: models.ManagerRequest) -> tuple[str, str, str, str]:
+    return (
+        (row.person_email or "").strip().lower(),
+        (row.person_first_name or "").strip().lower(),
+        (row.person_last_name or "").strip().lower(),
+        (row.person_location or "").strip().lower(),
+    )
+
+
+def _manager_form_matched_field_keys(
+    *,
+    email: str,
+    first: str,
+    last: str,
+    location: str,
+    row: models.ManagerRequest,
+) -> set[str]:
+    """Field keys where the form and directory row both have a value and they match."""
+    r_email, r_first, r_last, r_loc = _row_person_fields(row)
+    matched: set[str] = set()
+    if email and r_email and email == r_email:
+        matched.add("email")
+    if first and r_first and first == r_first:
+        matched.add("firstName")
+    if last and r_last and last == r_last:
+        matched.add("lastName")
+    if location and r_loc and location == r_loc:
+        matched.add("location")
+    return matched
+
+
+def manager_form_directory_overlap_reasons(
+    *,
+    email: str,
+    first: str,
+    last: str,
+    location: str,
+    row: models.ManagerRequest,
+) -> set[str]:
+    """Manager Check Directory warnings: same row, at least two corresponding fields match."""
+    matched = _manager_form_matched_field_keys(
+        email=email,
+        first=first,
+        last=last,
+        location=location,
+        row=row,
+    )
+    if len(matched) < 2:
+        return set()
+
+    reasons: set[str] = set()
+    if "firstName" in matched and "lastName" in matched:
+        reasons.add("Name")
+    if "email" in matched and "location" in matched:
+        reasons.add("Email + location")
+    elif "email" in matched:
+        reasons.add("Email")
+    if "firstName" in matched and "location" in matched and "lastName" not in matched:
+        reasons.add("First name + location")
+    if "lastName" in matched and "location" in matched and "firstName" not in matched:
+        reasons.add("Last name + location")
+    if not reasons:
+        reasons.add("Match")
+    return reasons
+
+
 def _is_gll(db: Optional[Session], partner_id: Optional[str]) -> bool:
     """Thin wrapper — returns True when this partner is GLL."""
     return is_gll_partner(db, partner_id) if db and partner_id else False
@@ -88,6 +154,20 @@ def _roster_sql_candidates(
         clauses.append(
             and_(
                 func.lower(models.ManagerRequest.person_first_name) == first,
+                func.lower(models.ManagerRequest.person_last_name) == last,
+            )
+        )
+    if email and first:
+        clauses.append(
+            and_(
+                func.lower(models.ManagerRequest.person_email) == email,
+                func.lower(models.ManagerRequest.person_first_name) == first,
+            )
+        )
+    if email and last:
+        clauses.append(
+            and_(
+                func.lower(models.ManagerRequest.person_email) == email,
                 func.lower(models.ManagerRequest.person_last_name) == last,
             )
         )
@@ -493,7 +573,7 @@ def roster_match_candidates(
     limit: int = 10,
     partner_id: Optional[str] = None,
 ) -> List[models.ManagerRequest]:
-    """Roster rows that match the person probe (same_person rules)."""
+    """Roster rows for manager form warnings (two-or-more field overlap on the same row)."""
     email, first, last, location = _person_probe_fields(person)
     gll = _is_gll(db, partner_id)
     candidates = _roster_sql_candidates(
@@ -506,8 +586,17 @@ def roster_match_candidates(
         is_gll=gll,
     )
     roster = _dedupe_latest_roster(candidates, partner_id=partner_id, db=db)
-    is_ht = is_healthtech_partner(db, partner_id)
-    matches = [row for row in roster if same_person_for_partner(row, person, is_healthtech=is_ht, is_gll=gll)]
+    matches = [
+        row
+        for row in roster
+        if manager_form_directory_overlap_reasons(
+            email=email,
+            first=first,
+            last=last,
+            location=location,
+            row=row,
+        )
+    ]
     return matches[:limit]
 
 
