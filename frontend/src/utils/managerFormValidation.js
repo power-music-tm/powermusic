@@ -2,10 +2,11 @@ import { normalizeManagerEmail } from './managerAuth.js';
 
 const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 const HTML_TAG = /<[^>]+>/;
-const LETTERS_ONLY = /[^\p{L}\p{M}]/gu;
+const NAME_CHARS = /[^\p{L}\p{M}\s]/gu;
 const LOCATION_CHARS = /[^\p{L}\p{M}\s]/gu;
-const ROSTER_NAME_RE = /^[\p{L}\p{M}]{2,100}$/u;
+const ROSTER_NAME_RE = /^[\p{L}\p{M}]+(?: [\p{L}\p{M}]+)*$/u;
 const ROSTER_LOCATION_RE = /^[\p{L}\p{M}]+(?: [\p{L}\p{M}]+)*$/u;
+const MIN_ROSTER_LETTERS_RE = /[\p{L}\p{M}]/gu;
 
 export const PERSON_FIELD_LIMITS = {
   firstName: 100,
@@ -29,7 +30,7 @@ export function sanitizePersonFieldInput(field, value) {
     return raw.slice(0, PERSON_FIELD_LIMITS.email);
   }
   if (field === 'firstName' || field === 'lastName') {
-    return raw.replace(LETTERS_ONLY, '').slice(0, PERSON_FIELD_LIMITS[field]);
+    return raw.replace(NAME_CHARS, '').slice(0, PERSON_FIELD_LIMITS[field]);
   }
   if (field === 'location') {
     return raw.replace(LOCATION_CHARS, '').slice(0, PERSON_FIELD_LIMITS.location);
@@ -48,8 +49,17 @@ function rejectHtml(value, fieldName) {
   return null;
 }
 
+function rosterTextFieldValue(raw) {
+  return String(raw ?? '').replace(CONTROL_CHARS, '').trim();
+}
+
+function rosterLetterCount(value) {
+  const matches = value.match(MIN_ROSTER_LETTERS_RE);
+  return matches ? matches.length : 0;
+}
+
 export function validateRosterPersonName(raw, fieldName, fieldKey) {
-  const cleaned = sanitizePersonFieldInput(fieldKey, raw);
+  const cleaned = rosterTextFieldValue(raw);
   if (!cleaned) {
     return { ok: false, error: `${fieldName} is required.` };
   }
@@ -61,8 +71,14 @@ export function validateRosterPersonName(raw, fieldName, fieldKey) {
   }
   const htmlError = rejectHtml(cleaned, fieldName);
   if (htmlError) return { ok: false, error: htmlError };
+  if (rosterLetterCount(cleaned) < MIN_ROSTER_NAME_LENGTH) {
+    return { ok: false, error: `${fieldName} must be at least ${MIN_ROSTER_NAME_LENGTH} characters.` };
+  }
   if (!ROSTER_NAME_RE.test(cleaned)) {
-    return { ok: false, error: `${fieldName} must contain letters only (no numbers, spaces, or symbols).` };
+    return {
+      ok: false,
+      error: `${fieldName} must contain letters and spaces only (no numbers or symbols).`,
+    };
   }
   return { ok: true, value: cleaned };
 }
@@ -80,7 +96,7 @@ export function validatePersonEmail(raw) {
 }
 
 export function validatePersonLocation(raw, fieldName = 'User Location') {
-  const cleaned = sanitizePersonFieldInput('location', raw).trim();
+  const cleaned = rosterTextFieldValue(raw);
   if (!cleaned) {
     return { ok: false, error: `${fieldName} is required.` };
   }
@@ -162,15 +178,9 @@ export function validatePersonFormFields(person, { locationLabel = 'User Locatio
     // Location is optional — preserve what the user typed (trimmed), or store empty string
     const rawLoc = (person.location || '').trim();
     if (rawLoc) {
-      // Validate format but not required
-      const htmlError = rawLoc.match(/<[^>]+>/) ? `${locationLabel} must not contain HTML.` : null;
-      if (htmlError) {
-        errors.location = htmlError;
-      } else if (rawLoc.length > PERSON_FIELD_LIMITS.location) {
-        errors.location = `${locationLabel} must be at most 200 characters.`;
-      } else {
-        values.location = rawLoc;
-      }
+      const location = validatePersonLocation(rawLoc, locationLabel);
+      if (!location.ok) errors.location = location.error;
+      else values.location = location.value;
     } else {
       values.location = '';
     }

@@ -29,7 +29,12 @@ def _norm_name(first: Optional[str], last: Optional[str]) -> str:
 
 
 def person_from_model(row: models.ManagerRequest) -> schemas.PersonInfo:
-    return schemas.PersonInfo(
+    """Build PersonInfo from a DB row without re-validating stored values.
+
+    Matching and directory deduplication must tolerate legacy rows that predate
+    current roster validation rules; new submissions still validate via PersonInfo.
+    """
+    return schemas.PersonInfo.model_construct(
         firstName=row.person_first_name or "",
         lastName=row.person_last_name or "",
         email=row.person_email or "",

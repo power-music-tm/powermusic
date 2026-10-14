@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from app import schemas
-from app.person_match import same_person, same_person_for_partner, same_person_gll
+from app.person_match import person_from_model, same_person, same_person_for_partner, same_person_gll
 
 
 def _p(first="", last="", email="", location=""):
@@ -70,3 +72,28 @@ class TestSamePersonForPartner:
         right = _p("Sam", "Lee", "b@x.com", "London")
         assert same_person_for_partner(left, right, is_gll=False) is True
         assert same_person_for_partner(left, right, is_gll=True) is False
+
+
+class TestPersonFromModel:
+    def test_accepts_multiword_names_from_db_without_validation_error(self):
+        row = SimpleNamespace(
+            person_first_name="Anna Lisa",
+            person_last_name="Smith",
+            person_email="anna@example.com",
+            person_location="",
+            role=None,
+        )
+        person = person_from_model(row)
+        assert person.firstName == "Anna Lisa"
+
+    def test_tolerates_legacy_hyphenated_names_in_db_rows(self):
+        row = SimpleNamespace(
+            person_first_name="Anna-Lisa",
+            person_last_name="Smith",
+            person_email="anna@example.com",
+            person_location="",
+            role=None,
+        )
+        left = person_from_model(row)
+        right = person_from_model(row)
+        assert same_person_gll(left, right)

@@ -87,9 +87,10 @@ class TestNormalizePersonName:
 
 
 class TestNormalizeRosterFields:
-    def test_roster_name_rejects_spaces(self):
-        with pytest.raises(ValueError, match="letters only"):
-            normalize_roster_person_name("Mary Ann", required=True)
+    def test_roster_name_accepts_spaces_rejects_hyphens(self):
+        assert normalize_roster_person_name("Mary Ann", required=True) == "Mary Ann"
+        with pytest.raises(ValueError, match="letters and spaces only"):
+            normalize_roster_person_name("Anna-Lisa", required=True)
 
     def test_roster_name_accepts_letters(self):
         assert normalize_roster_person_name("José", required=True) == "José"

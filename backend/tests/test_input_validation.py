@@ -26,14 +26,56 @@ def test_normalize_person_name_accepts_unicode_hyphen():
 
 
 def test_normalize_roster_person_name_rejects_numbers_and_short_values():
-    with pytest.raises(ValueError, match="letters only"):
+    with pytest.raises(ValueError, match="letters and spaces only"):
         normalize_roster_person_name("John2", field_name="User First Name")
-    with pytest.raises(ValueError, match="letters only"):
+    with pytest.raises(ValueError, match="letters and spaces only"):
         normalize_roster_person_name("r", field_name="User First Name")
 
 
 def test_normalize_roster_person_name_accepts_unicode_letters():
     assert normalize_roster_person_name("José", field_name="User First Name") == "José"
+
+
+def test_normalize_roster_person_name_accepts_spaces_rejects_hyphens():
+    assert (
+        normalize_roster_person_name("Anna Lisa", field_name="User First Name")
+        == "Anna Lisa"
+    )
+    assert (
+        normalize_roster_person_name("Van Der Berg", field_name="User Last Name")
+        == "Van Der Berg"
+    )
+    with pytest.raises(ValueError, match="letters and spaces only"):
+        normalize_roster_person_name("Anna-Lisa", field_name="User First Name")
+    with pytest.raises(ValueError, match="letters and spaces only"):
+        normalize_roster_person_name("O'Neil", field_name="User First Name")
+    with pytest.raises(ValueError, match="letters and spaces only"):
+        normalize_roster_person_name("Smith-Jones", field_name="User Last Name")
+
+
+def test_normalize_roster_person_location_accepts_multiword_rejects_digits_and_hyphens():
+    assert (
+        normalize_roster_person_location(
+            "Waltham Forest Feel Good Centre", field_name="User Location"
+        )
+        == "Waltham Forest Feel Good Centre"
+    )
+    with pytest.raises(ValueError, match="letters and spaces only"):
+        normalize_roster_person_location("Centre 2", field_name="User Location")
+    with pytest.raises(ValueError, match="letters and spaces only"):
+        normalize_roster_person_location("North-West Centre", field_name="User Location")
+
+
+def test_person_info_accepts_multiword_roster_names():
+    person = schemas.PersonInfo(
+        firstName="Anna Lisa",
+        lastName="Van Der Berg",
+        email="user@example.com",
+        location="Donyngs Leisure Centre",
+    )
+    assert person.firstName == "Anna Lisa"
+    assert person.lastName == "Van Der Berg"
+    assert person.location == "Donyngs Leisure Centre"
 
 
 def test_normalize_roster_person_location_rejects_symbols_and_numbers():

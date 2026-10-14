@@ -83,11 +83,21 @@ def normalize_email(value: Optional[str], *, required: bool = False) -> Optional
     return cleaned.lower()
 
 
+def _letter_count(value: str) -> int:
+    return sum(1 for char in value if _is_letter_or_mark(char))
+
+
 def _is_valid_roster_person_name(value: str) -> bool:
-    return (
-        _ROSTER_NAME_MIN_LENGTH <= len(value) <= 100
-        and all(_is_letter_or_mark(char) for char in value)
-    )
+    if not (_ROSTER_NAME_MIN_LENGTH <= len(value) <= 100):
+        return False
+    if _letter_count(value) < _ROSTER_NAME_MIN_LENGTH:
+        return False
+    for char in value:
+        if char == " ":
+            continue
+        if not _is_letter_or_mark(char):
+            return False
+    return True
 
 
 def _is_valid_roster_person_location(value: str) -> bool:
@@ -119,7 +129,7 @@ def normalize_roster_person_name(
     if not _is_valid_roster_person_name(cleaned):
         raise ValueError(
             f"{field_name} must be at least {_ROSTER_NAME_MIN_LENGTH} characters "
-            "and contain letters only (no numbers, spaces, or symbols)."
+            "and contain letters and spaces only (no numbers or symbols)."
         )
     return cleaned
 

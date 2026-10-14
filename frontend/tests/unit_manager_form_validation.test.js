@@ -20,13 +20,10 @@ test('sanitize strips digits/symbols from names and location', () => {
 test('roster name and location rules', () => {
   assert.equal(validateRosterPersonName('Jo', 'User First Name', 'firstName').ok, true);
   assert.equal(validateRosterPersonName('J', 'User First Name', 'firstName').ok, false);
-  // Spaces are stripped on sanitize, so "Mary Ann" becomes valid "MaryAnn"
-  assert.equal(sanitizePersonFieldInput('firstName', 'Mary Ann'), 'MaryAnn');
+  assert.equal(sanitizePersonFieldInput('firstName', 'Mary Ann'), 'Mary Ann');
   assert.equal(validateRosterPersonName('Mary Ann', 'User First Name', 'firstName').ok, true);
   assert.equal(validatePersonLocation('Pure Gym London').ok, true);
-  // Digits are stripped on input, so "Gym 12" becomes valid "Gym "
-  assert.equal(sanitizePersonFieldInput('location', 'Gym 12').trim(), 'Gym');
-  assert.equal(validatePersonLocation('Gym 12').ok, true);
+  assert.equal(validatePersonLocation('Gym 12').ok, false);
   assert.equal(validatePersonLocation('').ok, false);
   assert.equal(validatePersonLocation('A').ok, false);
 });
