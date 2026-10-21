@@ -27,7 +27,7 @@ test('confirmed when all identity fields match (location required unless GLL)', 
 });
 
 test('potential when JW first-name soft-match + last name anchor', () => {
-  // "Jonathan" vs "Johnathan" is typically JW >= 0.60
+  // "Jonathan" vs "Johnathan" is typically JW >= 0.65
   const result = matchClassification(base, {
     firstName: 'Johnathan',
     lastName: 'Smith',

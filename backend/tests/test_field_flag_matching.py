@@ -4,7 +4,7 @@ Focused unit tests for the field-flag duplicate-matching rule.
 Covers all cases mandated by the task specification:
   - 4-field partners (PureGym / Health Fitness)
   - GLL 3-field (no location)
-  - Boundary conditions (JW=0.60, empty/None/whitespace)
+  - Boundary conditions (JW=0.65, empty/None/whitespace)
 
 No database is needed; all tests call match_classification*() directly.
 """
@@ -136,7 +136,7 @@ class TestFourFieldClassification:
     def test_10_mike_vs_michael_same_email_potential(self):
         left  = _p("Mike",    "Johnson", "shared@example.com", "GymA")
         right = _p("Michael", "Smith",   "shared@example.com", "GymB")
-        # JW("mike","michael") → should be >= 0.60 (prefix "mich" vs "mike" — let's verify)
+        # JW("mike","michael") → should be >= 0.65 (prefix "mich" vs "mike" — let's verify)
         # same_email=True, first_match likely True, same_last=False, same_loc=False
         # matched >= 2 if first_match is True AND same_email=True, anchored=True (email)
         jw = round(jaro_winkler("mike", "michael"), 6)
@@ -194,12 +194,12 @@ class TestFourFieldClassification:
     # Test 14 – Green/Oliver directory + Green/Christian request → None
     # The spec intent: Oliver Green and Christian Green are different people.
     # With different locations, same last alone (1 flag) is below the minimum of 2.
-    # JW("oliver","christian") is well below 0.60 so first_match=False.
+    # JW("oliver","christian") is well below 0.65 so first_match=False.
     def test_14_green_oliver_directory_green_christian_none(self):
         directory = _p("Oliver",    "Green", "oliver@example.com", "GymA")
         request   = _p("Christian", "Green", "chris@example.com",  "GymB")
         label, _  = match_classification(directory, request)
-        # same_last=True, first_match=False (oliver/christian JW << 0.60),
+        # same_last=True, first_match=False (oliver/christian JW << 0.65),
         # same_email=False, same_loc=False → matched=1 → None
         assert label is None, (
             f"Green/Oliver vs Green/Christian (different location/email) should be None; got {label}"
@@ -220,7 +220,7 @@ class TestFourFieldClassification:
     def test_16_same_location_mike_michael_none(self):
         left  = _p("Mike",    "Johnson", "a@example.com", "GymA")
         right = _p("Michael", "Smith",   "b@example.com", "GymA")
-        # same_loc=True, first_match=True (JW mike/michael likely >= 0.60)
+        # same_loc=True, first_match=True (JW mike/michael likely >= 0.65)
         # same_last=False, same_email=False → anchored=False → None even if matched=2
         jw = round(jaro_winkler("mike", "michael"), 6)
         label, _ = match_classification(left, right)
@@ -286,9 +286,9 @@ class TestGllFieldFlagClassification:
             f"GLL same last + same email should be potential_duplicate, got {label}"
         )
 
-    # Test 22 – Same email + first-name JW >= 0.60, different last → potential
+    # Test 22 – Same email + first-name JW >= 0.65, different last → potential
     def test_22_gll_same_email_first_match_different_last_potential(self):
-        # "jon" vs "john": JW should be >= 0.60
+        # "jon" vs "john": JW should be >= 0.65
         left  = _p("Jon",  "Smith",  "shared@example.com")
         right = _p("John", "Taylor", "shared@example.com")
         jw = round(jaro_winkler("jon", "john"), 6)
@@ -336,41 +336,41 @@ class TestGllFieldFlagClassification:
 
 class TestBoundaryConditions:
 
-    def test_jw_exactly_0_60_counts_as_match(self):
-        """Find (or construct) a pair where JW is exactly 0.600000 and verify it counts."""
-        # We test _field_flags directly so we can control the JW value via a known pair.
-        # "martha" vs "marhta" has known JW close to 0.944 — not useful.
-        # We instead verify the rounding and threshold logic works symbolically.
-        # Strategy: mock a pair where JW == 0.60 by finding a real pair close to boundary.
-        # "abcdef" vs "abcxyz": JW is low. Instead use the constant verification.
+    def test_jw_threshold_and_darcy_sally_false_positive(self):
+        """Threshold is 0.65; Darcy/Sally (JW=0.60) must not soft-match."""
+        assert FIRST_NAME_MATCH_MIN == 0.65
 
-        # Verify FIRST_NAME_MATCH_MIN is defined correctly.
-        assert FIRST_NAME_MATCH_MIN == 0.60
-
-        # Construct a case: "jon" vs "john" — known to be above 0.60
         jw_jon_john = round(jaro_winkler("jon", "john"), 6)
         assert jw_jon_john >= FIRST_NAME_MATCH_MIN, (
-            f"'jon' vs 'john' JW={jw_jon_john} should be >= 0.60"
+            f"'jon' vs 'john' JW={jw_jon_john} should be >= 0.65"
         )
 
-        # Verify that a pair below 0.60 is NOT counted.
-        # "alice" vs "zoe" — very low JW
+        jw_darcy_sally = round(jaro_winkler("darcy", "sally"), 6)
+        assert jw_darcy_sally < FIRST_NAME_MATCH_MIN, (
+            f"'darcy' vs 'sally' JW={jw_darcy_sally} should be < 0.65"
+        )
+        flags = _field_flags(
+            _p("Darcy", "Moore", "a@example.com", "Donyngs"),
+            _p("Sally", "Moore", "b@example.com", "Barnet"),
+            use_location=True,
+        )
+        assert flags["same_last"] is True
+        assert flags["first_match"] is False
+
         jw_low = round(jaro_winkler("alice", "zoe"), 6)
         assert jw_low < FIRST_NAME_MATCH_MIN, (
-            f"'alice' vs 'zoe' JW={jw_low} should be < 0.60"
+            f"'alice' vs 'zoe' JW={jw_low} should be < 0.65"
         )
 
-        # Verify the rounding itself: round(0.599999999, 6) == 0.6, but 0.5999999 rounds to 0.6
-        # The spec requires round(..., 6) so sub-6th-decimal noise doesn't cross boundary.
-        assert round(0.600000, 6) >= FIRST_NAME_MATCH_MIN
-        assert round(0.599999, 6) < FIRST_NAME_MATCH_MIN
+        assert round(0.650000, 6) >= FIRST_NAME_MATCH_MIN
+        assert round(0.649999, 6) < FIRST_NAME_MATCH_MIN
 
     def test_boundary_first_name_exactly_at_min_counts(self):
         """Pair where first_match is True (at or above boundary) produces potential when anchored."""
-        # Use "jon" vs "john" which we know is above 0.60
+        # Use "jon" vs "john" which we know is above 0.65
         left  = _p("Jon",  "Smith", "a@example.com")
         right = _p("John", "Smith", "b@example.com")
-        # same_last=True, first_match=True (jon/john >= 0.60), same_email=False
+        # same_last=True, first_match=True (jon/john >= 0.65), same_email=False
         # matched=2, anchored=True → potential
         label, _ = match_classification(left, right)
         jw = round(jaro_winkler("jon", "john"), 6)

@@ -24,6 +24,7 @@ from app import models, schemas
 from app.duplicate_group_service import (
     process_request_grouping,
     resolve_group_add,
+    resolve_group_add_as_new,
     unlink_duplicate_members,
     get_group_members,
 )
@@ -478,5 +479,81 @@ class TestDuplicateLifecycleFix:
         ledger_ids = {row.id for row in ledger}
         assert r1.id in ledger_ids
         assert r2.id in ledger_ids
+
+    def test_add_as_new_leaves_directory_and_creates_separate_person(self, db: Session):
+        """Not the same person vs Directory: Sally stays; Darcy becomes a new Directory row."""
+        from app.directory_person_match import find_directory_conflict, person_from_model
+        from app.duplicate_matching import are_requests_dismissed
+
+        now = datetime.now(timezone.utc)
+        sally = models.ManagerRequest(
+            id=f"test-sally-{uuid.uuid4().hex[:6]}",
+            person_first_name="Sally",
+            person_last_name="Moore",
+            person_email="sallymoore@example.com",
+            person_location="New Barnet",
+            action="Add",
+            status="handled",
+            outcome="Added",
+            handled_at=now - timedelta(days=1),
+            received_at=now - timedelta(days=1),
+        )
+        darcy = models.ManagerRequest(
+            id=f"test-darcy-{uuid.uuid4().hex[:6]}",
+            person_first_name="Darcy",
+            person_last_name="Moore",
+            person_email="darcymoore@example.com",
+            person_location="Donyngs",
+            action="Add",
+            status="new",
+            received_at=now,
+        )
+        db.add_all([sally, darcy])
+        db.flush()
+
+        group = process_request_grouping(db, darcy)
+        db.flush()
+        assert group is not None
+        assert group.directory_person_id == sally.id
+
+        new_dir = resolve_group_add_as_new(
+            db,
+            group,
+            final_values=schemas.PersonInfo(
+                firstName="Darcy",
+                lastName="Moore",
+                email="darcymoore@example.com",
+                location="Donyngs",
+            ),
+            admin_id="dev-bypass",
+            source_request_id=darcy.id,
+        )
+        db.flush()
+
+        sally_db = db.query(models.ManagerRequest).filter_by(id=sally.id).first()
+        assert sally_db is not None
+        assert sally_db.person_first_name == "Sally"
+        assert sally_db.person_email == "sallymoore@example.com"
+        assert sally_db.outcome == "Added"
+
+        assert new_dir.id == darcy.id
+        assert new_dir.status == "handled"
+        assert new_dir.outcome == "Added"
+        assert new_dir.person_first_name == "Darcy"
+        assert new_dir.person_email == "darcymoore@example.com"
+
+        assert group.status == "resolved"
+        assert (group.resolution_metadata or {}).get("resolution_type") == "add_as_new"
+        assert (group.resolution_metadata or {}).get("dismissed_directory_person_id") == sally.id
+        assert are_requests_dismissed(db, sally.id, darcy.id) is True
+
+        conflict = find_directory_conflict(
+            person=person_from_model(darcy),
+            action="Add",
+            directory_rows=[sally],
+            db=db,
+            req_id=darcy.id,
+        )
+        assert conflict is None
 
 

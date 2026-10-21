@@ -39,6 +39,20 @@ export const resolveGroupAdd = (groupId, { finalValues, adminNote, sourceRequest
   });
 
 /**
+ * POST /api/duplicate-groups/{groupId}/resolve-add-as-new
+ * Directory match is a false positive — leave Directory unchanged, add as new person.
+ */
+export const resolveGroupAddAsNew = (groupId, { finalValues, adminNote, sourceRequestId }) =>
+  groupRequest(`/api/duplicate-groups/${groupId}/resolve-add-as-new`, {
+    method: 'POST',
+    body: JSON.stringify({
+      finalValues,
+      adminNote: adminNote || null,
+      sourceRequestId: sourceRequestId || null,
+    }),
+  });
+
+/**
  * POST /api/duplicate-groups/{groupId}/resolve-update/preview
  * Dry-run — returns field-by-field diff without writing anything.
  */

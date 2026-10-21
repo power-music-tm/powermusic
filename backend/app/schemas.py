@@ -718,6 +718,18 @@ class ResolveAndAddIn(BaseModel):
     sourceRequestId: Optional[str] = None
 
 
+class ResolveAddAsNewIn(BaseModel):
+    """POST /api/duplicate-groups/{id}/resolve-add-as-new.
+
+    Directory match is a false positive: leave the existing Directory person alone,
+    dismiss the pair, and add the incoming request as a NEW Directory person.
+    """
+
+    finalValues: PersonInfo
+    adminNote: Optional[str] = Field(default=None, max_length=5000)
+    sourceRequestId: Optional[str] = None
+
+
 class ResolveAndUpdateIn(BaseModel):
     """POST /api/duplicate-groups/{id}/resolve-update (Case B — Directory person exists).
 
@@ -799,7 +811,7 @@ class ResolveGroupResultOut(BaseModel):
 
     status: str  # "resolved"
     groupId: str
-    resolutionType: str  # "add" | "update" | "keep_existing"
+    resolutionType: str  # "add" | "add_as_new" | "update" | "keep_existing"
     directoryPersonId: Optional[str] = None  # new or existing dir row id
     resolvedRequestCount: int = 0
 

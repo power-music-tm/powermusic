@@ -14,6 +14,7 @@ import { fetchJson } from '../utils/api';
 import { dismissRequest, getDismissImpact, suppressNewRequests, removeRequestsFromCache, REQUESTS_PAGE_CACHE_KEY } from '../utils/pilot2Api';
 import {
   resolveGroupAdd,
+  resolveGroupAddAsNew,
   resolveGroupUpdate,
   resolveGroupKeepExisting,
   unlinkGroupMember,
@@ -313,6 +314,15 @@ export default function GroupResolutionView({
     setConfirmAction('keep');
   };
 
+  /* ── not the same as Directory — add as new person ── */
+  const openAddAsNewConfirm = () => {
+    if (submitting || !hasDirectory) return;
+    if (currentRep?.action === 'Remove') return;
+    setModalValues({ ...form });
+    setDraftForm({ ...form });
+    setConfirmAction('add_as_new');
+  };
+
   /* ── open the Request History page (timeline + Merge) ── */
   const openHistoryPage = () => {
     if (submitting) return;
@@ -425,6 +435,35 @@ export default function GroupResolutionView({
       onResolved('add', personFullName(values));
     } catch (err) {
       onResolved('error', err.message || 'Failed to resolve group.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  /* ── not same as Directory — add as new (Case A2) ── */
+  const handleAddAsNew = async (values = form) => {
+    if (!values.firstName.trim() || !values.lastName.trim() || submitting) return;
+    if (!hasDirectory) return;
+    setSubmitting(true);
+    try {
+      await resolveGroupAddAsNew(group.id, {
+        finalValues: {
+          firstName: values.firstName.trim(),
+          lastName: values.lastName.trim(),
+          email: (values.email || '').trim(),
+          location: (values.location || '').trim(),
+          role: (values.role || '').trim() || null,
+          directorFirst: (values.directorFirst || '').trim() || null,
+          directorLast: (values.directorLast || '').trim() || null,
+        },
+        adminNote: adminNote.trim() || null,
+        sourceRequestId: currentSourceRequestId,
+      });
+      closeConfirmModal();
+      closeMergePage();
+      onResolved('add_as_new', personFullName(values));
+    } catch (err) {
+      onResolved('error', err.message || 'Failed to add as new person.');
     } finally {
       setSubmitting(false);
     }
@@ -1028,7 +1067,7 @@ export default function GroupResolutionView({
             </p>
           )}
           <p className="mt-4 text-xs text-[var(--color-text-muted)]">
-            This is the existing Directory record. Keep leaves it unchanged; Merge opens history so you can review and update it with final values.
+            This is the existing Directory record. Keep Existing and Delete removes the new request; Keep Existing and Add New creates a separate Directory person; Add and Update overwrites this record.
           </p>
         </SectionCard>
       )}
@@ -1100,6 +1139,16 @@ export default function GroupResolutionView({
                     Keep Existing and Delete New Request{members.length > 1 ? 's' : ''}
                   </button>
                 )}
+                {hasDirectory && currentRep?.action !== 'Remove' ? (
+                  <button
+                    type="button"
+                    disabled={!isFormValid || submitting || isEditing}
+                    onClick={openAddAsNewConfirm}
+                    className={BTN_SECONDARY}
+                  >
+                    Keep Existing and Add New
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   disabled={!isFormValid || submitting || isEditing}
@@ -1407,6 +1456,51 @@ export default function GroupResolutionView({
                 : 'The Directory record will stay unchanged. The incoming request will be closed without writing new values.')
             : 'No Directory record will be created. Incoming requests in this group will be closed and discarded.'}
         </p>
+      </Modal>
+
+      {/* ── Not the same person — add as new ── */}
+      <Modal
+        isOpen={confirmAction === 'add_as_new'}
+        onClose={closeConfirmModal}
+        title="Keep existing and add new?"
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={closeConfirmModal}
+              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={submitting || !isFormValid}
+              onClick={() => handleAddAsNew(modalValues || form)}
+              className="px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer disabled:opacity-60"
+            >
+              {submitting ? 'Adding…' : 'Keep Existing and Add New'}
+            </button>
+          </>
+        }
+      >
+        <p className="text-sm text-[var(--color-text-secondary)]">
+          The existing Directory record will stay unchanged. This request will be added as a
+          separate new person, and they will not be linked again as a duplicate of that Directory record.
+        </p>
+        <div className="mt-4 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-surface-bg)]/60 p-3.5">
+          <p className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+            New Directory person
+          </p>
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-3">
+            <MetaItem label="First Name" value={(modalValues || form).firstName || '—'} />
+            <MetaItem label="Last Name" value={(modalValues || form).lastName || '—'} />
+            <MetaItem label="Email" value={(modalValues || form).email || '—'} />
+            <MetaItem
+              label={isGll ? 'Gym Location' : (isHealthFitness ? 'Client' : 'Location')}
+              value={((modalValues || form).location || '').trim() || 'No location'}
+            />
+          </dl>
+        </div>
       </Modal>
 
       {/* ── Unlink step-by-step modal ── */}

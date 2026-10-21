@@ -76,7 +76,7 @@ class DuplicateGroup(Base):
 
     resolution_metadata stores an audit snapshot at resolve time:
       {
-        "resolution_type": "add" | "update" | "keep_existing",
+        "resolution_type": "add" | "add_as_new" | "update" | "keep_existing",
         "final_values": {firstName, lastName, email, location},
         "previous_values": {firstName, lastName, email, location},  # update only
         "admin_note": "..."

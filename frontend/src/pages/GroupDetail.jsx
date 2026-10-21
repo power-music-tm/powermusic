@@ -78,6 +78,7 @@ export default function GroupDetail() {
       // If resolving/removing the group entirely, suppress group and member IDs
       if (
         type === 'add' ||
+        type === 'add_as_new' ||
         type === 'mark_removed' ||
         type === 'remove_group' ||
         type === 'update' ||
@@ -96,6 +97,11 @@ export default function GroupDetail() {
       switch (type) {
         case 'add':
           toastMsg = 'Merged and added to Directory.';
+          break;
+        case 'add_as_new':
+          toastMsg = name
+            ? `${name} added as a new Directory person. Existing record left unchanged.`
+            : 'Added as a new Directory person. Existing record left unchanged.';
           break;
         case 'mark_removed':
           toastMsg = 'Request resolved and person marked as removed.';
@@ -159,7 +165,7 @@ export default function GroupDetail() {
       }
 
       // Refresh directory cache in the background for Directory page consistency
-      if (type === 'add' || type === 'update') {
+      if (type === 'add' || type === 'add_as_new' || type === 'update') {
         refreshCache(
           directoryCacheKey,
           () =>

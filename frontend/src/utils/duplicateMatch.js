@@ -1,12 +1,12 @@
 /**
  * Client-side mirror of backend match_classification for Request History UX.
  * Uses field-flag classification rules:
- * - FIRST_NAME_MATCH_MIN = 0.60 Jaro-Winkler similarity
+ * - FIRST_NAME_MATCH_MIN = 0.65 Jaro-Winkler similarity
  * - Confirmed: exact equality on all identity fields
  * - Potential: matched field count >= 2 AND (same_last OR same_email)
  */
 
-const FIRST_NAME_MATCH_MIN = 0.60;
+const FIRST_NAME_MATCH_MIN = 0.65;
 
 function norm(val) {
   if (!val) return '';

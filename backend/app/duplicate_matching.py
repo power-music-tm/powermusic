@@ -216,7 +216,7 @@ GLL_POTENTIAL_DUPLICATE_THRESHOLD = 33.75
 
 # Minimum Jaro-Winkler similarity for the first name to count as matching.
 # Rounded to 6 d.p. before comparison to avoid floating-point boundary instability.
-FIRST_NAME_MATCH_MIN = 0.60
+FIRST_NAME_MATCH_MIN = 0.65
 
 # Minimum number of True field flags required for a potential-duplicate verdict.
 MIN_MATCHED_FIELDS_FOR_POTENTIAL = 2

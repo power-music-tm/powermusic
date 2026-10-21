@@ -1429,6 +1429,79 @@ def resolve_group_add(
     return dir_row
 
 
+# ── Case A2: Not the same person as Directory — Add as new ───────────────────
+
+
+def resolve_group_add_as_new(
+    db: Session,
+    group: models.DuplicateGroup,
+    *,
+    final_values: schemas.PersonInfo,
+    admin_id: Optional[str],
+    partner_id: Optional[str] = None,
+    admin_note: Optional[str] = None,
+    source_request_id: Optional[str] = None,
+) -> models.ManagerRequest:
+    """False-positive vs Directory: dismiss the Directory link, then add as a new person.
+
+    Leaves the existing Directory record unchanged. Persists dismissed pairs so the
+    incoming request(s) are not re-linked to that Directory person on regrouping.
+    Then resolves like Case A (create/update a NEW Directory row from final_values).
+
+    Requires group.directory_person_id. Does NOT call db.commit().
+    """
+    old_dir_id = group.directory_person_id
+    if not old_dir_id:
+        raise ValueError(
+            "This group has no linked Directory person. Use resolve-add instead."
+        )
+
+    now = datetime.now(timezone.utc)
+    admin_uuid = None
+    if admin_id and admin_id != "dev-bypass":
+        try:
+            from uuid import UUID
+            admin_uuid = UUID(admin_id)
+        except ValueError:
+            pass
+
+    members = get_group_members(db, group.id)
+    for member in members:
+        if not member.id or member.id == old_dir_id:
+            continue
+        if not are_requests_dismissed(db, old_dir_id, member.id):
+            db.add(
+                models.DismissedDuplicateMatch(
+                    id=f"dism-{uuid.uuid4().hex[:12]}",
+                    request_id_1=old_dir_id,
+                    request_id_2=member.id,
+                    dismissed_by_admin_id=admin_uuid,
+                    created_at=now,
+                )
+            )
+
+    # Detach the false Directory link so Case A resolve-add can proceed.
+    group.directory_person_id = None
+    db.flush()
+
+    dir_row = resolve_group_add(
+        db,
+        group,
+        final_values=final_values,
+        admin_id=admin_id,
+        partner_id=partner_id,
+        admin_note=admin_note,
+        source_request_id=source_request_id,
+    )
+
+    meta = dict(group.resolution_metadata or {})
+    meta["resolution_type"] = "add_as_new"
+    meta["dismissed_directory_person_id"] = old_dir_id
+    group.resolution_metadata = meta
+    db.flush()
+    return dir_row
+
+
 # ── Case B: Resolve & Update ─────────────────────────────────────────────────
 
 

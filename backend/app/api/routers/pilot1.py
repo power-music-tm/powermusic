@@ -1897,6 +1897,62 @@ def resolve_group_add_api(
     }
 
 
+@router.post(
+    "/api/duplicate-groups/{group_id}/resolve-add-as-new",
+    response_model=schemas.ResolveGroupResultOut,
+)
+def resolve_group_add_as_new_api(
+    group_id: str,
+    payload: schemas.ResolveAddAsNewIn,
+    db: Session = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    """Directory match is wrong — leave Directory unchanged and add as a new person.
+
+    Persists a dismissed pair vs the linked Directory person so regrouping does not
+    re-attach the false positive, then creates a new Directory record from finalValues.
+    """
+    from app.duplicate_group_service import resolve_group_add_as_new
+
+    group = db.query(models.DuplicateGroup).filter(models.DuplicateGroup.id == group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Duplicate group not found")
+    if group.status != "active":
+        raise HTTPException(status_code=409, detail=f"Group is already '{group.status}'. Cannot resolve again")
+    if not group.directory_person_id:
+        raise HTTPException(
+            status_code=409,
+            detail="This group has no linked Directory person. Use resolve-add instead.",
+        )
+
+    admin_id = str(admin.id) if getattr(admin, "id", None) else None
+    members = get_group_members(db, group.id)
+    member_count = len(members)
+
+    try:
+        dir_row = resolve_group_add_as_new(
+            db, group,
+            final_values=payload.finalValues,
+            admin_id=admin_id,
+            partner_id=group.partner_id,
+            admin_note=payload.adminNote,
+            source_request_id=payload.sourceRequestId,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    db.commit()
+    notify_admin_requests_changed("group_resolve_add_as_new")
+
+    return {
+        "status": "resolved",
+        "groupId": group_id,
+        "resolutionType": "add_as_new",
+        "directoryPersonId": dir_row.id,
+        "resolvedRequestCount": member_count,
+    }
+
+
 # ── Task 2: Resolve & Update — Preview (dry run) ──────────────────────────────
 
 @router.post(
