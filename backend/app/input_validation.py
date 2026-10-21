@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import re
-import unicodedata
 from typing import Optional
 
 # Control characters and null bytes — common in injection / log-forging attempts
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 _HTML_TAG = re.compile(r"<[^>]+>")
-_NAME_ALLOWED_EXTRA = {" ", "'", ".", "-"}
-_ROSTER_NAME_ALLOWED_EXTRA = {" ", "-", "'"}
 _ROSTER_NAME_MIN_LENGTH = 2
 _ROSTER_LOCATION_MIN_LENGTH = 2
 
@@ -26,26 +23,6 @@ def strip_control_chars(value: Optional[str]) -> Optional[str]:
 def _reject_html(value: str, field_name: str) -> None:
     if _HTML_TAG.search(value):
         raise ValueError(f"{field_name} must not contain HTML")
-
-
-def _is_letter_or_mark(char: str) -> bool:
-    if not char:
-        return False
-    category = unicodedata.category(char)
-    return category.startswith("L") or category == "Mn"
-
-
-def _is_valid_person_name(value: str) -> bool:
-    if not value or len(value) > 100:
-        return False
-    if not _is_letter_or_mark(value[0]):
-        return False
-    for char in value:
-        if char in _NAME_ALLOWED_EXTRA:
-            continue
-        if not _is_letter_or_mark(char):
-            return False
-    return True
 
 
 def normalize_text(
@@ -84,34 +61,6 @@ def normalize_email(value: Optional[str], *, required: bool = False) -> Optional
     return cleaned.lower()
 
 
-def _letter_count(value: str) -> int:
-    return sum(1 for char in value if _is_letter_or_mark(char))
-
-
-def _is_valid_roster_person_name(value: str) -> bool:
-    if not (_ROSTER_NAME_MIN_LENGTH <= len(value) <= 100):
-        return False
-    if _letter_count(value) < _ROSTER_NAME_MIN_LENGTH:
-        return False
-    for char in value:
-        if char in _ROSTER_NAME_ALLOWED_EXTRA:
-            continue
-        if not _is_letter_or_mark(char):
-            return False
-    return True
-
-
-def _is_valid_roster_person_location(value: str) -> bool:
-    if not (_ROSTER_LOCATION_MIN_LENGTH <= len(value) <= 200):
-        return False
-    for char in value:
-        if char == " ":
-            continue
-        if not _is_letter_or_mark(char):
-            return False
-    return True
-
-
 def normalize_roster_person_name(
     value: Optional[str],
     *,
@@ -127,11 +76,9 @@ def normalize_roster_person_name(
     )
     if cleaned is None:
         return None
-    if not _is_valid_roster_person_name(cleaned):
+    if len(cleaned) < _ROSTER_NAME_MIN_LENGTH:
         raise ValueError(
-            f"{field_name} must be at least {_ROSTER_NAME_MIN_LENGTH} characters "
-            "and contain letters, spaces, hyphens, and apostrophes only "
-            "(no numbers or other symbols)."
+            f"{field_name} must be at least {_ROSTER_NAME_MIN_LENGTH} characters."
         )
     return cleaned
 
@@ -151,10 +98,9 @@ def normalize_roster_person_location(
     )
     if cleaned is None:
         return None
-    if not _is_valid_roster_person_location(cleaned):
+    if len(cleaned) < _ROSTER_LOCATION_MIN_LENGTH:
         raise ValueError(
-            f"{field_name} must be at least {_ROSTER_LOCATION_MIN_LENGTH} characters "
-            "and contain letters and spaces only (no numbers or symbols)."
+            f"{field_name} must be at least {_ROSTER_LOCATION_MIN_LENGTH} characters."
         )
     return cleaned
 
@@ -174,10 +120,6 @@ def normalize_person_name(
     )
     if cleaned is None:
         return None
-    if not _is_valid_person_name(cleaned):
-        raise ValueError(
-            f"{field_name} may only contain letters, spaces, hyphens, and apostrophes."
-        )
     return cleaned
 
 

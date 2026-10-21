@@ -10,9 +10,9 @@ import {
   validateRosterPersonName,
 } from '../src/utils/managerFormValidation.js';
 
-test('sanitize strips digits/symbols from names and location', () => {
-  assert.equal(sanitizePersonFieldInput('firstName', 'Jo3hn!'), 'John');
-  assert.equal(sanitizePersonFieldInput('location', 'London 12 #'), 'London  ');
+test('sanitize keeps digits/symbols in names and location; caps length', () => {
+  assert.equal(sanitizePersonFieldInput('firstName', 'Jo3hn!'), 'Jo3hn!');
+  assert.equal(sanitizePersonFieldInput('location', 'London 12 #'), 'London 12 #');
   assert.equal(sanitizePersonFieldInput('email', 'a@b.com<script>').includes('<'), true);
   assert.ok(sanitizePersonFieldInput('firstName', 'x'.repeat(200)).length <= 100);
 });
@@ -23,8 +23,10 @@ test('roster name and location rules', () => {
   assert.equal(sanitizePersonFieldInput('firstName', 'Mary Ann'), 'Mary Ann');
   assert.equal(validateRosterPersonName('Mary Ann', 'User First Name', 'firstName').ok, true);
   assert.equal(validateRosterPersonName("Smith'Ogon", 'User Last Name', 'lastName').ok, true);
+  assert.equal(validateRosterPersonName('Rock & Roll', 'User First Name', 'firstName').ok, true);
   assert.equal(validatePersonLocation('Pure Gym London').ok, true);
-  assert.equal(validatePersonLocation('Gym 12').ok, false);
+  assert.equal(validatePersonLocation('Gym 12').ok, true);
+  assert.equal(validatePersonLocation('R&B / Hip-Hop').ok, true);
   assert.equal(validatePersonLocation('').ok, false);
   assert.equal(validatePersonLocation('A').ok, false);
 });

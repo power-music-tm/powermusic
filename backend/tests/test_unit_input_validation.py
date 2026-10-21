@@ -72,14 +72,14 @@ class TestNormalizeEmail:
 class TestNormalizePersonName:
     @pytest.mark.parametrize(
         "value",
-        ["Marie", "Marie-Claire", "O'Brien", "José", "Anne Marie"],
+        ["Marie", "Marie-Claire", "O'Brien", "José", "Anne Marie", "John2", "Rock & Roll", "A!"],
     )
     def test_accepts_valid(self, value):
         assert normalize_person_name(value, required=True) == value
 
     @pytest.mark.parametrize(
         "value",
-        ["John2", "<script>x</script>", "A!", "", "123"],
+        ["<script>x</script>", ""],
     )
     def test_rejects_invalid(self, value):
         with pytest.raises(ValueError):
@@ -87,13 +87,15 @@ class TestNormalizePersonName:
 
 
 class TestNormalizeRosterFields:
-    def test_roster_name_accepts_spaces_hyphens_apostrophes(self):
+    def test_roster_name_accepts_spaces_hyphens_apostrophes_and_symbols(self):
         assert normalize_roster_person_name("Mary Ann", required=True) == "Mary Ann"
         assert normalize_roster_person_name("Anna-Lisa", required=True) == "Anna-Lisa"
         assert normalize_roster_person_name("O'Neil", required=True) == "O'Neil"
         assert normalize_roster_person_name("Smith'Ogon", required=True) == "Smith'Ogon"
+        assert normalize_roster_person_name("John2", required=True) == "John2"
+        assert normalize_roster_person_name("Rock & Roll", required=True) == "Rock & Roll"
         with pytest.raises(ValueError):
-            normalize_roster_person_name("John2", required=True)
+            normalize_roster_person_name("r", required=True)
 
     def test_roster_name_accepts_letters(self):
         assert normalize_roster_person_name("José", required=True) == "José"
@@ -104,9 +106,14 @@ class TestNormalizeRosterFields:
             == "Pure Gym London"
         )
 
-    def test_roster_location_rejects_numbers(self):
+    def test_roster_location_accepts_numbers_and_symbols(self):
+        assert normalize_roster_person_location("Gym 12", required=True) == "Gym 12"
+        assert (
+            normalize_roster_person_location("R&B / Hip-Hop", required=True)
+            == "R&B / Hip-Hop"
+        )
         with pytest.raises(ValueError):
-            normalize_roster_person_location("Gym 12", required=True)
+            normalize_roster_person_location("A", required=True)
 
 
 class TestNormalizeNotesClubSearch:

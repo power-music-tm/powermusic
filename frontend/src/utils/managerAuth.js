@@ -4,8 +4,6 @@ import { fetchJson } from './api.js';
 const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 const HTML_TAG = /<[^>]+>/;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const NAME_RE = /^[\p{L}\p{M}][\p{L}\p{M}\s'.-]{0,99}$/u;
-const CLUB_LOCATION_RE = /^[\p{L}\p{M}]+(?: [\p{L}\p{M}]+)*$/u;
 const MIN_CLUB_LOCATION_LENGTH = 2;
 
 /** @type {string[] | null} */
@@ -412,12 +410,6 @@ export function validatePersonName(raw, fieldName) {
   }
   const htmlError = rejectHtml(cleaned, fieldName);
   if (htmlError) return { ok: false, error: htmlError };
-  if (!NAME_RE.test(cleaned)) {
-    return {
-      ok: false,
-      error: `${fieldName} may only contain letters, spaces, hyphens, and apostrophes.`,
-    };
-  }
   return { ok: true, value: cleaned };
 }
 
@@ -434,12 +426,6 @@ export function validateClub(raw, fieldName = 'Club Location') {
   }
   const htmlError = rejectHtml(cleaned, fieldName);
   if (htmlError) return { ok: false, error: htmlError };
-  if (!CLUB_LOCATION_RE.test(cleaned)) {
-    return {
-      ok: false,
-      error: `${fieldName} must contain letters and spaces only (no numbers or symbols).`,
-    };
-  }
   return { ok: true, value: cleaned };
 }
 

@@ -72,9 +72,11 @@ test('password rules reject weak / common / email-related secrets', () => {
 test('person name and club validation', () => {
   assert.equal(validatePersonName('Marie-Claire', 'First Name').ok, true);
   assert.equal(validatePersonName('<b>x</b>', 'First Name').ok, false);
-  assert.equal(validatePersonName('John2', 'First Name').ok, false);
+  assert.equal(validatePersonName('John2', 'First Name').ok, true);
+  assert.equal(validatePersonName('Rock & Roll', 'First Name').ok, true);
   assert.equal(validateClub('Pure Gym London').ok, true);
-  assert.equal(validateClub('Gym 12').ok, false);
+  assert.equal(validateClub('Gym 12').ok, true);
+  assert.equal(validateClub('Studio #1').ok, true);
   assert.equal(validateClub('A').ok, false);
 });
 

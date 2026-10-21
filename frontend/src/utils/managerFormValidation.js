@@ -2,11 +2,6 @@ import { normalizeManagerEmail } from './managerAuth.js';
 
 const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 const HTML_TAG = /<[^>]+>/;
-const NAME_CHARS = /[^\p{L}\p{M}\s'-]/gu;
-const LOCATION_CHARS = /[^\p{L}\p{M}\s]/gu;
-const ROSTER_NAME_RE = /^[\p{L}\p{M}\s'-]+$/u;
-const ROSTER_LOCATION_RE = /^[\p{L}\p{M}]+(?: [\p{L}\p{M}]+)*$/u;
-const MIN_ROSTER_LETTERS_RE = /[\p{L}\p{M}]/gu;
 
 export const PERSON_FIELD_LIMITS = {
   firstName: 100,
@@ -23,17 +18,17 @@ export const MIN_ROSTER_LOCATION_LENGTH = 2;
 
 const PERSON_FIELDS = ['firstName', 'lastName', 'email', 'location', 'role', 'notes'];
 
-/** Strip invalid characters as the user types. */
+/** Cap length and strip control chars; do not strip punctuation or symbols. */
 export function sanitizePersonFieldInput(field, value) {
   const raw = String(value ?? '').replace(CONTROL_CHARS, '');
   if (field === 'email') {
     return raw.slice(0, PERSON_FIELD_LIMITS.email);
   }
   if (field === 'firstName' || field === 'lastName') {
-    return raw.replace(NAME_CHARS, '').slice(0, PERSON_FIELD_LIMITS[field]);
+    return raw.slice(0, PERSON_FIELD_LIMITS[field]);
   }
   if (field === 'location') {
-    return raw.replace(LOCATION_CHARS, '').slice(0, PERSON_FIELD_LIMITS.location);
+    return raw.slice(0, PERSON_FIELD_LIMITS.location);
   }
   if (field === 'role') {
     return raw.slice(0, PERSON_FIELD_LIMITS.role);
@@ -53,11 +48,6 @@ function rosterTextFieldValue(raw) {
   return String(raw ?? '').replace(CONTROL_CHARS, '').trim();
 }
 
-function rosterLetterCount(value) {
-  const matches = value.match(MIN_ROSTER_LETTERS_RE);
-  return matches ? matches.length : 0;
-}
-
 export function validateRosterPersonName(raw, fieldName, fieldKey) {
   const cleaned = rosterTextFieldValue(raw);
   if (!cleaned) {
@@ -71,15 +61,6 @@ export function validateRosterPersonName(raw, fieldName, fieldKey) {
   }
   const htmlError = rejectHtml(cleaned, fieldName);
   if (htmlError) return { ok: false, error: htmlError };
-  if (rosterLetterCount(cleaned) < MIN_ROSTER_NAME_LENGTH) {
-    return { ok: false, error: `${fieldName} must be at least ${MIN_ROSTER_NAME_LENGTH} characters.` };
-  }
-  if (!ROSTER_NAME_RE.test(cleaned)) {
-    return {
-      ok: false,
-      error: `${fieldName} must contain letters, spaces, hyphens, and apostrophes only (no numbers or other symbols).`,
-    };
-  }
   return { ok: true, value: cleaned };
 }
 
@@ -108,12 +89,6 @@ export function validatePersonLocation(raw, fieldName = 'User Location') {
   }
   const htmlError = rejectHtml(cleaned, fieldName);
   if (htmlError) return { ok: false, error: htmlError };
-  if (!ROSTER_LOCATION_RE.test(cleaned)) {
-    return {
-      ok: false,
-      error: `${fieldName} must contain letters and spaces only (no numbers or symbols).`,
-    };
-  }
   return { ok: true, value: cleaned };
 }
 
