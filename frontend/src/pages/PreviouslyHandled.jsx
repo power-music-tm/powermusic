@@ -330,7 +330,7 @@ export default function PreviouslyHandled() {
   ];
 
   return (
-    <div className="max-w-7xl mx-auto space-y-6 select-none">
+    <div className="max-w-7xl mx-auto space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-[var(--color-border-default)] pb-4">
         <div className="flex items-center gap-3">
@@ -407,7 +407,7 @@ export default function PreviouslyHandled() {
         title="Request record"
       >
         {selectedRequest && (
-          <div className="space-y-6 text-left select-none">
+          <div className="space-y-6 text-left">
             {/* Header tags and timestamp */}
             <div className="flex items-start justify-between border-b border-[var(--color-border-default)] pb-4">
               <div className="text-xs text-[var(--color-text-secondary)] font-medium space-y-0.5">

@@ -187,7 +187,7 @@ export default function FlaggedEmails() {
   ];
 
   return (
-    <div className="flagged-emails-container max-w-7xl mx-auto space-y-6 select-none relative">
+    <div className="flagged-emails-container max-w-7xl mx-auto space-y-6 relative">
       {/* Inject custom CSS styles for overriding Drawer width inside this view */}
       <style>{`
         .flagged-emails-container .max-w-\\[420px\\] {
@@ -247,7 +247,7 @@ export default function FlaggedEmails() {
         title={selectedEmail ? truncate(selectedEmail.subject, 40) : ''}
       >
         {selectedEmail && (
-          <div className="flex flex-col h-full space-y-6 text-left select-none pb-20">
+          <div className="flex flex-col h-full space-y-6 text-left pb-20">
             {/* Drawer Body Layout Split */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch">
               {/* Column A — Original Email */}

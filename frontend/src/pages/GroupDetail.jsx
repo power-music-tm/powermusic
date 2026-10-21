@@ -185,7 +185,7 @@ export default function GroupDetail() {
   /* ── loading state ── */
   if (loading) {
     return (
-      <AdminPageScroll contentClassName="flex min-h-full items-center justify-center text-sm text-[var(--color-text-secondary)] select-none">
+      <AdminPageScroll contentClassName="flex min-h-full items-center justify-center text-sm text-[var(--color-text-secondary)]">
         Loading group…
       </AdminPageScroll>
     );
@@ -194,7 +194,7 @@ export default function GroupDetail() {
   /* ── not found / already resolved ── */
   if (notFound || !group) {
     return (
-      <AdminPageScroll contentClassName="flex min-h-full items-center justify-center select-none">
+      <AdminPageScroll contentClassName="flex min-h-full items-center justify-center">
         <div className="mx-auto flex max-w-lg flex-col items-center gap-4 text-center">
           <div>
             <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">
@@ -217,7 +217,7 @@ export default function GroupDetail() {
   }
 
   return (
-    <AdminPageScroll dataPage="group-detail" contentClassName="min-w-0 select-none pb-2">
+    <AdminPageScroll dataPage="group-detail" contentClassName="min-w-0 pb-2">
       <Toast />
       <GroupResolutionView
         group={group}

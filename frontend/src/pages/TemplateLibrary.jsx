@@ -2072,7 +2072,7 @@ export default function TemplateManagement() {
   };
 
   return (
-    <div className={`${adminPageShellClass} select-none`}>
+    <div className={`${adminPageShellClass}`}>
       <Toast />
 
       <PageHeader

@@ -150,7 +150,7 @@ export default function TemplateEditor({ mode = 'new' }) {
   };
 
   return (
-    <div className="max-w-3xl mx-auto space-y-6 select-none relative">
+    <div className="max-w-3xl mx-auto space-y-6 relative">
       {/* Breadcrumb Navigation Header */}
       <div className="flex items-center gap-3 pb-2">
         <Link

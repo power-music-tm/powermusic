@@ -1730,7 +1730,7 @@ export default function UserLedger() {
 
 
           return (
-            <div className="space-y-3 text-left select-none">
+            <div className="space-y-3 text-left">
               <div className="rounded-2xl border border-[var(--color-border-default)] bg-white px-4 py-4 shadow-[0_1px_2px_rgba(26,26,46,0.04)]">
                 <div className="flex items-start gap-3">
                   <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[var(--color-brand-secondary-muted)] text-sm font-bold tracking-tight text-[var(--color-brand-primary)] ring-1 ring-[var(--color-brand-secondary-border)]/50">

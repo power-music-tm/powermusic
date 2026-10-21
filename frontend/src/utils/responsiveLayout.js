@@ -8,4 +8,4 @@ export const adminPageShellClassNarrow =
 
 /** @deprecated Prefer AdminPageScroll — kept for pages that still need a plain class. */
 export const adminPageScrollClass =
-  'mx-auto h-full min-h-0 min-w-0 w-full max-w-7xl overflow-y-auto space-y-4 px-4 pb-2 pt-4 sm:space-y-6 sm:px-6 sm:pt-6 select-none';
+  'mx-auto h-full min-h-0 min-w-0 w-full max-w-7xl overflow-y-auto space-y-4 px-4 pb-2 pt-4 sm:space-y-6 sm:px-6 sm:pt-6';

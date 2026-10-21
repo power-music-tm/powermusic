@@ -11,7 +11,7 @@ export default function Inboxes() {
   };
 
   return (
-    <div className="max-w-7xl mx-auto space-y-8 select-none">
+    <div className="max-w-7xl mx-auto space-y-8">
       {/* Header */}
       <div className="border-b border-[var(--color-border-default)] pb-4">
         <h2 className="text-xl font-bold text-[var(--color-text-primary)]">

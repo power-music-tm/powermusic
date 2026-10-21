@@ -172,7 +172,7 @@ export default function RequestDetail() {
 
   if (loading) {
     return (
-      <AdminPageScroll contentClassName="flex min-h-full items-center justify-center text-sm text-[var(--color-text-secondary)] select-none">
+      <AdminPageScroll contentClassName="flex min-h-full items-center justify-center text-sm text-[var(--color-text-secondary)]">
         Loading request…
       </AdminPageScroll>
     );
@@ -180,7 +180,7 @@ export default function RequestDetail() {
 
   if (notFound || !request) {
     return (
-      <AdminPageScroll contentClassName="flex min-h-full items-center justify-center select-none">
+      <AdminPageScroll contentClassName="flex min-h-full items-center justify-center">
         <div className="mx-auto flex max-w-lg flex-col items-center gap-4 text-center">
           <div>
             <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">Request not found</h1>
@@ -201,7 +201,7 @@ export default function RequestDetail() {
   }
 
   return (
-    <AdminPageScroll dataPage="request-detail" contentClassName="min-w-0 select-none pb-2">
+    <AdminPageScroll dataPage="request-detail" contentClassName="min-w-0 pb-2">
       <RequestDetailView
         request={request}
         directory={directory}

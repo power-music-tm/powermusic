@@ -229,7 +229,7 @@ export default function RequestDetailView({
     || null;
 
   return (
-    <div className="relative z-0 min-w-0 w-full bg-[var(--color-surface-bg)] pb-16 select-none">
+    <div className="relative z-0 min-w-0 w-full bg-[var(--color-surface-bg)] pb-16">
       <nav aria-label="Breadcrumb" className="mb-8 flex w-full flex-wrap items-center gap-x-3 gap-y-2">
         <HoverTip label="Back to New Requests">
           <Link

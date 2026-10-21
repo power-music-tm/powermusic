@@ -1316,7 +1316,7 @@ export default function EmailQueue() {
   const pageEnd = Math.min(currentPage * PAGE_SIZE, filteredThreads.length);
 
   return (
-    <div className={`${adminPageShellClass} select-none`}>
+    <div className={`${adminPageShellClass}`}>
       <Toast />
 
       <PageHeader

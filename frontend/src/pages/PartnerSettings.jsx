@@ -792,7 +792,7 @@ export default function PartnerSettings() {
   };
 
   return (
-    <AdminPageScroll dataPage="partner-settings" contentClassName="min-w-0 select-none pb-16">
+    <AdminPageScroll dataPage="partner-settings" contentClassName="min-w-0 pb-16">
       <Toast />
 
       <div className="mx-auto w-full max-w-4xl">

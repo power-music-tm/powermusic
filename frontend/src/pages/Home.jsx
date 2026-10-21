@@ -782,7 +782,7 @@ export default function Home() {
 
   return (
     <AdminPageScroll
-      contentClassName="flex flex-col gap-2 select-none pb-4 lg:h-full lg:min-h-0 lg:overflow-hidden lg:pb-4"
+      contentClassName="flex flex-col gap-2 pb-4 lg:h-full lg:min-h-0 lg:overflow-hidden lg:pb-4"
       scrollClassName="h-full w-full overflow-y-auto scrollbar-hide lg:overflow-hidden"
     >
       <PageHeader

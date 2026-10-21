@@ -12,6 +12,10 @@
 
   body {
     margin: 0;
+    /* Default like normal websites: content is selectable/copyable.
+       UI chrome can still opt out with select-none on buttons/tags. */
+    -webkit-user-select: text;
+    user-select: text;
   }
 }
 

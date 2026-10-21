@@ -8,7 +8,7 @@ export default function AdminPageScroll({
   children,
   className = '',
   narrow = false,
-  contentClassName = 'flex flex-col gap-4 sm:gap-6 select-none pb-2',
+  contentClassName = 'flex flex-col gap-4 sm:gap-6 select-text pb-2',
   scrollClassName = 'h-full w-full overflow-y-scroll scrollbar-hide',
   dataPage,
 }) {
