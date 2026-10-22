@@ -1756,15 +1756,45 @@ def get_duplicate_group_details(
 
     classification_summary = compute_group_classification_summary(db, group, members=members)
 
-    directory_person = None
-    if group.directory_person_id:
-        dir_row = (
+    from app.duplicate_group_service import find_all_directory_matches_for_requests
+    from app.duplicate_matching import get_all_dismissed_pairs
+
+    # Live re-scan: every Directory row that still matches any group member.
+    matched_dir_rows = find_all_directory_matches_for_requests(
+        db,
+        members,
+        dismissed_set=get_all_dismissed_pairs(db),
+    )
+    # Ensure the group's primary directory_person_id is included even if a
+    # live re-scan misses it (e.g. fields edited after grouping).
+    if group.directory_person_id and not any(r.id == group.directory_person_id for r in matched_dir_rows):
+        primary_row = (
             db.query(models.ManagerRequest)
             .filter(models.ManagerRequest.id == group.directory_person_id)
             .first()
         )
-        if dir_row:
-            directory_person = directory_person_to_api_dict(dir_row, db=db)
+        if primary_row:
+            matched_dir_rows = [primary_row, *matched_dir_rows]
+
+    directory_persons = [
+        directory_person_to_api_dict(row, db=db) for row in matched_dir_rows
+    ]
+    directory_person = None
+    if group.directory_person_id:
+        directory_person = next(
+            (p for p in directory_persons if p.get("id") == group.directory_person_id),
+            directory_persons[0] if directory_persons else None,
+        )
+        if directory_person is None:
+            dir_row = (
+                db.query(models.ManagerRequest)
+                .filter(models.ManagerRequest.id == group.directory_person_id)
+                .first()
+            )
+            if dir_row:
+                directory_person = directory_person_to_api_dict(dir_row, db=db)
+    elif directory_persons:
+        directory_person = directory_persons[0]
 
     return {
         "id": group.id,
@@ -1773,8 +1803,11 @@ def get_duplicate_group_details(
         "status": group.status,
         "createdAt": group.created_at,
         "resolvedAt": group.resolved_at,
-        "directoryPersonId": group.directory_person_id,
+        "directoryPersonId": group.directory_person_id or (
+            directory_persons[0].get("id") if directory_persons else None
+        ),
         "directoryPerson": directory_person,
+        "directoryPersons": directory_persons,
         "representativeRequestId": group.representative_request_id or (
             members[-1].id if members else None
         ),

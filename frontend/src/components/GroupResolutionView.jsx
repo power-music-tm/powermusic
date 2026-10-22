@@ -186,17 +186,24 @@ export default function GroupResolutionView({
   const repMember = group.members.find((m) => m.isRepresentative) || group.members[0];
   const hasDirectory = Boolean(group.directoryPersonId);
 
-  // Find Directory person for Section A (prefer attached directoryPerson from backend)
-  const dirPerson =
-    group.directoryPerson ||
-    (hasDirectory
-      ? directory.find((d) => d.id === group.directoryPersonId) ||
-      directory.find(
-        (d) =>
-          (d.email || '').toLowerCase() ===
-          (repMember?.person?.email || '').toLowerCase(),
-      )
-      : null);
+  // Prefer backend multi-match list; fall back to single directoryPerson / local directory.
+  const directoryPersons = (() => {
+    if (Array.isArray(group.directoryPersons) && group.directoryPersons.length > 0) {
+      return group.directoryPersons;
+    }
+    const single =
+      group.directoryPerson ||
+      (hasDirectory
+        ? directory.find((d) => d.id === group.directoryPersonId) ||
+          directory.find(
+            (d) =>
+              (d.email || '').toLowerCase() ===
+              (repMember?.person?.email || '').toLowerCase(),
+          )
+        : null);
+    return single ? [single] : [];
+  })();
+  const dirPerson = directoryPersons[0] || null;
 
   const { selectedPartner, partners } = usePartners();
   const rawPartnerId = group?.partnerId || group?.partner_id || repMember?.partnerId || repMember?.partner_id;
@@ -1318,55 +1325,94 @@ export default function GroupResolutionView({
         </SectionCard>
       ) : (
         <>
-      {/* ── Section A: Current Directory Record (only if already_exists) ── */}
+      {/* ── Section A: Current Directory Record(s) ── */}
       {hasDirectory && (
-        <SectionCard icon={Database} title="Current Directory Record">
-          {dirPerson ? (
-            <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-x-8">
-              <MetaItem label="First Name" value={dirPerson.firstName} />
-              <MetaItem label="Last Name" value={dirPerson.lastName} />
-              <MetaItem label="Email" value={dirPerson.email} />
-              <MetaItem label={isGll ? 'Gym Location' : (isHealthFitness ? 'Client' : 'Location')} value={(dirPerson.location || '').trim() || 'No location'} />
-              {isHealthFitness && (
-                <>
-                  <MetaItem label="Director First Name" value={dirPerson.directorFirst || dirPerson.person?.directorFirst || '—'} />
-                  <MetaItem label="Director Last Name" value={dirPerson.directorLast || dirPerson.person?.directorLast || '—'} />
-                </>
-              )}
-              {(!isGll && (terms.isJdGyms || Boolean(dirPerson.role || dirPerson.person?.role))) && (
-                <MetaItem label="Role" value={(dirPerson.role || dirPerson.person?.role || '').trim() || 'No role'} />
-              )}
-              {dirPerson.status && <MetaItem label="Status" value={dirPerson.status} />}
-            </dl>
+        <div
+          className={
+            directoryPersons.length > 1
+              ? 'max-h-[min(70vh,36rem)] space-y-4 overflow-y-auto pr-1'
+              : undefined
+          }
+        >
+          {directoryPersons.length > 0 ? (
+            directoryPersons.map((person, index) => (
+              <SectionCard
+                key={person.id || `dir-${index}`}
+                icon={Database}
+                title={
+                  directoryPersons.length > 1
+                    ? `Current Directory Record ${index + 1}`
+                    : 'Current Directory Record'
+                }
+              >
+                <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-x-8">
+                  <MetaItem label="First Name" value={person.firstName} />
+                  <MetaItem label="Last Name" value={person.lastName} />
+                  <MetaItem label="Email" value={person.email} />
+                  <MetaItem
+                    label={isGll ? 'Gym Location' : (isHealthFitness ? 'Client' : 'Location')}
+                    value={(person.location || '').trim() || 'No location'}
+                  />
+                  {isHealthFitness && (
+                    <>
+                      <MetaItem
+                        label="Director First Name"
+                        value={person.directorFirst || person.person?.directorFirst || '—'}
+                      />
+                      <MetaItem
+                        label="Director Last Name"
+                        value={person.directorLast || person.person?.directorLast || '—'}
+                      />
+                    </>
+                  )}
+                  {(!isGll && (terms.isJdGyms || Boolean(person.role || person.person?.role))) && (
+                    <MetaItem
+                      label="Role"
+                      value={(person.role || person.person?.role || '').trim() || 'No role'}
+                    />
+                  )}
+                  {person.status && <MetaItem label="Status" value={person.status} />}
+                </dl>
+                {index === directoryPersons.length - 1 ? (
+                  <p className="mt-4 text-xs leading-relaxed text-[var(--color-text-muted)]">
+                    {directoryPersons.length > 1 ? (
+                      <>
+                        These are existing Directory records that also match this request.
+                        Review each record before resolving.
+                      </>
+                    ) : currentRep?.action === 'Remove' ? (
+                      <>
+                        This is the existing Directory record.{' '}
+                        <span className="font-semibold text-[var(--color-text-secondary)]">Keep Existing and Delete</span>
+                        {' '}removes the new request.{' '}
+                        <span className="font-semibold text-[var(--color-text-secondary)]">Keep Existing and Archive</span>
+                        {' '}archives the Remove request without changing Directory.{' '}
+                        <span className="font-semibold text-[var(--color-text-secondary)]">Remove and Update</span>
+                        {' '}marks this Directory person as removed.
+                      </>
+                    ) : (
+                      <>
+                        This is the existing Directory record.{' '}
+                        <span className="font-semibold text-[var(--color-text-secondary)]">Keep Existing and Delete</span>
+                        {' '}removes the new request.{' '}
+                        <span className="font-semibold text-[var(--color-text-secondary)]">Keep Existing and Add New</span>
+                        {' '}creates a separate Directory person.{' '}
+                        <span className="font-semibold text-[var(--color-text-secondary)]">Add and Update</span>
+                        {' '}overwrites this record.
+                      </>
+                    )}
+                  </p>
+                ) : null}
+              </SectionCard>
+            ))
           ) : (
-            <p className="text-sm text-[var(--color-text-muted)] italic">
-              Directory record details not available locally. Values shown in the confirmation step.
-            </p>
+            <SectionCard icon={Database} title="Current Directory Record">
+              <p className="text-sm text-[var(--color-text-muted)] italic">
+                Directory record details not available locally. Values shown in the confirmation step.
+              </p>
+            </SectionCard>
           )}
-          <p className="mt-4 text-xs leading-relaxed text-[var(--color-text-muted)]">
-            {currentRep?.action === 'Remove' ? (
-              <>
-                This is the existing Directory record.{' '}
-                <span className="font-semibold text-[var(--color-text-secondary)]">Keep Existing and Delete</span>
-                {' '}removes the new request.{' '}
-                <span className="font-semibold text-[var(--color-text-secondary)]">Keep Existing and Archive</span>
-                {' '}archives the Remove request without changing Directory.{' '}
-                <span className="font-semibold text-[var(--color-text-secondary)]">Remove and Update</span>
-                {' '}marks this Directory person as removed.
-              </>
-            ) : (
-              <>
-                This is the existing Directory record.{' '}
-                <span className="font-semibold text-[var(--color-text-secondary)]">Keep Existing and Delete</span>
-                {' '}removes the new request.{' '}
-                <span className="font-semibold text-[var(--color-text-secondary)]">Keep Existing and Add New</span>
-                {' '}creates a separate Directory person.{' '}
-                <span className="font-semibold text-[var(--color-text-secondary)]">Add and Update</span>
-                {' '}overwrites this record.
-              </>
-            )}
-          </p>
-        </SectionCard>
+        </div>
       )}
 
       {/* ── New Request (active group current) ── */}

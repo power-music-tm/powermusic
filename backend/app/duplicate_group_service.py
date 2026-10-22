@@ -131,7 +131,11 @@ def _directory_candidates(
     *,
     limit: int = 100,
 ) -> List[models.ManagerRequest]:
-    """Fetch handled directory rows for conflict detection matching last_name or email."""
+    """Fetch handled directory rows for conflict detection matching last_name or email.
+
+    Ordering is stable by id (not handled_at) so multi-match discovery does not
+    prefer the newest record. Callers must evaluate *all* returned candidates.
+    """
     q = db.query(models.ManagerRequest).filter(
         models.ManagerRequest.status == "handled",
         models.ManagerRequest.outcome.in_(("Added", "Removed")),
@@ -156,7 +160,125 @@ def _directory_candidates(
     if filters:
         q = q.filter(or_(*filters))
 
-    return q.order_by(models.ManagerRequest.handled_at.desc()).limit(limit).all()
+    return q.order_by(models.ManagerRequest.id.asc()).limit(limit).all()
+
+
+def _directory_match_sort_key(
+    item: Tuple[models.ManagerRequest, str],
+) -> tuple:
+    """Stable ranking for multi-match directory hits.
+
+    Prefer confirmed over potential, Added over Removed, then oldest handled_at,
+    then id — never “latest wins”.
+    """
+    person, classification = item
+    confirmed_rank = 0 if classification == "confirmed_duplicate" else 1
+    outcome_rank = 0 if person.outcome == "Added" else 1
+    handled = person.handled_at or person.received_at
+    handled_key = _norm_dt(handled) if handled else datetime.min.replace(tzinfo=timezone.utc)
+    return (confirmed_rank, outcome_rank, handled_key, person.id or "")
+
+
+def _find_all_directory_matches(
+    db: Session,
+    req_person: schemas.PersonInfo,
+    dir_candidates: List[models.ManagerRequest],
+    *,
+    req_id: str,
+    is_ht: bool,
+    is_gll: bool,
+    dismissed_set: Optional[Set[Tuple[str, str]]] = None,
+) -> List[Tuple[models.ManagerRequest, str]]:
+    """Return every directory candidate that classifies as a match (no early exit)."""
+    matches: List[Tuple[models.ManagerRequest, str]] = []
+    for dir_cand in dir_candidates:
+        if are_requests_dismissed(db, req_id, dir_cand.id, dismissed_set=dismissed_set):
+            continue
+        classification, _ = match_classification_for_partner(
+            req_person,
+            person_from_model(dir_cand),
+            is_healthtech=is_ht,
+            is_gll=is_gll,
+        )
+        if classification:
+            matches.append((dir_cand, classification))
+    matches.sort(key=_directory_match_sort_key)
+    return matches
+
+
+def _classification_from_directory_matches(
+    matches: List[Tuple[models.ManagerRequest, str]],
+    *,
+    has_peer_match: bool,
+) -> Optional[str]:
+    """Derive group classification from the full set of directory matches."""
+    if not matches:
+        return None
+
+    has_confirmed_added = any(
+        cls == "confirmed_duplicate" and person.outcome == "Added"
+        for person, cls in matches
+    )
+    has_confirmed_removed = any(
+        cls == "confirmed_duplicate" and person.outcome == "Removed"
+        for person, cls in matches
+    )
+    has_added = any(person.outcome == "Added" for person, _ in matches)
+    has_removed = any(person.outcome == "Removed" for person, _ in matches)
+
+    if has_peer_match:
+        if has_added or has_confirmed_added:
+            return "already_exists_conflict"
+        if has_removed or has_confirmed_removed:
+            return "already_removed_conflict"
+        return "already_exists_conflict"
+
+    if has_confirmed_added:
+        return "already_exists"
+    if has_confirmed_removed and not has_added:
+        return "already_removed"
+    # Potential (or mixed potential) against Directory
+    return "potential_duplicate"
+
+
+def find_all_directory_matches_for_requests(
+    db: Session,
+    requests: List[models.ManagerRequest],
+    *,
+    dismissed_set: Optional[Set[Tuple[str, str]]] = None,
+) -> List[models.ManagerRequest]:
+    """Union of all directory records that match any of *requests* (partner-scoped).
+
+    Used by group-detail serialization so the UI can show every equally valid
+    Directory match, not only group.directory_person_id.
+    """
+    if not requests:
+        return []
+
+    seen: dict[str, models.ManagerRequest] = {}
+    for req in requests:
+        if not req:
+            continue
+        is_ht = is_healthtech_from_request(db, req)
+        is_gll = is_gll_from_request(db, req)
+        candidates = _directory_candidates(db, req)
+        matches = _find_all_directory_matches(
+            db,
+            person_from_model(req),
+            candidates,
+            req_id=req.id,
+            is_ht=is_ht,
+            is_gll=is_gll,
+            dismissed_set=dismissed_set,
+        )
+        for person, _cls in matches:
+            if person.id and person.id not in seen:
+                seen[person.id] = person
+
+    return sorted(
+        seen.values(),
+        key=lambda p: _directory_match_sort_key((p, "potential_duplicate")),
+    )
 
 
 def is_request_dismissed_from_group(db: Session, request_id: str, group_id: str) -> bool:
@@ -277,7 +399,7 @@ def process_request_grouping(
 
     best_match_req = best_group_match_req
 
-    # ── Step 2: scan directory for an already-exists conflict ───────────────
+    # ── Step 2: scan directory for ALL qualifying matches (no early exit) ───
     if directory_candidates is not None:
         dir_candidates = [
             c for c in directory_candidates
@@ -286,30 +408,30 @@ def process_request_grouping(
     else:
         dir_candidates = _directory_candidates(db, req)
 
-    dir_match_person: Optional[models.ManagerRequest] = None
-    dir_match_classification: Optional[str] = None
-
-    for dir_cand in dir_candidates:
-        if are_requests_dismissed(db, req.id, dir_cand.id, dismissed_set=dismissed_set):
-            continue
-        classification, _ = match_classification_for_partner(req_person, person_from_model(dir_cand), is_healthtech=is_ht, is_gll=is_gll)
-        if classification:
-            dir_match_person = dir_cand
-            dir_match_classification = classification
-            break
+    dir_matches = _find_all_directory_matches(
+        db,
+        req_person,
+        dir_candidates,
+        req_id=req.id,
+        is_ht=is_ht,
+        is_gll=is_gll,
+        dismissed_set=dismissed_set,
+    )
+    dir_match_person = dir_matches[0][0] if dir_matches else None
 
     # ── Step 3: determine final classification ──────────────────────────────
-    if best_match_req and dir_match_person:
-        final_classification = "already_removed_conflict" if dir_match_person.outcome == "Removed" else "already_exists_conflict"
-    elif best_match_req:
-        final_classification = best_group_classification
-    elif dir_match_person:
-        if dir_match_person.outcome == "Removed":
-            final_classification = "already_removed" if dir_match_classification == "confirmed_duplicate" else "potential_duplicate"
+    final_classification = _classification_from_directory_matches(
+        dir_matches,
+        has_peer_match=bool(best_match_req),
+    )
+    if final_classification is None:
+        if best_match_req:
+            final_classification = best_group_classification
         else:
-            final_classification = "already_exists" if dir_match_classification == "confirmed_duplicate" else "potential_duplicate"
-    else:
-        return None  # No match found — no group needed
+            return None  # No match found — no group needed
+
+    # Persist every matched Directory id for later detail views / audit.
+    matched_directory_ids = [person.id for person, _ in dir_matches if person.id]
 
     # ── Step 4: join an existing group or create a new one ──────────────────
 
@@ -328,6 +450,13 @@ def process_request_grouping(
                 group.classification = upgraded
             if dir_match_person:
                 group.directory_person_id = dir_match_person.id
+            if matched_directory_ids:
+                meta = dict(group.resolution_metadata or {})
+                existing_ids = list(meta.get("matched_directory_person_ids") or [])
+                merged = list(dict.fromkeys([*existing_ids, *matched_directory_ids]))
+                meta["matched_directory_person_ids"] = merged
+                group.resolution_metadata = meta
+                flag_modified(group, "resolution_metadata")
             # Absorb any other ungrouped candidates into this group too.
             _absorb_ungrouped_matches(
                 db, group, req_person, exclude_id=req.id, ungrouped_candidates=p_cands, is_healthtech=is_ht, is_gll=is_gll
@@ -346,6 +475,11 @@ def process_request_grouping(
         created_at=datetime.now(timezone.utc),
         directory_person_id=dir_match_person.id if dir_match_person else None,
         representative_request_id=req.id,
+        resolution_metadata=(
+            {"matched_directory_person_ids": matched_directory_ids}
+            if matched_directory_ids
+            else None
+        ),
     )
     db.add(group)
     # db.flush()

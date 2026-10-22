@@ -663,6 +663,10 @@ class DuplicateGroupDetailOut(BaseModel):
     resolvedAt: Optional[datetime] = None
     directoryPersonId: Optional[str] = None
     directoryPerson: Optional[Any] = None
+    # Every Directory record that qualifies as a match for this group's requests.
+    # directoryPerson / directoryPersonId remain the primary (stable) match for
+    # resolution endpoints; directoryPersons is the full multi-match set for display.
+    directoryPersons: List[Any] = []
     representativeRequestId: Optional[str] = None
     members: List[DuplicateGroupMemberOut] = []
     # Aggregated classification counts: { alreadyExists, duplicateCount, potentialCount }

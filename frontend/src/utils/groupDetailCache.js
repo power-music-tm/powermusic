@@ -117,6 +117,17 @@ export function applyListSeed(groupId, cached, seed) {
       || preview?.directoryPerson
       || cached?.directoryPerson
       || null,
+    directoryPersons:
+      (Array.isArray(seed.groupDirectoryPersons) && seed.groupDirectoryPersons.length
+        ? seed.groupDirectoryPersons
+        : null)
+      || (Array.isArray(preview?.directoryPersons) && preview.directoryPersons.length
+        ? preview.directoryPersons
+        : null)
+      || (Array.isArray(cached?.directoryPersons) && cached.directoryPersons.length
+        ? cached.directoryPersons
+        : null)
+      || null,
     representativeRequestId: repId || cached?.representativeRequestId || null,
     members,
     classificationSummary: {
