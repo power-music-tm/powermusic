@@ -8,6 +8,7 @@ import DuplicateStatusHint, { StatusColumnPlainLabel } from '../components/ui/Du
 import PageHeader from '../components/layout/PageHeader';
 import { getManagerColumnContent, getManagerDisplayName, isManualEntry, isAdminEntry } from '../utils/manualEntry';
 import { loadWithCache, patchCache, writeCache, refreshCache, bumpCacheEpoch, getNewRequestsPage, dismissRequest, getDismissImpact, bulkDismissRequests, suppressNewRequests, clearNewRequestsSuppressions, removeRequestsFromCache, applyNewRequestsSuppressions, REQUESTS_PAGE_CACHE_KEY } from '../utils/pilot2Api';
+import { warmGroupCachesFromRequests } from '../utils/groupDetailCache';
 import { fetchJson } from '../utils/api';
 import { useRealtimeBroadcast } from '../hooks/useRealtimeBroadcast';
 import { useClientPagination } from '../hooks/useClientPagination';
@@ -546,6 +547,9 @@ export default function Requests() {
   const sentViaDeepLink = searchParams.get('sentVia');
   const consumedDeepLinkRef = useRef(null);
   const pendingCreatedIdsRef = useRef(new Set());
+  // Ignore in-flight /page applies after a gym switch so another partner's rows never flash.
+  const selectedPartnerIdRef = useRef(selectedPartnerId);
+  selectedPartnerIdRef.current = selectedPartnerId;
   const adminDisplayName = profile?.full_name?.trim() || 'Power Music Admin';
   const requestsCacheKey = selectedPartnerId ? `${REQUESTS_PAGE_CACHE_KEY}:${selectedPartnerId}` : REQUESTS_PAGE_CACHE_KEY;
   const directoryCacheKey = selectedPartnerId ? `directory_persons:${selectedPartnerId}` : 'directory_persons';
@@ -572,6 +576,32 @@ export default function Requests() {
     if (row.duplicateGroupId) {
       navigate(
         `/new-requests/group/${encodeURIComponent(row.duplicateGroupId)}`,
+        {
+          // Seed full member stubs from the list so Request History is instant.
+          state: {
+            seedFromList: {
+              id: row.id,
+              displayId: row.displayId,
+              receivedAt: row.receivedAt,
+              person: row.person,
+              action: row.action,
+              status: row.status,
+              submittedBy: row.submittedBy,
+              notes: row.notes,
+              tags: row.tags,
+              createdBy: row.createdBy,
+              directorFirst: row.directorFirst || row.person?.directorFirst,
+              directorLast: row.directorLast || row.person?.directorLast,
+              groupClassificationSummary: row.groupClassificationSummary || null,
+              groupMembers: row.groupMembers || row.groupPreview?.members || null,
+              groupDirectoryPersonId:
+                row.groupDirectoryPersonId || row.groupPreview?.directoryPersonId || null,
+              groupDirectoryPerson:
+                row.groupDirectoryPerson || row.groupPreview?.directoryPerson || null,
+              groupPreview: row.groupPreview || null,
+            },
+          },
+        },
       );
     } else {
       navigate(`/new-requests/${encodeURIComponent(row.id)}`);
@@ -633,10 +663,18 @@ export default function Requests() {
     }, { replace: true });
   }, [sentViaDeepLink, setSearchParams]);
 
-  const applyRequestsPage = useCallback((data, isStale) => {
+  const applyRequestsPage = useCallback((data, isStale, forPartnerId) => {
+    if (
+      forPartnerId !== undefined
+      && String(forPartnerId || '') !== String(selectedPartnerIdRef.current || '')
+    ) {
+      return;
+    }
     if (Array.isArray(data.requests)) {
+      const server = applyNewRequestsSuppressions(data.requests);
+      // Warm group caches so open paints all members instantly (manual + manager).
+      if (!isStale) warmGroupCachesFromRequests(server);
       setNewRequests((prev) => {
-        const server = applyNewRequestsSuppressions(data.requests);
         const serverIds = new Set(server.map((row) => row.id));
         for (const id of [...pendingCreatedIdsRef.current]) {
           if (serverIds.has(id)) pendingCreatedIdsRef.current.delete(id);
@@ -658,10 +696,7 @@ export default function Requests() {
       setLiveDirectory(data.persons);
       setTableLoading(false);
       if (!isStale) {
-        const changed = syncAdminNewRequestHighlights(
-          applyNewRequestsSuppressions(data.requests),
-          { isManualEntry },
-        );
+        const changed = syncAdminNewRequestHighlights(server, { isManualEntry });
         if (changed) bumpHighlights();
       }
     }
@@ -669,21 +704,32 @@ export default function Requests() {
 
   const refreshRequestsPage = useCallback((options = {}) => {
     const { networkOnly = false } = options;
-    const fetcher = () => getNewRequestsPage(selectedPartnerId || '');
+    const partnerId = selectedPartnerId || '';
+    const fetcher = () => getNewRequestsPage(partnerId);
+    const apply = (data, isStale) => applyRequestsPage(data, isStale, partnerId);
     if (networkOnly) {
-      return refreshCache(requestsCacheKey, fetcher, applyRequestsPage).catch((err) => {
+      return refreshCache(requestsCacheKey, fetcher, apply).catch((err) => {
         console.error(err);
-        setTableLoading(false);
+        if (String(selectedPartnerIdRef.current || '') === String(partnerId)) {
+          setTableLoading(false);
+        }
       });
     }
     // Cache key bumped to drop stale sessionStorage rows (deleted duplicates, etc.).
-    return loadWithCache(requestsCacheKey, fetcher, applyRequestsPage).catch((err) => {
+    return loadWithCache(requestsCacheKey, fetcher, apply).catch((err) => {
       console.error(err);
-      setTableLoading(false);
+      if (String(selectedPartnerIdRef.current || '') === String(partnerId)) {
+        setTableLoading(false);
+      }
     });
   }, [applyRequestsPage, requestsCacheKey, selectedPartnerId]);
 
   useEffect(() => {
+    // Drop previous gym's rows immediately — header updates before /page returns.
+    setNewRequests([]);
+    setLiveDirectory([]);
+    setTableLoading(true);
+    pendingCreatedIdsRef.current.clear();
     refreshRequestsPage();
     const refresh = () => {
       if (!document.hidden) refreshRequestsPage({ networkOnly: true });
@@ -960,6 +1006,7 @@ export default function Requests() {
       const created = await fetchJson('/api/admin/requests/manual', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        timeout: 90000,
         body: JSON.stringify({
           submittedBy: managerForm,
           partnerId: selectedPartnerId || undefined,

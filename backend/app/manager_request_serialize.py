@@ -27,7 +27,7 @@ from app.manager_request_tags import (
     has_tag,
     merge_tags,
 )
-from app.request_display import parse_request_display_number
+from app.request_display import hydrate_request_display, parse_request_display_number
 from app.request_match_summary import build_directory_match, build_intake_match
 from app.user_display import (
     hydrate_request_users,
@@ -35,6 +35,85 @@ from app.user_display import (
     resolve_manager_fields,
     resolve_manager_name,
 )
+
+
+def serialize_duplicate_group_member_stub(
+    req: models.ManagerRequest,
+    *,
+    is_representative: bool = False,
+) -> Dict[str, Any]:
+    """Lightweight member payload for group detail / list seed (no directory probe)."""
+    from app.intake_persons import get_director_fields
+
+    manager_user = getattr(req, "_manager_user", None)
+    submitted_by = resolve_manager_fields(req, manager_user=manager_user)
+    created_by = resolve_manager_name(req, manager_user=manager_user)
+    manager_notes, _ = _split_manager_and_automated_notes(req.manager_notes)
+    tags = list(req.tags or [])
+
+    if not req.manager_id:
+        from app.intake_persons import get_submitted_by_attribution
+
+        attributed = get_submitted_by_attribution(req)
+        if any(attributed.values()):
+            submitted_by = {
+                "firstName": attributed["firstName"] or submitted_by.get("firstName") or "",
+                "lastName": attributed["lastName"] or submitted_by.get("lastName") or "",
+                "email": attributed["email"] or submitted_by.get("email") or "",
+                "club": attributed["club"] or submitted_by.get("club") or "",
+            }
+        if has_tag(tags, TAG_PARTNER_REQUEST):
+            if not (submitted_by.get("club") or "").strip():
+                submitted_by = {**submitted_by, "club": "Manual entry"}
+            if not created_by:
+                created_by = "Admin"
+
+    director = get_director_fields(req)
+    return {
+        "id": req.id,
+        "displayId": getattr(req, "displayId", None) or parse_request_display_number(req.id),
+        "receivedAt": req.received_at,
+        "person": {
+            "firstName": req.person_first_name,
+            "lastName": req.person_last_name,
+            "email": req.person_email,
+            "location": req.person_location,
+            "role": getattr(req, "role", None),
+            "directorFirst": director["firstName"] or None,
+            "directorLast": director["lastName"] or None,
+        },
+        "directorFirst": director["firstName"] or None,
+        "directorLast": director["lastName"] or None,
+        "action": req.action,
+        "status": req.status,
+        "isRepresentative": bool(is_representative),
+        "submittedBy": submitted_by,
+        "notes": manager_notes,
+        "tags": tags,
+        "createdBy": created_by,
+    }
+
+
+def serialize_group_member_stubs(
+    members: List[models.ManagerRequest],
+    *,
+    representative_request_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Chronological stubs; representative defaults to newest member."""
+    def _sort_key(r: models.ManagerRequest):
+        at = r.received_at
+        if at is None:
+            return (datetime.min.replace(tzinfo=None), r.id or "")
+        if getattr(at, "tzinfo", None) is not None:
+            return (at.astimezone(tz=None).replace(tzinfo=None), r.id or "")
+        return (at, r.id or "")
+
+    ordered = sorted([m for m in members if m and m.id], key=_sort_key)
+    latest_id = representative_request_id or (ordered[-1].id if ordered else None)
+    return [
+        serialize_duplicate_group_member_stub(m, is_representative=(m.id == latest_id))
+        for m in ordered
+    ]
 
 
 def _directory_conflict_for_request(
@@ -385,6 +464,10 @@ def request_to_api_dict(
     connected_inbox: Optional[str] = None,
     persist_auto_mail_side_effects: bool = True,
     group_classification_summary: Optional[Dict[str, Any]] = None,
+    group_members: Optional[List[Dict[str, Any]]] = None,
+    group_directory_person_id: Optional[str] = None,
+    group_directory_person: Optional[Dict[str, Any]] = None,
+    group_preview: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     partner_name, partner_slug = _resolve_partner_info(db, getattr(req, "partner_id", None))
     if manager_user is None:
@@ -453,9 +536,18 @@ def request_to_api_dict(
         # Duplicate group fields
         "duplicateGroupId": getattr(req, "duplicate_group_id", None),
         "needsReview": _needs_review(tags, getattr(req, "duplicate_group_id", None)),
-        "groupMemberCount": _group_member_count(db, req),
+        "groupMemberCount": (
+            len(group_members)
+            if group_members is not None
+            else _group_member_count(db, req)
+        ),
         # Aggregated classification summary (only present for group representatives)
         "groupClassificationSummary": group_classification_summary,
+        # Full member stubs so group page can paint instantly from the list.
+        "groupMembers": group_members,
+        "groupDirectoryPersonId": group_directory_person_id,
+        "groupDirectoryPerson": group_directory_person,
+        "groupPreview": group_preview,
     }
     if intake_match:
         payload["intakeMatch"] = intake_match
@@ -500,37 +592,66 @@ def requests_to_api_dicts(db: Session, requests: List[models.ManagerRequest]) ->
     email_by_req = _prefetch_source_emails(db, rows) if rows else {}
     connected_inbox = _connected_inbox_email(db) if rows else ""
 
-    # ── Batch-compute classification summaries for all grouped rows ──────────
+    # ── Batch-compute classification summaries + member stubs for groups ─────
     # Each row that appears in this list is the representative (latest) for its
     # group (guaranteed by _visible_new_requests_query). We load all group
-    # members in ONE query then compute summaries in Python.
+    # members in ONE query then compute summaries / stubs in Python.
     group_ids = list({req.duplicate_group_id for req in rows if req.duplicate_group_id})
     group_summaries: Dict[str, Dict[str, Any]] = {}
+    members_by_group: Dict[str, List[_models.ManagerRequest]] = {}
+    member_stubs_by_group: Dict[str, List[Dict[str, Any]]] = {}
+    directory_person_by_group: Dict[str, Dict[str, Any]] = {}
+    groups_by_id: Dict[str, Any] = {}
     if group_ids:
-        # Fetch the DuplicateGroup objects
         groups_by_id = {
             g.id: g
             for g in db.query(_models.DuplicateGroup)
             .filter(_models.DuplicateGroup.id.in_(group_ids))
             .all()
         }
-        # Fetch ALL members for those groups in one query
         all_members_raw = (
             db.query(_models.ManagerRequest)
-            .filter(_models.ManagerRequest.duplicate_group_id.in_(group_ids))
+            .filter(
+                _models.ManagerRequest.duplicate_group_id.in_(group_ids),
+                _models.ManagerRequest.status == "new",
+            )
             .all()
         )
-        # Group members by group_id
+        hydrate_request_display(all_members_raw)
+        hydrate_request_users(db, all_members_raw)
+
         from collections import defaultdict
-        members_by_group: Dict[str, List[_models.ManagerRequest]] = defaultdict(list)
+        members_by_group = defaultdict(list)
         for m in all_members_raw:
             if m.duplicate_group_id:
                 members_by_group[m.duplicate_group_id].append(m)
-        # Compute each group's summary
-        for gid, group in groups_by_id.items():
-            group_summaries[gid] = compute_group_classification_summary(
-                db, group, members=members_by_group.get(gid, [])
+
+        dir_ids = [
+            g.directory_person_id
+            for g in groups_by_id.values()
+            if g.directory_person_id
+        ]
+        dir_rows_by_id: Dict[str, _models.ManagerRequest] = {}
+        if dir_ids:
+            dir_rows = (
+                db.query(_models.ManagerRequest)
+                .filter(_models.ManagerRequest.id.in_(dir_ids))
+                .all()
             )
+            dir_rows_by_id = {r.id: r for r in dir_rows}
+
+        for gid, group in groups_by_id.items():
+            members = members_by_group.get(gid, [])
+            group_summaries[gid] = compute_group_classification_summary(
+                db, group, members=members
+            )
+            member_stubs_by_group[gid] = serialize_group_member_stubs(
+                members,
+                representative_request_id=group.representative_request_id,
+            )
+            dir_row = dir_rows_by_id.get(group.directory_person_id or "")
+            if dir_row is not None:
+                directory_person_by_group[gid] = directory_person_to_api_dict(dir_row, db=db)
 
     results: List[Dict[str, Any]] = []
     for req in rows:
@@ -547,7 +668,26 @@ def requests_to_api_dicts(db: Session, requests: List[models.ManagerRequest]) ->
             db=db,
             req_id=req.id,
         )
-        summary = group_summaries.get(req.duplicate_group_id) if req.duplicate_group_id else None
+        gid = req.duplicate_group_id
+        summary = group_summaries.get(gid) if gid else None
+        stubs = member_stubs_by_group.get(gid) if gid else None
+        group_obj = groups_by_id.get(gid) if gid else None
+        dir_person = directory_person_by_group.get(gid) if gid else None
+        preview = None
+        if gid and group_obj is not None:
+            preview = {
+                "id": group_obj.id,
+                "partnerId": group_obj.partner_id,
+                "classification": group_obj.classification,
+                "status": group_obj.status,
+                "createdAt": group_obj.created_at,
+                "resolvedAt": group_obj.resolved_at,
+                "directoryPersonId": group_obj.directory_person_id,
+                "directoryPerson": dir_person,
+                "representativeRequestId": group_obj.representative_request_id,
+                "members": stubs or [],
+                "classificationSummary": summary,
+            }
         results.append(
             request_to_api_dict(
                 req,
@@ -557,6 +697,10 @@ def requests_to_api_dicts(db: Session, requests: List[models.ManagerRequest]) ->
                 connected_inbox=connected_inbox,
                 persist_auto_mail_side_effects=False,
                 group_classification_summary=summary,
+                group_members=stubs,
+                group_directory_person_id=group_obj.directory_person_id if group_obj else None,
+                group_directory_person=dir_person,
+                group_preview=preview,
             ),
         )
     return results

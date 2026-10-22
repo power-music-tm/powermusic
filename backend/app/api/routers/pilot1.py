@@ -638,18 +638,26 @@ def bulk_delete_persons(
 
 
 def _visible_new_requests_query(db: Session, partner_id: Optional[str] = None):
-    from sqlalchemy import select
-    rep_subquery = select(models.DuplicateGroup.representative_request_id).where(
-        models.DuplicateGroup.status == "active",
-        models.DuplicateGroup.representative_request_id.isnot(None),
-    )
+    """New requests visible in the admin list.
+
+    Grouped rows collapse to the group's representative only — and that
+    representative must belong to *this* active group (not a stale rep id on
+    some other/leftover DuplicateGroup row).
+    """
     query = (
         db.query(models.ManagerRequest)
+        .outerjoin(
+            models.DuplicateGroup,
+            models.ManagerRequest.duplicate_group_id == models.DuplicateGroup.id,
+        )
         .filter(
             models.ManagerRequest.status == "new",
             or_(
                 models.ManagerRequest.duplicate_group_id.is_(None),
-                models.ManagerRequest.id.in_(rep_subquery),
+                and_(
+                    models.DuplicateGroup.status == "active",
+                    models.ManagerRequest.id == models.DuplicateGroup.representative_request_id,
+                ),
             ),
             or_(
                 models.ManagerRequest.tags.contains([TAG_VERIFIED]),
@@ -1727,39 +1735,22 @@ def get_duplicate_group_details(
     hydrate_request_display(members)
     hydrate_request_users(db, members)
 
-    # We dynamically select the latest request instead of relying on the DB column
-    latest_req_id = members[-1].id if members else None
+    from app.manager_request_serialize import (
+        directory_person_to_api_dict,
+        serialize_group_member_stubs,
+    )
 
-    member_out = []
-    from app.intake_persons import get_director_fields
-    for m in members:
-        api = request_to_api_dict(m, db=db, persist_auto_mail_side_effects=False)
-        dir_fields = get_director_fields(m)
-        member_out.append({
-            "id": m.id,
-            "displayId": getattr(m, "displayId", None) or 0,
-            "receivedAt": m.received_at,
-            "person": {
-                "firstName": m.person_first_name,
-                "lastName": m.person_last_name,
-                "email": m.person_email,
-                "location": m.person_location,
-                "role": getattr(m, "role", None),
-                "directorFirst": dir_fields["firstName"] or None,
-                "directorLast": dir_fields["lastName"] or None,
-            },
-            "directorFirst": dir_fields["firstName"] or None,
-            "directorLast": dir_fields["lastName"] or None,
-            "action": m.action,
-            "status": m.status,
-            "isRepresentative": m.id == latest_req_id,
-            "submittedBy": api.get("submittedBy"),
-            "notes": api.get("notes"),
-            "tags": api.get("tags") or [],
-            "createdBy": api.get("createdBy"),
-        })
+    # Lightweight stubs (avoid per-member request_to_api_dict / directory probes).
+    member_out = serialize_group_member_stubs(
+        members,
+        representative_request_id=group.representative_request_id,
+    )
+    # Prefer newest as representative when DB pointer is stale.
+    if members and member_out:
+        latest_req_id = members[-1].id
+        for stub in member_out:
+            stub["isRepresentative"] = stub.get("id") == latest_req_id
 
-    # Compute aggregated classification summary for this group
     classification_summary = compute_group_classification_summary(db, group, members=members)
 
     directory_person = None
@@ -1770,7 +1761,6 @@ def get_duplicate_group_details(
             .first()
         )
         if dir_row:
-            from app.manager_request_serialize import directory_person_to_api_dict
             directory_person = directory_person_to_api_dict(dir_row, db=db)
 
     return {
@@ -1782,7 +1772,9 @@ def get_duplicate_group_details(
         "resolvedAt": group.resolved_at,
         "directoryPersonId": group.directory_person_id,
         "directoryPerson": directory_person,
-        "representativeRequestId": group.representative_request_id,
+        "representativeRequestId": group.representative_request_id or (
+            members[-1].id if members else None
+        ),
         "members": member_out,
         "classificationSummary": classification_summary,
     }
@@ -2052,10 +2044,14 @@ def resolve_group_update_api(
             admin_note=payload.adminNote,
             source_request_id=payload.sourceRequestId,
         )
+        db.commit()
     except ValueError as exc:
+        db.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
 
-    db.commit()
     notify_admin_requests_changed("group_resolve_update")
 
     return {

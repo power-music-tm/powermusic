@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { AdminPageScroll, Toast, useToast } from '../components/ui';
 import GroupResolutionView from '../components/GroupResolutionView';
 import { usePartners } from '../context/PartnerContext';
@@ -10,21 +10,33 @@ import {
   bumpCacheEpoch,
   refreshCache,
   clearCache,
+  writeCache,
   suppressNewRequests,
   removeRequestsFromCache,
   REQUESTS_PAGE_CACHE_KEY,
 } from '../utils/pilot2Api';
 import { fetchGroupDetail } from '../utils/duplicateGroupApi';
+import {
+  applyListSeed,
+  groupDetailCacheKey,
+  readCachedGroup,
+} from '../utils/groupDetailCache';
 
 export default function GroupDetail() {
   const { groupId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { selectedPartnerId } = usePartners();
   const { showToast } = useToast();
+  const listSeed = location.state?.seedFromList || null;
 
-  const [group, setGroup] = useState(null);
+  const [group, setGroup] = useState(() =>
+    applyListSeed(groupId, readCachedGroup(groupId), listSeed),
+  );
   const [directory, setDirectory] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(
+    () => !applyListSeed(groupId, readCachedGroup(groupId), listSeed),
+  );
   const [notFound, setNotFound] = useState(false);
 
   const requestsCacheKey = selectedPartnerId
@@ -33,14 +45,12 @@ export default function GroupDetail() {
   const directoryCacheKey = selectedPartnerId
     ? `directory_persons:${selectedPartnerId}`
     : 'directory_persons';
+  const groupCacheKey = groupDetailCacheKey(groupId);
 
   const goBack = useCallback(() => navigate('/new-requests'), [navigate]);
 
+  // Directory is optional context — do not block the group UI on it.
   useEffect(() => {
-    setLoading(true);
-    setNotFound(false);
-
-    // Load directory from requests page cache
     loadWithCache(
       requestsCacheKey,
       () => getNewRequestsPage(selectedPartnerId || ''),
@@ -48,22 +58,52 @@ export default function GroupDetail() {
         if (Array.isArray(data?.persons)) setDirectory(data.persons);
       },
     ).catch(() => {});
+  }, [requestsCacheKey, selectedPartnerId]);
 
-    // Fetch group detail (members, directoryPersonId, classification)
-    fetchGroupDetail(groupId)
-      .then((data) => {
+  // Paint list seed + cache instantly, then network-refresh for full history.
+  useEffect(() => {
+    let cancelled = false;
+    setNotFound(false);
+
+    const seeded = applyListSeed(groupId, readCachedGroup(groupId), listSeed);
+    if (seeded) {
+      setGroup(seeded);
+      setLoading(false);
+      writeCache(groupCacheKey, seeded);
+    } else {
+      setGroup(null);
+      setLoading(true);
+    }
+
+    bumpCacheEpoch(groupCacheKey);
+    refreshCache(
+      groupCacheKey,
+      () => fetchGroupDetail(groupId),
+      (data) => {
+        if (cancelled) return;
         if (!data || data.status === 'resolved' || data.status === 'dismissed') {
           setNotFound(true);
+          setGroup(null);
         } else {
           setGroup(data);
+          setNotFound(false);
         }
         setLoading(false);
-      })
-      .catch(() => {
+      },
+    ).catch(() => {
+      if (cancelled) return;
+      if (!readCachedGroup(groupId) && !listSeed) {
         setNotFound(true);
-        setLoading(false);
-      });
-  }, [groupId, requestsCacheKey, selectedPartnerId]);
+        setGroup(null);
+      }
+      setLoading(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // Seed by request id only — avoid re-running on new state object identity.
+  }, [groupId, groupCacheKey, listSeed?.id]);
 
   /** Called by GroupResolutionView when any resolve or unlink action completes. */
   const handleResolved = useCallback(
@@ -88,6 +128,7 @@ export default function GroupDetail() {
       ) {
         suppressNewRequests({ groupIds: [groupId], requestIds: groupMemberIds });
         removeRequestsFromCache(requestsCacheKey, { groupIds: [groupId], requestIds: groupMemberIds });
+        clearCache(groupCacheKey);
       }
 
       // Bust the requests page cache so the list reflects the resolved group
@@ -161,6 +202,13 @@ export default function GroupDetail() {
       // Stay on this page after unlink / partial handle / partial delete so the
       // admin can keep working here for this visit.
       if (type === 'unlinked' || type === 'unlinked_handled' || type === 'member_deleted') {
+        // Member set changed — refresh group cache so revisit stays accurate.
+        bumpCacheEpoch(groupCacheKey);
+        refreshCache(groupCacheKey, () => fetchGroupDetail(groupId), (data) => {
+          if (data && data.status !== 'resolved' && data.status !== 'dismissed') {
+            setGroup(data);
+          }
+        }).catch(() => {});
         return;
       }
 
@@ -181,15 +229,16 @@ export default function GroupDetail() {
 
       if (type === 'unlinked_new_requests') {
         clearCache(requestsCacheKey);
+        clearCache(groupCacheKey);
       }
 
       navigate('/new-requests');
     },
-    [groupId, group?.members, navigate, requestsCacheKey, directoryCacheKey, selectedPartnerId, showToast],
+    [groupId, group?.members, navigate, requestsCacheKey, directoryCacheKey, groupCacheKey, selectedPartnerId, showToast],
   );
 
   /* ── loading state ── */
-  if (loading) {
+  if (loading && !group) {
     return (
       <AdminPageScroll contentClassName="flex min-h-full items-center justify-center text-sm text-[var(--color-text-secondary)]">
         Loading group…

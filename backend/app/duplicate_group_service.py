@@ -972,39 +972,57 @@ def compute_group_classification_summary(
 ) -> dict:
     """Compute per-request classification counts for a group (read-only).
 
-    Reads the existing tags stored on each member request — these are set
-    authoritatively at group-join time and reflect the actual classification
-    of each request relative to the group at the moment it joined.
+    Live-classifies every member against its peers so the pill counts match the
+    full group (not only the representative, which is the only row that keeps a
+    peer-duplicate tag after sync).
 
     Returns:
         {
             "alreadyExists": bool,      # True if group has a directory_person_id
-            "duplicateCount": int,       # number of members tagged confirmed_duplicate
-            "potentialCount": int,       # number of members tagged potential_duplicate
+            "duplicateCount": int,       # members whose best peer match is confirmed
+            "potentialCount": int,       # members whose best peer match is potential
         }
 
     Design notes:
-    - The initial request (R1) has no duplicate tag — it is simply the anchor.
-      It does not contribute to either count.
-    - Already Exists is a single flag derived from directory_person_id.
-      It is never multiplied by the number of members.
-    - Counts are read from stored tags rather than recomputed on-the-fly so
-      that they always match what was calculated at join-time (e.g., for
-      requests with typos that would score differently on a fresh comparison).
+    - Each member is counted at most once (confirmed wins over potential).
+    - Already Exists / Already Removed are single flags from directory_person_id.
+    - Dismissed pairs are skipped so unlinked false positives do not inflate counts.
     """
     if members is None:
         members = get_group_members(db, group.id)
 
+    active_members = [m for m in members if m and m.id]
     duplicate_count = 0
     potential_count = 0
 
-    for member in members:
-        tags = set(member.tags or [])
-        if TAG_CONFIRMED_DUPLICATE in tags:
-            duplicate_count += 1
-        elif TAG_POTENTIAL_DUPLICATE in tags:
-            # elif: avoid double-counting if somehow both are present
-            potential_count += 1
+    if len(active_members) >= 2:
+        is_ht = is_healthtech_from_request(db, active_members[0])
+        is_gll = is_gll_from_request(db, active_members[0])
+        dismissed_set = get_all_dismissed_pairs(db)
+
+        for member in active_members:
+            best: Optional[str] = None
+            left = person_from_model(member)
+            for other in active_members:
+                if other.id == member.id:
+                    continue
+                if are_requests_dismissed(
+                    db, member.id, other.id, dismissed_set=dismissed_set
+                ):
+                    continue
+                classification, _ = match_classification_for_partner(
+                    left,
+                    person_from_model(other),
+                    is_healthtech=is_ht,
+                    is_gll=is_gll,
+                )
+                best = _best_classification(best, classification)
+                if best == "confirmed_duplicate":
+                    break
+            if best == "confirmed_duplicate":
+                duplicate_count += 1
+            elif best == "potential_duplicate":
+                potential_count += 1
 
     already_exists = False
     already_removed = False
@@ -1101,7 +1119,26 @@ def _apply_merge_manager_provenance(
             
         dir_row.manager_notes = source.manager_notes
         dir_row.source_email_id = source.source_email_id
-        dir_row.source_gmail_message_id = source.source_gmail_message_id
+        # source_gmail_message_id is UNIQUE — move it off the source (and any
+        # other holders) before assigning to the Directory row, or merge/update
+        # fails with UniqueViolation when Directory and source are different rows.
+        msg_id = (source.source_gmail_message_id or "").strip() or None
+        if msg_id and dir_row.id != source.id:
+            from sqlalchemy.orm import object_session
+            session = object_session(dir_row) or object_session(source)
+            source.source_gmail_message_id = None
+            if session is not None:
+                session.query(models.ManagerRequest).filter(
+                    models.ManagerRequest.source_gmail_message_id == msg_id,
+                    models.ManagerRequest.id != dir_row.id,
+                ).update(
+                    {models.ManagerRequest.source_gmail_message_id: None},
+                    synchronize_session=False,
+                )
+                session.flush()
+            dir_row.source_gmail_message_id = msg_id
+        elif msg_id:
+            dir_row.source_gmail_message_id = msg_id
 
         attributed = get_submitted_by_attribution(source)
         if any(attributed.values()):

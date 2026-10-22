@@ -214,8 +214,8 @@ GLL_POTENTIAL_DUPLICATE_THRESHOLD = 33.75
 # Field-match classification constants
 # ---------------------------------------------------------------------------
 
-# Minimum Jaro-Winkler similarity for the first name to count as matching.
-# Rounded to 6 d.p. before comparison to avoid floating-point boundary instability.
+# Deprecated: first-name Potential matching no longer uses Jaro-Winkler.
+# Kept so older tests/imports that reference the constant do not break.
 FIRST_NAME_MATCH_MIN = 0.65
 
 # Minimum number of True field flags required for a potential-duplicate verdict.
@@ -242,7 +242,8 @@ def _field_flags(
     same_last   : both last names non-empty after _norm() AND exactly equal.
                   Fuzzy matching is NOT used for last names.
     first_match : both first names non-empty after _norm() AND
-                  round(jaro_winkler(first_l, first_r), 6) >= FIRST_NAME_MATCH_MIN.
+                  (exact equal OR nickname-dataset related).
+                  Jaro-Winkler is NOT used for this flag.
     same_email  : both emails non-empty after _norm() AND exactly equal.
     same_loc    : only evaluated when use_location=True;
                   both locations non-empty after _norm() AND exactly equal.
@@ -251,20 +252,20 @@ def _field_flags(
     Empty strings, None, and whitespace-only values NEVER count as a match,
     even when both sides are empty/None.
     """
-    first_l = _norm(left.firstName)
+    from app.nickname_match import first_names_nickname_match, normalize_first_name
+
+    # First names: case + spacing insensitive ("RUBAB" / "ru bab" / "rubab").
+    first_l = normalize_first_name(left.firstName)
+    first_r = normalize_first_name(right.firstName)
     last_l  = _norm(left.lastName)
     email_l = _norm(left.email)
 
-    first_r = _norm(right.firstName)
     last_r  = _norm(right.lastName)
     email_r = _norm(right.email)
 
     same_last   = bool(last_l  and last_r  and last_l  == last_r)
     same_email  = bool(email_l and email_r and email_l == email_r)
-    first_match = bool(
-        first_l and first_r
-        and round(jaro_winkler(first_l, first_r), 6) >= FIRST_NAME_MATCH_MIN
-    )
+    first_match = bool(first_l and first_r and first_names_nickname_match(first_l, first_r))
 
     if use_location:
         loc_l    = _norm(left.location)
@@ -304,13 +305,17 @@ def match_classification(
     The numeric score is still computed with the original weights and returned
     for display/debugging.  It no longer gates the classification decision.
     """
-    first_l, last_l, email_l, loc_l = _norm(left.firstName), _norm(left.lastName), _norm(left.email), _norm(left.location)
-    first_r, last_r, email_r, loc_r = _norm(right.firstName), _norm(right.lastName), _norm(right.email), _norm(right.location)
+    from app.nickname_match import normalize_first_name
+
+    first_l = normalize_first_name(left.firstName)
+    first_r = normalize_first_name(right.firstName)
+    last_l, email_l, loc_l = _norm(left.lastName), _norm(left.email), _norm(left.location)
+    last_r, email_r, loc_r = _norm(right.lastName), _norm(right.email), _norm(right.location)
 
     if not last_l or not last_r:
         return None, 0.0
 
-    # ── Preserve exact confirmed-duplicate rule ──────────────────────────────
+    # ── Confirmed: identity fields equal after first-name space/case fold ───
     same_first       = (first_l == first_r)
     same_last_exact  = (last_l  == last_r)
     same_email_exact = bool(email_l and email_r and email_l == email_r)
@@ -361,11 +366,13 @@ def match_classification_gll(
       AND (same_last OR same_email)
       Location is never used — GLL records have NULL location.
     """
-    first_l = _norm(left.firstName)
+    from app.nickname_match import normalize_first_name
+
+    first_l = normalize_first_name(left.firstName)
+    first_r = normalize_first_name(right.firstName)
     last_l  = _norm(left.lastName)
     email_l = _norm(left.email)
 
-    first_r = _norm(right.firstName)
     last_r  = _norm(right.lastName)
     email_r = _norm(right.email)
 
@@ -376,7 +383,7 @@ def match_classification_gll(
     same_first_exact = (first_l == first_r)
     same_email_exact = bool(email_l and email_r and email_l == email_r)
 
-    # Confirmed Duplicate: exact match across all three identity fields (unchanged)
+    # Confirmed Duplicate: all three identity fields equal (first name space/case folded)
     if same_first_exact and same_last_exact and same_email_exact:
         first_name_score = 30.0
         last_name_score  = 35.0

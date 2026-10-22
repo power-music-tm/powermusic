@@ -244,6 +244,11 @@ class RequestOut(BaseModel):
     # Aggregated classification counts for grouped representative requests.
     # { alreadyExists: bool, duplicateCount: int, potentialCount: int }
     groupClassificationSummary: Optional[Any] = None
+    # Full group member stubs for instant group-page paint from the list.
+    groupMembers: Optional[List[Any]] = None
+    groupDirectoryPersonId: Optional[str] = None
+    groupDirectoryPerson: Optional[Any] = None
+    groupPreview: Optional[Any] = None
 
     @model_validator(mode="before")
     @classmethod

@@ -197,8 +197,9 @@ export function directoryStatusTag(request) {
  *
  * Rules:
  * - Exists in Directory is rendered once (no count badge) when alreadyExists=true
- * - Duplicate × N is rendered when duplicateCount > 0
- * - Potential Duplicate × N is rendered when potentialCount > 0
+ * - Duplicate × N is rendered when duplicateCount > 0 (members with a confirmed peer match)
+ * - Potential Duplicate × N is rendered when potentialCount > 0 (members with a potential peer match)
+ * - Counts come from live peer classification for every group member (not only tagged rows)
  * - Uses existing variant names so no new CSS is needed
  *
  * @param {{ alreadyExists: boolean, duplicateCount: number, potentialCount: number } | null | undefined} summary

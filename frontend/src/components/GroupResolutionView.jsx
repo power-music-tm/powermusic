@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ArrowLeft, ChevronRight, ChevronDown, Check, Database, Clock, Pencil,
@@ -246,10 +246,40 @@ export default function GroupResolutionView({
   const [mergePageOpen, setMergePageOpen] = useState(false);
 
   // Keep confirmation + merge-page values
-  const [confirmAction, setConfirmAction] = useState(null); // 'keep' | 'merge' | null
+  // confirmAction: 'keep' | 'merge' | 'add_as_new' | null
+  const [confirmAction, setConfirmAction] = useState(null);
   const [markUnlinkedTarget, setMarkUnlinkedTarget] = useState(null);
   const [modalValues, setModalValues] = useState(null);
   const [mergeEditing, setMergeEditing] = useState(false);
+
+  // When parent refreshes group detail (cache → network), sync members/form so
+  // pills and history don't stay stuck on the stale cached snapshot.
+  useEffect(() => {
+    const nextMembers = Array.isArray(group.members) ? group.members : [];
+    const nextIds = nextMembers.map((m) => m.id).join('|');
+    const prevIds = members.map((m) => m.id).join('|');
+    if (nextIds === prevIds) return;
+
+    setMembers(nextMembers);
+    setSessionUnlinkedIds((ids) => ids.filter((id) => nextMembers.some((m) => m.id === id)));
+
+    if (isEditing || mergeEditing || confirmAction) return;
+    const nextRep =
+      nextMembers.find((m) => m.isRepresentative) || nextMembers[0] || null;
+    if (!nextRep) return;
+    const nextForm = {
+      firstName: nextRep?.person?.firstName || nextRep?.firstName || '',
+      lastName: nextRep?.person?.lastName || nextRep?.lastName || '',
+      email: nextRep?.person?.email || nextRep?.email || '',
+      location: nextRep?.person?.location || nextRep?.location || '',
+      role: nextRep?.person?.role || nextRep?.role || '',
+      directorFirst: nextRep?.directorFirst || nextRep?.person?.directorFirst || '',
+      directorLast: nextRep?.directorLast || nextRep?.person?.directorLast || '',
+    };
+    setForm(nextForm);
+    setDraftForm(nextForm);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: sync from group.members only
+  }, [group.members, group.id]);
 
 
   const openUnlinkModal = (member) => {
@@ -291,6 +321,11 @@ export default function GroupResolutionView({
     setMergeEditing(false);
   };
 
+  const incomingMemberCount = () =>
+    members.filter(
+      (m) => !sessionUnlinkedIds.includes(m.id) && m.id !== group.directoryPersonId,
+    ).length;
+
   const startMergeEdit = () => {
     setDraftForm(form);
     setMergeEditing(true);
@@ -308,9 +343,20 @@ export default function GroupResolutionView({
     setModalValues(null);
   };
 
-  /* ── keep existing — open confirm (Case C) ── */
+  /* ── open the Request History page (timeline + Merge) ── */
+  const openHistoryPage = () => {
+    if (submitting) return;
+    setHistoryExpanded(true);
+    setMergePageOpen(true);
+  };
+
+  /* ── keep existing — open Previous Requests first when group has siblings ── */
   const openKeepConfirm = () => {
     if (submitting) return;
+    if (incomingMemberCount() > 1 && !mergePageOpen) {
+      openHistoryPage();
+      return;
+    }
     setConfirmAction('keep');
   };
 
@@ -320,14 +366,11 @@ export default function GroupResolutionView({
     if (currentRep?.action === 'Remove') return;
     setModalValues({ ...form });
     setDraftForm({ ...form });
+    if (incomingMemberCount() > 1 && !mergePageOpen) {
+      openHistoryPage();
+      return;
+    }
     setConfirmAction('add_as_new');
-  };
-
-  /* ── open the Request History page (timeline + Merge) ── */
-  const openHistoryPage = () => {
-    if (submitting) return;
-    setHistoryExpanded(true);
-    setMergePageOpen(true);
   };
 
   const openMergePage = () => {
@@ -779,9 +822,15 @@ export default function GroupResolutionView({
         </ol>
         <div className="ml-auto flex flex-wrap items-center gap-1.5">
           <span className="mr-1.5 hidden h-4 w-px shrink-0 self-center bg-[var(--color-border-default)] sm:block" aria-hidden="true" />
-          {/* Aggregated classification pills — prefer classificationSummary, fall back to single tag */}
+          {/* Aggregated classification pills — keep counts aligned with live members */}
           {(() => {
-            const summary = group.classificationSummary;
+            const raw = group.classificationSummary || {};
+            const peerTotal = (raw.duplicateCount || 0) + (raw.potentialCount || 0);
+            // While cache/network catch up, Request History may already show N members.
+            const summary =
+              members.length > peerTotal && !(raw.duplicateCount > 0)
+                ? { ...raw, potentialCount: Math.max(raw.potentialCount || 0, members.length) }
+                : raw;
             const pills = groupClassificationPills(summary);
             if (pills.length > 0) {
               return pills.map((pill) => (
@@ -1023,6 +1072,27 @@ export default function GroupResolutionView({
 
           {canStillMerge ? (
             <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
+              {/* Keep Existing only after peers are detached down to one new request */}
+              {hasDirectory && incomingMemberCount() === 1 ? (
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={openKeepConfirm}
+                  className={BTN_SECONDARY}
+                >
+                  Keep Existing and Delete New Request
+                </button>
+              ) : null}
+              {hasDirectory && incomingMemberCount() === 1 && currentRep?.action !== 'Remove' ? (
+                <button
+                  type="button"
+                  disabled={!isFormValid || submitting || isEditing}
+                  onClick={openAddAsNewConfirm}
+                  className={BTN_SECONDARY}
+                >
+                  Keep Existing and Add New
+                </button>
+              ) : null}
               <button
                 type="button"
                 disabled={submitting || !isFormValid || isEditing}
@@ -1034,7 +1104,11 @@ export default function GroupResolutionView({
                 className={BTN_PRIMARY}
               >
                 <Check className="h-4 w-4" aria-hidden="true" />
-                {submitting ? 'Merging…' : 'Merge'}
+                {submitting
+                  ? 'Merging…'
+                  : (incomingMemberCount() > 1
+                    ? 'Merge'
+                    : (hasDirectory ? 'Merge and Update Directory' : 'Merge'))}
               </button>
             </div>
           ) : null}
@@ -1428,7 +1502,7 @@ export default function GroupResolutionView({
       <Modal
         isOpen={confirmAction === 'keep'}
         onClose={closeConfirmModal}
-        title={members.length > 1 ? "Keep existing and delete new requests?" : "Keep existing and delete new request?"}
+        title={incomingMemberCount() > 1 ? "Keep existing and delete new requests?" : "Keep existing and delete new request?"}
         footer={
           <>
             <button
@@ -1451,8 +1525,8 @@ export default function GroupResolutionView({
       >
         <p className="text-sm text-[var(--color-text-secondary)]">
           {hasDirectory
-            ? (members.length > 1 
-                ? 'The existing Directory record will remain unchanged. All incoming requests in this group will be deleted/dissolved, and no Directory changes will be made.'
+            ? (incomingMemberCount() > 1
+                ? `The existing Directory record will remain unchanged. All ${incomingMemberCount()} incoming requests in this group will be deleted, and no Directory changes will be made.`
                 : 'The Directory record will stay unchanged. The incoming request will be closed without writing new values.')
             : 'No Directory record will be created. Incoming requests in this group will be closed and discarded.'}
         </p>
@@ -1484,8 +1558,9 @@ export default function GroupResolutionView({
         }
       >
         <p className="text-sm text-[var(--color-text-secondary)]">
-          The existing Directory record will stay unchanged. This request will be added as a
-          separate new person, and they will not be linked again as a duplicate of that Directory record.
+          {incomingMemberCount() > 1
+            ? `The existing Directory record will stay unchanged. The ${incomingMemberCount()} matching new requests will be merged into the one person below, that person is added to Directory, the other new requests are removed, and they will not be linked again as a duplicate of that Directory record.`
+            : 'The existing Directory record will stay unchanged. This request will be added as a separate new person, and they will not be linked again as a duplicate of that Directory record.'}
         </p>
         <div className="mt-4 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-surface-bg)]/60 p-3.5">
           <p className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">

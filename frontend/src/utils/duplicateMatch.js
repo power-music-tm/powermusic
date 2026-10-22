@@ -1,67 +1,51 @@
 /**
  * Client-side mirror of backend match_classification for Request History UX.
- * Uses field-flag classification rules:
- * - FIRST_NAME_MATCH_MIN = 0.65 Jaro-Winkler similarity
- * - Confirmed: exact equality on all identity fields
- * - Potential: matched field count >= 2 AND (same_last OR same_email)
+ *
+ * First-name Potential flag uses the nickname dataset (not Jaro-Winkler):
+ * exact match OR nickname-graph related (shared token length >= 3).
+ * Confirmed: exact equality on all identity fields.
+ * Potential: matched field count >= 2 AND (same_last OR same_email)
  */
 
-const FIRST_NAME_MATCH_MIN = 0.65;
+import nicknameRelated from '../data/nicknameRelated.json';
+
+const MIN_SHARED_TOKEN_LEN = 3;
 
 function norm(val) {
   if (!val) return '';
   return String(val).trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-function jaroWinkler(s1, s2) {
-  if (s1 === s2) return 1.0;
-  if (!s1 || !s2) return 0.0;
+/** Lowercase + strip all spaces — RUBAB / ru bab / rubab are the same. */
+function normalizeFirstName(val) {
+  if (!val) return '';
+  return String(val).trim().toLowerCase().replace(/\s+/g, '');
+}
 
-  const len1 = s1.length;
-  const len2 = s2.length;
-  const matchDistance = Math.floor(Math.max(len1, len2) / 2) - 1;
-
-  let matches = 0;
-  const hash1 = Array(len1).fill(false);
-  const hash2 = Array(len2).fill(false);
-
-  for (let i = 0; i < len1; i += 1) {
-    const start = Math.max(0, i - matchDistance);
-    const end = Math.min(len2, i + matchDistance + 1);
-    for (let j = start; j < end; j += 1) {
-      if (!hash2[j] && s1[i] === s2[j]) {
-        hash1[i] = true;
-        hash2[j] = true;
-        matches += 1;
-        break;
-      }
-    }
+function relatedFirstNames(name) {
+  const n = normalizeFirstName(name);
+  if (!n) return new Set();
+  const related = new Set([n]);
+  const extras = nicknameRelated[n];
+  if (Array.isArray(extras)) {
+    for (const x of extras) related.add(x);
   }
+  return related;
+}
 
-  if (matches === 0) return 0.0;
-
-  let t = 0;
-  let point = 0;
-  for (let i = 0; i < len1; i += 1) {
-    if (hash1[i]) {
-      while (!hash2[point]) point += 1;
-      if (s1[i] !== s2[point]) t += 1;
-      point += 1;
-    }
+/** Mirror of backend first_names_nickname_match */
+export function firstNamesNicknameMatch(left, right) {
+  const a = normalizeFirstName(left);
+  const b = normalizeFirstName(right);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const ra = relatedFirstNames(a);
+  const rb = relatedFirstNames(b);
+  if (ra.has(b) || rb.has(a)) return true;
+  for (const token of ra) {
+    if (rb.has(token) && token.length >= MIN_SHARED_TOKEN_LEN) return true;
   }
-  t /= 2;
-
-  const m = matches;
-  const jaro = (m / len1 + m / len2 + (m - t) / m) / 3.0;
-
-  let prefix = 0;
-  const maxPrefix = Math.min(4, len1, len2);
-  for (let i = 0; i < maxPrefix; i += 1) {
-    if (s1[i] === s2[i]) prefix += 1;
-    else break;
-  }
-
-  return jaro + prefix * 0.1 * (1.0 - jaro);
+  return false;
 }
 
 /**
@@ -73,23 +57,21 @@ function jaroWinkler(s1, s2) {
 export function matchClassification(left, right, options = {}) {
   const isGll = Boolean(options?.isGll);
 
-  const firstL = norm(left?.firstName);
+  const firstL = normalizeFirstName(left?.firstName);
   const lastL = norm(left?.lastName);
   const emailL = norm(left?.email);
   const locL = norm(left?.location);
-  const firstR = norm(right?.firstName);
+  const firstR = normalizeFirstName(right?.firstName);
   const lastR = norm(right?.lastName);
   const emailR = norm(right?.email);
   const locR = norm(right?.location);
 
   const sameLast = Boolean(lastL && lastR && lastL === lastR);
   const sameFirst = Boolean(firstL && firstR && firstL === firstR);
-  const jwFirst = jaroWinkler(firstL, firstR);
-  const firstMatch = sameFirst || (Boolean(firstL && firstR) && jwFirst >= FIRST_NAME_MATCH_MIN);
+  const firstMatch = Boolean(firstL && firstR && firstNamesNicknameMatch(firstL, firstR));
   const sameEmail = Boolean(emailL && emailR && emailL === emailR);
   const sameLoc = Boolean(locL && locR && locL === locR);
 
-  // Requirement: at least one anchor field (same_last OR same_email) must be true
   const anchorFieldMatched = sameLast || sameEmail;
 
   if (sameFirst && sameLast && sameEmail && (isGll || sameLoc)) {
@@ -109,4 +91,3 @@ export function matchClassification(left, right, options = {}) {
 
   return null;
 }
-

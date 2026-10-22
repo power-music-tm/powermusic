@@ -136,19 +136,11 @@ class TestFourFieldClassification:
     def test_10_mike_vs_michael_same_email_potential(self):
         left  = _p("Mike",    "Johnson", "shared@example.com", "GymA")
         right = _p("Michael", "Smith",   "shared@example.com", "GymB")
-        # JW("mike","michael") → should be >= 0.65 (prefix "mich" vs "mike" — let's verify)
-        # same_email=True, first_match likely True, same_last=False, same_loc=False
-        # matched >= 2 if first_match is True AND same_email=True, anchored=True (email)
-        jw = round(jaro_winkler("mike", "michael"), 6)
+        # Nickname dataset links Mike↔Michael; same_email anchors → potential
         label, _ = match_classification(left, right)
-        if jw >= FIRST_NAME_MATCH_MIN:
-            # same_email=True + first_match=True → matched>=2, anchored=True → potential
-            assert label == "potential_duplicate", (
-                f"Mike/Michael same email should be potential_duplicate (JW={jw}), got {label}"
-            )
-        else:
-            # same_email only → None (matched=1)
-            assert label is None
+        assert label == "potential_duplicate", (
+            f"Mike/Michael same email should be potential_duplicate, got {label}"
+        )
 
     # Test 11 – Same first only → None
     def test_11_same_first_only_none(self):
@@ -194,12 +186,11 @@ class TestFourFieldClassification:
     # Test 14 – Green/Oliver directory + Green/Christian request → None
     # The spec intent: Oliver Green and Christian Green are different people.
     # With different locations, same last alone (1 flag) is below the minimum of 2.
-    # JW("oliver","christian") is well below 0.65 so first_match=False.
     def test_14_green_oliver_directory_green_christian_none(self):
         directory = _p("Oliver",    "Green", "oliver@example.com", "GymA")
         request   = _p("Christian", "Green", "chris@example.com",  "GymB")
         label, _  = match_classification(directory, request)
-        # same_last=True, first_match=False (oliver/christian JW << 0.65),
+        # same_last=True, first_match=False (not nicknames),
         # same_email=False, same_loc=False → matched=1 → None
         assert label is None, (
             f"Green/Oliver vs Green/Christian (different location/email) should be None; got {label}"
@@ -220,18 +211,12 @@ class TestFourFieldClassification:
     def test_16_same_location_mike_michael_none(self):
         left  = _p("Mike",    "Johnson", "a@example.com", "GymA")
         right = _p("Michael", "Smith",   "b@example.com", "GymA")
-        # same_loc=True, first_match=True (JW mike/michael likely >= 0.65)
+        # same_loc=True, first_match=True (nickname dataset)
         # same_last=False, same_email=False → anchored=False → None even if matched=2
-        jw = round(jaro_winkler("mike", "michael"), 6)
         label, _ = match_classification(left, right)
-        if jw >= FIRST_NAME_MATCH_MIN:
-            # matched=2 but anchored=False → None
-            assert label is None, (
-                f"Same loc + Mike/Michael (no email/last anchor) should be None, got {label}"
-            )
-        else:
-            # matched=1 → None anyway
-            assert label is None
+        assert label is None, (
+            f"Same loc + Mike/Michael (no email/last anchor) should be None, got {label}"
+        )
 
     # Test 17 – Same location + identical first name → None
     def test_17_same_location_identical_first_none(self):
@@ -286,21 +271,14 @@ class TestGllFieldFlagClassification:
             f"GLL same last + same email should be potential_duplicate, got {label}"
         )
 
-    # Test 22 – Same email + first-name JW >= 0.65, different last → potential
+    # Test 22 – Same email + nickname first match, different last → potential
     def test_22_gll_same_email_first_match_different_last_potential(self):
-        # "jon" vs "john": JW should be >= 0.65
         left  = _p("Jon",  "Smith",  "shared@example.com")
         right = _p("John", "Taylor", "shared@example.com")
-        jw = round(jaro_winkler("jon", "john"), 6)
         label, _ = match_classification_gll(left, right)
-        if jw >= FIRST_NAME_MATCH_MIN:
-            # same_email=True + first_match=True → matched=2, anchored=True (email) → potential
-            assert label == "potential_duplicate", (
-                f"GLL jon/john same email should be potential_duplicate (JW={jw}), got {label}"
-            )
-        else:
-            # same_email only → None
-            assert label is None
+        assert label == "potential_duplicate", (
+            f"GLL jon/john same email should be potential_duplicate, got {label}"
+        )
 
     # Test 23 – All three identical → confirmed
     def test_23_gll_all_three_identical_confirmed(self):
@@ -336,19 +314,16 @@ class TestGllFieldFlagClassification:
 
 class TestBoundaryConditions:
 
-    def test_jw_threshold_and_darcy_sally_false_positive(self):
-        """Threshold is 0.65; Darcy/Sally (JW=0.60) must not soft-match."""
-        assert FIRST_NAME_MATCH_MIN == 0.65
+    def test_nickname_dataset_not_jw_for_first_match(self):
+        """First-match uses nickname dataset; Darcy/Sally must not match; Bob/Robert must."""
+        from app.nickname_match import first_names_nickname_match
 
-        jw_jon_john = round(jaro_winkler("jon", "john"), 6)
-        assert jw_jon_john >= FIRST_NAME_MATCH_MIN, (
-            f"'jon' vs 'john' JW={jw_jon_john} should be >= 0.65"
-        )
+        assert first_names_nickname_match("Jon", "John") is True
+        assert first_names_nickname_match("Bob", "Robert") is True
+        assert first_names_nickname_match("Darcy", "Sally") is False
+        assert first_names_nickname_match("Alice", "Zoe") is False
+        assert first_names_nickname_match("Alex", "Alfred") is False
 
-        jw_darcy_sally = round(jaro_winkler("darcy", "sally"), 6)
-        assert jw_darcy_sally < FIRST_NAME_MATCH_MIN, (
-            f"'darcy' vs 'sally' JW={jw_darcy_sally} should be < 0.65"
-        )
         flags = _field_flags(
             _p("Darcy", "Moore", "a@example.com", "Donyngs"),
             _p("Sally", "Moore", "b@example.com", "Barnet"),
@@ -357,27 +332,14 @@ class TestBoundaryConditions:
         assert flags["same_last"] is True
         assert flags["first_match"] is False
 
-        jw_low = round(jaro_winkler("alice", "zoe"), 6)
-        assert jw_low < FIRST_NAME_MATCH_MIN, (
-            f"'alice' vs 'zoe' JW={jw_low} should be < 0.65"
-        )
-
-        assert round(0.650000, 6) >= FIRST_NAME_MATCH_MIN
-        assert round(0.649999, 6) < FIRST_NAME_MATCH_MIN
-
-    def test_boundary_first_name_exactly_at_min_counts(self):
-        """Pair where first_match is True (at or above boundary) produces potential when anchored."""
-        # Use "jon" vs "john" which we know is above 0.65
+    def test_boundary_first_name_nickname_counts(self):
+        """Nickname first_match produces potential when anchored by last name."""
         left  = _p("Jon",  "Smith", "a@example.com")
         right = _p("John", "Smith", "b@example.com")
-        # same_last=True, first_match=True (jon/john >= 0.65), same_email=False
-        # matched=2, anchored=True → potential
         label, _ = match_classification(left, right)
-        jw = round(jaro_winkler("jon", "john"), 6)
-        if jw >= FIRST_NAME_MATCH_MIN:
-            assert label == "potential_duplicate", (
-                f"jon/john same last should be potential_duplicate (JW={jw}), got {label}"
-            )
+        assert label == "potential_duplicate", (
+            f"jon/john same last should be potential_duplicate, got {label}"
+        )
 
     def test_empty_fields_never_count_as_match(self):
         """None, empty string, and whitespace-only values must not count as matches."""

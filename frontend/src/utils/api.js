@@ -4,7 +4,8 @@
 const env = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env : {};
 const API_BASE = env.VITE_API_URL ?? (env.PROD ? '' : '');
 
-const DEFAULT_TIMEOUT_MS = env.PROD ? 45000 : 12000;
+// Local UI talks to remote Supabase via the API; create/group paths often exceed 12s.
+const DEFAULT_TIMEOUT_MS = env.PROD ? 45000 : 60000;
 
 const DEV_BACKEND_HINT =
   'Check that the backend is running: cd backend && .venv/bin/python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000';

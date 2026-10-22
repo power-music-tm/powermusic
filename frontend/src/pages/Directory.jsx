@@ -957,14 +957,23 @@ export default function UserLedger() {
     const cacheKey = selectedPartnerId ? `directory_persons:${selectedPartnerId}` : 'directory_persons';
     const archivedCacheKey = selectedPartnerId ? `directory_persons_archived:${selectedPartnerId}` : 'directory_persons_archived';
     const query = selectedPartnerId ? `?partner_id=${encodeURIComponent(selectedPartnerId)}` : '';
+    let cancelled = false;
+
+    // Drop previous gym's rows immediately so we never flash another partner's directory.
+    setLiveUserLedger([]);
+    setArchivedUserLedger([]);
+    setTableLoading(true);
+    setSelectedIds(new Set());
 
     const applyPersons = (data) => {
+      if (cancelled) return;
       const activeData = Array.isArray(data) ? data : [];
       setLiveUserLedger(activeData);
       setTableLoading(false);
     };
 
     const applyArchived = (data) => {
+      if (cancelled) return;
       const archivedData = Array.isArray(data) ? data : [];
       setArchivedUserLedger(archivedData);
     };
@@ -975,13 +984,16 @@ export default function UserLedger() {
         loadWithCache(archivedCacheKey, () => fetchJson(`/api/persons/archived${query}`), applyArchived)
       ]).catch((err) => {
         console.error(err);
-        setTableLoading(false);
+        if (!cancelled) setTableLoading(false);
       });
     };
     load();
     const refresh = () => { if (!document.hidden) load(); };
     window.addEventListener('focus', refresh);
-    return () => window.removeEventListener('focus', refresh);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', refresh);
+    };
   }, [selectedPartnerId]);
 
   const [searchQuery, setSearchQuery] = useState('');

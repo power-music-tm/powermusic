@@ -13,3 +13,4 @@ google-auth-oauthlib
 cryptography
 PyJWT[crypto]
 python-multipart
+nicknames
