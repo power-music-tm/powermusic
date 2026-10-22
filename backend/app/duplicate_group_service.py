@@ -184,6 +184,28 @@ def process_request_grouping(
     dismissed_set: Optional[Set[Tuple[str, str]]] = None,
 ) -> Optional[models.DuplicateGroup]:
     """Find or create a DuplicateGroup for *req*, preserving all original request data."""
+    from app.duplicate_matching import get_all_rejected_nickname_pairs
+    from app.nickname_match import rejected_nickname_pairs_scope
+
+    with rejected_nickname_pairs_scope(get_all_rejected_nickname_pairs(db)):
+        return _process_request_grouping_impl(
+            db,
+            req,
+            pending_candidates=pending_candidates,
+            directory_candidates=directory_candidates,
+            dismissed_set=dismissed_set,
+        )
+
+
+def _process_request_grouping_impl(
+    db: Session,
+    req: models.ManagerRequest,
+    *,
+    pending_candidates: Optional[List[models.ManagerRequest]] = None,
+    directory_candidates: Optional[List[models.ManagerRequest]] = None,
+    dismissed_set: Optional[Set[Tuple[str, str]]] = None,
+) -> Optional[models.DuplicateGroup]:
+    """Inner grouping body (runs under rejected-nickname scope)."""
     if not req or req.status != "new":
         return None
 
@@ -982,6 +1004,27 @@ def compute_group_classification_summary(
             "duplicateCount": int,       # members whose best peer match is confirmed
             "potentialCount": int,       # members whose best peer match is potential
         }
+    """
+    from app.duplicate_matching import get_all_rejected_nickname_pairs
+    from app.nickname_match import rejected_nickname_pairs_scope
+
+    with rejected_nickname_pairs_scope(get_all_rejected_nickname_pairs(db)):
+        return _compute_group_classification_summary_impl(db, group, members)
+
+
+def _compute_group_classification_summary_impl(
+    db: Session,
+    group: models.DuplicateGroup,
+    members: Optional[List[models.ManagerRequest]] = None,
+) -> dict:
+    """Inner summary body (runs under rejected-nickname scope).
+
+    Returns:
+        {
+            "alreadyExists": bool,
+            "duplicateCount": int,
+            "potentialCount": int,
+        }
 
     Design notes:
     - Each member is counted at most once (confirmed wins over potential).
@@ -995,10 +1038,21 @@ def compute_group_classification_summary(
     duplicate_count = 0
     potential_count = 0
 
+    already_exists = False
+    already_removed = False
+    dir_person = None
+    if group.directory_person_id:
+        dir_person = db.query(models.ManagerRequest).filter_by(id=group.directory_person_id).first()
+        if dir_person and dir_person.outcome == "Removed":
+            already_removed = True
+        else:
+            already_exists = True
+
     if len(active_members) >= 2:
         is_ht = is_healthtech_from_request(db, active_members[0])
         is_gll = is_gll_from_request(db, active_members[0])
         dismissed_set = get_all_dismissed_pairs(db)
+        dir_left = person_from_model(dir_person) if dir_person else None
 
         for member in active_members:
             best: Optional[str] = None
@@ -1019,19 +1073,31 @@ def compute_group_classification_summary(
                 best = _best_classification(best, classification)
                 if best == "confirmed_duplicate":
                     break
+            # Directory-linked members may not peer-match each other; still count them.
+            if best is None and dir_left is not None and member.id != getattr(dir_person, "id", None):
+                if not are_requests_dismissed(
+                    db, member.id, dir_person.id, dismissed_set=dismissed_set
+                ):
+                    classification, _ = match_classification_for_partner(
+                        left,
+                        dir_left,
+                        is_healthtech=is_ht,
+                        is_gll=is_gll,
+                    )
+                    best = classification
             if best == "confirmed_duplicate":
                 duplicate_count += 1
             elif best == "potential_duplicate":
                 potential_count += 1
 
-    already_exists = False
-    already_removed = False
-    if group.directory_person_id:
-        dir_person = db.query(models.ManagerRequest).filter_by(id=group.directory_person_id).first()
-        if dir_person and dir_person.outcome == "Removed":
-            already_removed = True
-        else:
-            already_exists = True
+        # Request History size is the source of truth — never undercount vs members.
+        classified = duplicate_count + potential_count
+        n = len(active_members)
+        if n > classified:
+            if duplicate_count > 0:
+                potential_count = n - duplicate_count
+            else:
+                potential_count = n
 
     return {
         "alreadyExists": already_exists,
@@ -1483,10 +1549,15 @@ def resolve_group_add_as_new(
 
     Leaves the existing Directory record unchanged. Persists dismissed pairs so the
     incoming request(s) are not re-linked to that Directory person on regrouping.
+    When the first names were nickname-related (not exact), also learns that those
+    two nicknames are different for all future matching.
     Then resolves like Case A (create/update a NEW Directory row from final_values).
 
     Requires group.directory_person_id. Does NOT call db.commit().
     """
+    from app.duplicate_matching import record_rejected_nickname_pair
+    from app.nickname_match import is_nickname_only_first_match, ordered_nickname_pair
+
     old_dir_id = group.directory_person_id
     if not old_dir_id:
         raise ValueError(
@@ -1502,7 +1573,37 @@ def resolve_group_add_as_new(
         except ValueError:
             pass
 
+    old_dir = db.query(models.ManagerRequest).filter_by(id=old_dir_id).first()
+    dir_first = (old_dir.person_first_name if old_dir else None) or ""
+    incoming_first = (final_values.firstName if final_values else None) or ""
     members = get_group_members(db, group.id)
+
+    # Learn every nickname-only first name in the group vs Directory (not only
+    # final_values — form may still show the Directory spelling while a sibling
+    # like Kiara was the nickname match the admin rejected).
+    learned_nickname_pair = None
+    learn_candidates = [incoming_first]
+    for member in members:
+        if member and member.id and member.id != old_dir_id:
+            learn_candidates.append(member.person_first_name or "")
+    seen_keys = set()
+    for cand in learn_candidates:
+        if not is_nickname_only_first_match(dir_first, cand):
+            continue
+        key = ordered_nickname_pair(dir_first, cand)
+        if not key or key in seen_keys:
+            continue
+        seen_keys.add(key)
+        learned = record_rejected_nickname_pair(
+            db,
+            dir_first,
+            cand,
+            admin_id=admin_id,
+            source_group_id=group.id,
+        )
+        if learned and learned_nickname_pair is None:
+            learned_nickname_pair = key
+
     for member in members:
         if not member.id or member.id == old_dir_id:
             continue
@@ -1534,6 +1635,11 @@ def resolve_group_add_as_new(
     meta = dict(group.resolution_metadata or {})
     meta["resolution_type"] = "add_as_new"
     meta["dismissed_directory_person_id"] = old_dir_id
+    if learned_nickname_pair:
+        meta["rejected_nickname_pair"] = {
+            "nameA": learned_nickname_pair[0],
+            "nameB": learned_nickname_pair[1],
+        }
     group.resolution_metadata = meta
     db.flush()
     return dir_row

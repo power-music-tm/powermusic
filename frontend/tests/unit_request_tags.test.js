@@ -18,6 +18,7 @@ import {
   visibleTableRequestTags,
   duplicateStatusIndicator,
   groupClassificationPills,
+  alignClassificationSummaryWithMembers,
 } from '../src/utils/requestTags.js';
 
 test('awaiting manager submission requires unverified + auto mail without partner req', () => {
@@ -84,4 +85,28 @@ test('labels and pills', () => {
   );
   assert.equal(duplicateStatusIndicator({ duplicateCount: 0, potentialCount: 0 }), null);
   assert.equal(duplicateStatusIndicator({ duplicateCount: 1 }).label, 'Similar requests found');
+});
+
+test('alignClassificationSummaryWithMembers bumps stale potential to history size', () => {
+  assert.deepEqual(
+    alignClassificationSummaryWithMembers(
+      { alreadyExists: true, duplicateCount: 0, potentialCount: 2 },
+      6,
+    ),
+    { alreadyExists: true, alreadyRemoved: false, duplicateCount: 0, potentialCount: 6 },
+  );
+  assert.deepEqual(
+    alignClassificationSummaryWithMembers(
+      { alreadyExists: false, duplicateCount: 2, potentialCount: 0 },
+      6,
+    ),
+    { alreadyExists: false, alreadyRemoved: false, duplicateCount: 2, potentialCount: 4 },
+  );
+  assert.deepEqual(
+    alignClassificationSummaryWithMembers(
+      { alreadyExists: false, duplicateCount: 0, potentialCount: 3 },
+      3,
+    ),
+    { alreadyExists: false, alreadyRemoved: false, duplicateCount: 0, potentialCount: 3 },
+  );
 });

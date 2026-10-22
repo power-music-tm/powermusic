@@ -121,6 +121,24 @@ class DismissedGroupMatch(Base):
     created_at = Column(DateTime(timezone=True), nullable=False)
 
 
+class RejectedNicknamePair(Base):
+    """Admin-learned: two nickname-linked first names are different people.
+
+    Stored as normalized ordered pair (name_a <= name_b) so Bob/Robert == Robert/Bob.
+    Suppresses nickname-graph first_match for all future matching; exact same first
+    name is unaffected.
+    """
+
+    __tablename__ = "rejected_nickname_pairs"
+
+    id = Column(String, primary_key=True)
+    name_a = Column(String, nullable=False, index=True)
+    name_b = Column(String, nullable=False, index=True)
+    rejected_by_admin_id = Column(UUID(as_uuid=True), ForeignKey("powermusic_users.id"), nullable=True)
+    source_group_id = Column(String, ForeignKey("duplicate_groups.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+
+
 class ManagerRequestView(Base):
     """When a manager last viewed a handled request (unread until seen_at >= handled_at)."""
 

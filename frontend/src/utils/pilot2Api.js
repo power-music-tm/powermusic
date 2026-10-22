@@ -130,6 +130,12 @@ export async function refreshCache(key, fetcher, apply) {
   try {
     const { data: fresh, stale } = await resolveFreshPayload(key, fetcher);
     if (stale) {
+      // Epoch raced while this GET was in flight — still apply if we have a
+      // usable payload so live pages (e.g. Group Detail) are not stuck on seed.
+      if (fresh && !isApiErrorPayload(fresh)) {
+        try { sessionStorage.setItem(`pm_cache_${key}`, JSON.stringify(fresh)); } catch { /* quota */ }
+        apply(fresh, true);
+      }
       return fresh;
     }
     if (isApiErrorPayload(fresh)) {

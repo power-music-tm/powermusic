@@ -782,6 +782,7 @@ export default function Requests() {
   const [personForms, setPersonForms] = useState([emptyPersonForm()]);
   const [action, setAction] = useState('Add');
   const [manualSubmitAttempted, setManualSubmitAttempted] = useState(false);
+  const [manualSubmitting, setManualSubmitting] = useState(false);
   const [manualTouchedFields, setManualTouchedFields] = useState({});
   const personRowRefs = useRef([]);
   const manualPersonFieldRefs = useRef([]);
@@ -794,6 +795,7 @@ export default function Requests() {
     setPersonForms([emptyPersonForm()]);
     setAction(nextAction);
     setManualSubmitAttempted(false);
+    setManualSubmitting(false);
     setManualTouchedFields({});
   };
 
@@ -984,9 +986,13 @@ export default function Requests() {
 
   const handleCreateRequest = async (e) => {
     e.preventDefault();
+    if (manualSubmitting) return;
     setManualSubmitAttempted(true);
 
-    const validation = validatePersonForms(personForms);
+    const validation = validatePersonForms(personForms, {
+      locationLabel: terms.isGll ? 'Gym Location' : terms.locationTerm,
+      requiresLocation: !terms.isGll,
+    });
     if (!validation.ok) {
       const firstInvalid = firstInvalidPersonField(validation.errorsByRow);
       if (firstInvalid) {
@@ -1001,6 +1007,7 @@ export default function Requests() {
     }
 
     const normalizedPeople = validation.normalizedForms;
+    setManualSubmitting(true);
 
     try {
       const created = await fetchJson('/api/admin/requests/manual', {
@@ -1022,32 +1029,9 @@ export default function Requests() {
         })
       });
 
-      const partnerQuery = selectedPartnerId ? `?partner_id=${encodeURIComponent(selectedPartnerId)}` : '';
-      const archivedCacheKey = selectedPartnerId
-        ? `directory_persons_archived:${selectedPartnerId}`
-        : 'directory_persons_archived';
-
-      const directoryRows = await fetchJson(`/api/persons${partnerQuery}`);
-      const nextDirectory = Array.isArray(directoryRows) ? directoryRows : [];
-      setLiveDirectory(nextDirectory);
-      writeCache(directoryCacheKey, nextDirectory);
-
-      const archivedRows = await fetchJson(`/api/persons/archived${partnerQuery}`);
-      const nextArchived = Array.isArray(archivedRows) ? archivedRows : [];
-      writeCache(archivedCacheKey, nextArchived);
-
+      // Close modal as soon as the write succeeds — don't hold the spinner for
+      // follow-up list refreshes (persons + archived + /page can be slow on Supabase).
       const outcome = action === 'Add' ? 'Added' : 'Removed';
-      if (profile?.id) {
-        writeDirectoryCache(
-          profile.id,
-          outcome === 'Added' ? nextDirectory : nextArchived,
-          outcome,
-          selectedPartnerId || '',
-        );
-      }
-      sessionStorage.setItem('pm_directory_pending_tab', outcome);
-      refreshRequestsPage({ networkOnly: true });
-
       showToast(
         action === 'Add'
           ? (created.length === 1 ? 'Added to Directory.' : `${created.length} users added to Directory.`)
@@ -1058,9 +1042,36 @@ export default function Requests() {
       );
       setShowAddManualModal(false);
       resetManualForm();
+
+      const partnerQuery = selectedPartnerId ? `?partner_id=${encodeURIComponent(selectedPartnerId)}` : '';
+      const archivedCacheKey = selectedPartnerId
+        ? `directory_persons_archived:${selectedPartnerId}`
+        : 'directory_persons_archived';
+
+      const [directoryRows, archivedRows] = await Promise.all([
+        fetchJson(`/api/persons${partnerQuery}`),
+        fetchJson(`/api/persons/archived${partnerQuery}`),
+      ]);
+      const nextDirectory = Array.isArray(directoryRows) ? directoryRows : [];
+      const nextArchived = Array.isArray(archivedRows) ? archivedRows : [];
+      setLiveDirectory(nextDirectory);
+      writeCache(directoryCacheKey, nextDirectory);
+      writeCache(archivedCacheKey, nextArchived);
+
+      if (profile?.id) {
+        writeDirectoryCache(
+          profile.id,
+          outcome === 'Added' ? nextDirectory : nextArchived,
+          outcome,
+          selectedPartnerId || '',
+        );
+      }
+      sessionStorage.setItem('pm_directory_pending_tab', outcome);
+      refreshRequestsPage({ networkOnly: true });
     } catch (err) {
       console.error(err);
       showToast('Failed to add to Directory.', 'error');
+      setManualSubmitting(false);
     }
   };
 
@@ -1734,7 +1745,11 @@ export default function Requests() {
       {/* ── Add Manually Modal ── */}
       <Modal
         isOpen={showAddManualModal}
-        onClose={() => { setShowAddManualModal(false); resetManualForm(); }}
+        onClose={() => {
+          if (manualSubmitting) return;
+          setShowAddManualModal(false);
+          resetManualForm();
+        }}
         title="Add Request Manually"
         wide
         headerExtra={
@@ -1759,20 +1774,29 @@ export default function Requests() {
         }
         footer={
           <>
-            <button onClick={() => { setShowAddManualModal(false); resetManualForm(); }}
-              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer">Cancel</button>
             <button
               type="button"
+              disabled={manualSubmitting}
+              onClick={() => { setShowAddManualModal(false); resetManualForm(); }}
+              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={!isModalFormValid || manualSubmitting}
               onClick={handleCreateRequest}
-              className={`px-4 py-2 text-white text-sm font-semibold rounded-lg transition-colors shadow-sm cursor-pointer ${
-                isModalFormValid
-                  ? 'bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)]'
-                  : 'bg-gray-300'
+              className={`px-4 py-2 text-white text-sm font-semibold rounded-lg transition-colors shadow-sm ${
+                isModalFormValid && !manualSubmitting
+                  ? 'bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] cursor-pointer'
+                  : 'bg-gray-300 cursor-not-allowed'
               }`}
             >
-              {personForms.length === 1
-                ? 'Add to Directory'
-                : `Add ${personForms.length} Users to Directory`}
+              {manualSubmitting
+                ? (personForms.length === 1 ? 'Adding…' : `Adding ${personForms.length}…`)
+                : personForms.length === 1
+                  ? 'Add to Directory'
+                  : `Add ${personForms.length} Users to Directory`}
             </button>
           </>
         }

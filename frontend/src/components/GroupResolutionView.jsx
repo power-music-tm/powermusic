@@ -22,8 +22,15 @@ import {
   resolveGroupDeleteFromDirectory,
   resolveGroupMarkRemoved,
 } from '../utils/duplicateGroupApi';
-import { matchClassification } from '../utils/duplicateMatch';
-import { groupClassificationPills } from '../utils/requestTags';
+import {
+  displayFirstName,
+  isNicknameOnlyFirstMatch,
+  matchClassification,
+} from '../utils/duplicateMatch';
+import {
+  alignClassificationSummaryWithMembers,
+  groupClassificationPills,
+} from '../utils/requestTags';
 import {
   formatPersonName,
   formatPersonEmail,
@@ -174,6 +181,19 @@ const BTN_PRIMARY =
 const BTN_SECONDARY =
   'inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-[var(--color-border-default)] text-sm font-semibold text-[var(--color-text-primary)] hover:bg-[var(--color-surface-highlight)] transition-colors disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer';
 
+/** Primary Directory resolve label — never says "Merge". */
+function resolvePrimaryLabel({ hasDirectory, action, submitting = false }) {
+  const isRemove = action === 'Remove';
+  if (submitting) {
+    if (isRemove) return 'Removing…';
+    return hasDirectory ? 'Updating…' : 'Adding…';
+  }
+  if (hasDirectory) {
+    return isRemove ? 'Remove and Update Directory' : 'Add and Update Directory';
+  }
+  return isRemove ? 'Remove from Directory' : 'Add to Directory';
+}
+
 /* ─── main export ────────────────────────────────────────────────────────── */
 
 export default function GroupResolutionView({
@@ -247,7 +267,7 @@ export default function GroupResolutionView({
   const [mergePageOpen, setMergePageOpen] = useState(false);
 
   // Keep confirmation + merge-page values
-  // confirmAction: 'keep' | 'merge' | 'peers_merge' | 'add_as_new' | 'keep_and_archive' | null
+  // confirmAction: 'keep' | 'merge' | 'peers_merge' | 'add_as_new' | 'keep_and_archive' | 'nickname_check' | null
   const [confirmAction, setConfirmAction] = useState(null);
   // Which resolve action opened Request History — history Merge resumes this modal.
   // pendingConfirmAction: 'keep' | 'merge' | 'add_as_new' | 'keep_and_archive' | null
@@ -330,6 +350,57 @@ export default function GroupResolutionView({
       (m) => !sessionUnlinkedIds.includes(m.id) && m.id !== group.directoryPersonId,
     ).length;
 
+  /** Nickname-only first-name pair vs Directory (for the dedicated check modal). */
+  const nicknameCheckPair = () => {
+    if (!hasDirectory) return null;
+    const directoryFirst =
+      dirPerson?.firstName
+      || dirPerson?.person?.firstName
+      || '';
+    if (!directoryFirst) return null;
+
+    const candidates = [];
+    const values = modalValues || form;
+    if (values?.firstName) candidates.push(values.firstName);
+    if (repMember?.person?.firstName || repMember?.firstName) {
+      candidates.push(repMember?.person?.firstName || repMember?.firstName);
+    }
+    // Any live member may be the nickname variant (e.g. Kiara in a Kierra group).
+    for (const m of members) {
+      if (m?.id === group.directoryPersonId) continue;
+      const first = m?.person?.firstName || m?.firstName;
+      if (first) candidates.push(first);
+    }
+
+    for (const requestFirst of candidates) {
+      if (!isNicknameOnlyFirstMatch(requestFirst, directoryFirst)) continue;
+      return {
+        requestFirst: displayFirstName(requestFirst),
+        directoryFirst: displayFirstName(directoryFirst),
+      };
+    }
+    return null;
+  };
+
+  const openConfirmOrNicknameCheck = (nextAction) => {
+    if (nicknameCheckPair()) {
+      setConfirmAction('nickname_check');
+      return;
+    }
+    setConfirmAction(nextAction);
+  };
+
+  const continueAfterNicknameYes = () => {
+    // Right nickname → same person → Keep Existing.
+    setConfirmAction('keep');
+  };
+
+  const continueAfterNicknameNo = () => {
+    // Not the right nickname → different people → Add New (learns rejection).
+    setModalValues((prev) => prev || { ...form });
+    setConfirmAction('add_as_new');
+  };
+
   const startMergeEdit = () => {
     setDraftForm(form);
     setMergeEditing(true);
@@ -365,7 +436,7 @@ export default function GroupResolutionView({
       return;
     }
     setPendingConfirmAction(null);
-    setConfirmAction('keep');
+    openConfirmOrNicknameCheck('keep');
   };
 
   /* ── not the same as Directory — add as new person ── */
@@ -380,7 +451,7 @@ export default function GroupResolutionView({
       return;
     }
     setPendingConfirmAction(null);
-    setConfirmAction('add_as_new');
+    openConfirmOrNicknameCheck('add_as_new');
   };
 
   /* ── Remove false positive vs Directory — archive Remove request ── */
@@ -441,14 +512,15 @@ export default function GroupResolutionView({
     setPendingConfirmAction(null);
   };
 
-  // If peers are reduced to one (e.g. Delete), leave history so Keep Existing
-  // buttons show on the Current Request card.
+  // If peers are reduced to one (e.g. Delete / history Merge), leave
+  // history so the main action buttons show on the Current Request card.
   useEffect(() => {
     if (!mergePageOpen) return;
     if (
       pendingConfirmAction !== 'keep'
       && pendingConfirmAction !== 'add_as_new'
       && pendingConfirmAction !== 'keep_and_archive'
+      && pendingConfirmAction !== 'merge'
     ) return;
     const count = members.filter(
       (m) => !sessionUnlinkedIds.includes(m.id) && m.id !== group.directoryPersonId,
@@ -561,7 +633,11 @@ export default function GroupResolutionView({
       returnToCurrentRequest();
       return;
     }
-    setConfirmAction('merge');
+    if (incomingMemberCount() > 1) {
+      setConfirmAction('peers_merge');
+      return;
+    }
+    returnToCurrentRequest();
   };
 
   const handleConfirmPeersMerge = async () => {
@@ -1019,15 +1095,12 @@ export default function GroupResolutionView({
         </ol>
         <div className="ml-auto flex flex-wrap items-center gap-1.5">
           <span className="mr-1.5 hidden h-4 w-px shrink-0 self-center bg-[var(--color-border-default)] sm:block" aria-hidden="true" />
-          {/* Aggregated classification pills — keep counts aligned with live members */}
+          {/* Aggregated classification pills — × N tracks live Request History size */}
           {(() => {
-            const raw = group.classificationSummary || {};
-            const peerTotal = (raw.duplicateCount || 0) + (raw.potentialCount || 0);
-            // While cache/network catch up, Request History may already show N members.
-            const summary =
-              members.length > peerTotal && !(raw.duplicateCount > 0)
-                ? { ...raw, potentialCount: Math.max(raw.potentialCount || 0, members.length) }
-                : raw;
+            const summary = alignClassificationSummaryWithMembers(
+              group.classificationSummary || {},
+              members.length,
+            );
             const pills = groupClassificationPills(summary);
             if (pills.length > 0) {
               return pills.map((pill) => (
@@ -1311,7 +1384,9 @@ export default function GroupResolutionView({
                 className={BTN_PRIMARY}
               >
                 <Check className="h-4 w-4" aria-hidden="true" />
-                {submitting ? 'Merging…' : 'Merge'}
+                {incomingMemberCount() > 1
+                  ? (submitting ? 'Merging…' : 'Merge')
+                  : 'Back to Current Request'}
               </button>
             </div>
           ) : null}
@@ -1343,29 +1418,6 @@ export default function GroupResolutionView({
               Directory record details not available locally. Values shown in the confirmation step.
             </p>
           )}
-          <p className="mt-4 text-xs leading-relaxed text-[var(--color-text-muted)]">
-            {currentRep?.action === 'Remove' ? (
-              <>
-                This is the existing Directory record.{' '}
-                <span className="font-semibold text-[var(--color-text-secondary)]">Keep Existing and Delete</span>
-                {' '}removes the new request.{' '}
-                <span className="font-semibold text-[var(--color-text-secondary)]">Keep Existing and Archive</span>
-                {' '}archives the Remove request without changing Directory.{' '}
-                <span className="font-semibold text-[var(--color-text-secondary)]">Remove and Update</span>
-                {' '}marks this Directory person as removed.
-              </>
-            ) : (
-              <>
-                This is the existing Directory record.{' '}
-                <span className="font-semibold text-[var(--color-text-secondary)]">Keep Existing and Delete</span>
-                {' '}removes the new request.{' '}
-                <span className="font-semibold text-[var(--color-text-secondary)]">Keep Existing and Add New</span>
-                {' '}creates a separate Directory person.{' '}
-                <span className="font-semibold text-[var(--color-text-secondary)]">Add and Update</span>
-                {' '}overwrites this record.
-              </>
-            )}
-          </p>
         </SectionCard>
       )}
 
@@ -1463,9 +1515,11 @@ export default function GroupResolutionView({
                   className={BTN_PRIMARY}
                 >
                   <Check className="h-4 w-4" aria-hidden="true" />
-                  {members.length === 1
-                    ? (currentRep?.action === 'Remove' ? 'Remove and Update Directory' : 'Add and Update Directory')
-                    : (hasDirectory ? 'Merge and Update Directory' : (currentRep?.action === 'Remove' ? 'Merge and Remove' : 'Merge & Add to Directory'))}
+                  {resolvePrimaryLabel({
+                    hasDirectory,
+                    action: currentRep?.action,
+                    submitting,
+                  })}
                 </button>
               </div>
             ) : null}
@@ -1544,18 +1598,14 @@ export default function GroupResolutionView({
         </>
       )}
 
-      {/* ── Merge confirmation (Directory resolve OR peer consolidate) ── */}
+      {/* ── Directory resolve OR peer consolidate confirmation ── */}
       <Modal
         isOpen={confirmAction === 'merge' || confirmAction === 'peers_merge'}
         onClose={closeConfirmModal}
         title={
           confirmAction === 'peers_merge'
             ? 'Merge requests?'
-            : currentRep?.action === 'Remove'
-            ? 'Merge and Remove?'
-            : hasDirectory
-            ? (members.length > 1 ? 'Merge and Update Directory?' : 'Add and Update Directory?')
-            : 'Merge and add to Directory?'
+            : `${resolvePrimaryLabel({ hasDirectory, action: currentRep?.action })}?`
         }
         footer={
           <>
@@ -1577,28 +1627,26 @@ export default function GroupResolutionView({
               onClick={confirmAction === 'peers_merge' ? handleConfirmPeersMerge : handleConfirmMerge}
               className="px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer disabled:opacity-60"
             >
-              {submitting
-                ? 'Merging…'
-                : confirmAction === 'peers_merge'
-                  ? 'Merge'
-                  : members.length === 1
-                    ? (currentRep?.action === 'Remove' ? 'Remove and Update Directory' : 'Add and Update Directory')
-                    : (hasDirectory ? 'Merge and Update Directory' : (currentRep?.action === 'Remove' ? 'Merge and Remove' : 'Merge & Add to Directory'))}
+              {confirmAction === 'peers_merge'
+                ? (submitting ? 'Merging…' : 'Merge')
+                : resolvePrimaryLabel({
+                    hasDirectory,
+                    action: currentRep?.action,
+                    submitting,
+                  })}
             </button>
           </>
         }
       >
         <p className="text-sm text-[var(--color-text-secondary)]">
           {confirmAction === 'peers_merge'
-            ? `These ${incomingMemberCount()} new requests will be merged into the person below, and the older versions will be removed. Directory stays unchanged for now. After this, choose Keep Existing or Merge and Update Directory.`
+            ? `These ${incomingMemberCount()} new requests will be merged into the person below, and the older versions will be removed. Directory stays unchanged for now. After this, choose Keep Existing or ${resolvePrimaryLabel({ hasDirectory, action: currentRep?.action })} on the current request.`
             : currentRep?.action === 'Remove'
-            ? (hasDirectory && members.length > 1
-                ? 'The incoming requests will be merged/resolved, the final resolved values will be used, the existing Directory record will be updated to Removed, and the historical request versions will be dissolved.'
+            ? (hasDirectory
+                ? 'The final resolved values will be used, and the person will be marked as removed in the Directory. The requests in this group will be closed.'
                 : 'The final resolved values will be used, and the person will be marked as removed in the Directory. The requests in this group will be closed.')
             : hasDirectory
-            ? (members.length > 1
-                ? 'The incoming requests will be merged/resolved, the final resolved values will be used, the existing Directory record will be updated, and the historical request versions will be dissolved.'
-                : 'The final resolved values will overwrite the existing Directory record, and the requests in this group will be closed.')
+            ? 'The final resolved values will overwrite the existing Directory record, and the requests in this group will be closed.'
             : 'A new Directory record will be created from the final resolved values, and the requests in this group will be closed.'}
         </p>
 
@@ -1742,6 +1790,52 @@ export default function GroupResolutionView({
         </label>
       </Modal>
 
+      {/* ── Nickname check (before Keep / Add New when first names are nickname-related) ── */}
+      <Modal
+        isOpen={confirmAction === 'nickname_check'}
+        onClose={closeConfirmModal}
+        title="Is this the right nickname?"
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={continueAfterNicknameNo}
+              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer"
+            >
+              No, different people
+            </button>
+            <button
+              type="button"
+              onClick={continueAfterNicknameYes}
+              className="px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer"
+            >
+              Yes, same person
+            </button>
+          </>
+        }
+      >
+        {(() => {
+          const pair = nicknameCheckPair();
+          const requestName = pair?.requestFirst || '—';
+          const directoryName = pair?.directoryFirst || '—';
+          return (
+            <>
+              <p className="text-sm text-[var(--color-text-secondary)]">
+                Is{' '}
+                <span className="font-semibold text-[var(--color-text-primary)]">{requestName}</span>
+                {' '}a nickname for{' '}
+                <span className="font-semibold text-[var(--color-text-primary)]">{directoryName}</span>
+                ?
+              </p>
+              <p className="mt-3 text-xs text-[var(--color-text-muted)]">
+                Keeping them linked leaves the Directory unchanged. Separating them
+                adds a new Directory person and stops these first names matching as nicknames.
+              </p>
+            </>
+          );
+        })()}
+      </Modal>
+
       {/* ── Keep confirmation ── */}
       <Modal
         isOpen={confirmAction === 'keep'}
@@ -1801,25 +1895,32 @@ export default function GroupResolutionView({
           </>
         }
       >
-        <p className="text-sm text-[var(--color-text-secondary)]">
-          {incomingMemberCount() > 1
-            ? `The existing Directory record will stay unchanged. The ${incomingMemberCount()} matching new requests will be merged into the one person below, that person is added to Directory, the other new requests are removed, and they will not be linked again as a duplicate of that Directory record.`
-            : 'The existing Directory record will stay unchanged. This request will be added as a separate new person, and they will not be linked again as a duplicate of that Directory record.'}
-        </p>
-        <div className="mt-4 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-surface-bg)]/60 p-3.5">
-          <p className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
-            New Directory person
-          </p>
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-3">
-            <MetaItem label="First Name" value={(modalValues || form).firstName || '—'} />
-            <MetaItem label="Last Name" value={(modalValues || form).lastName || '—'} />
-            <MetaItem label="Email" value={(modalValues || form).email || '—'} />
-            <MetaItem
-              label={isGll ? 'Gym Location' : (isHealthFitness ? 'Client' : 'Location')}
-              value={((modalValues || form).location || '').trim() || 'No location'}
-            />
-          </dl>
-        </div>
+        {(() => {
+          const values = modalValues || form;
+          return (
+            <>
+              <p className="text-sm text-[var(--color-text-secondary)]">
+                {incomingMemberCount() > 1
+                  ? `The existing Directory record will stay unchanged. The ${incomingMemberCount()} matching new requests will be merged into the one person below, that person is added to Directory, the other new requests are removed, and they will not be linked again as a duplicate of that Directory record.`
+                  : 'The existing Directory record will stay unchanged. This request will be added as a separate new person, and they will not be linked again as a duplicate of that Directory record.'}
+              </p>
+              <div className="mt-4 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-surface-bg)]/60 p-3.5">
+                <p className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+                  New Directory person
+                </p>
+                <dl className="grid grid-cols-2 gap-x-6 gap-y-3">
+                  <MetaItem label="First Name" value={values.firstName || '—'} />
+                  <MetaItem label="Last Name" value={values.lastName || '—'} />
+                  <MetaItem label="Email" value={values.email || '—'} />
+                  <MetaItem
+                    label={isGll ? 'Gym Location' : (isHealthFitness ? 'Client' : 'Location')}
+                    value={(values.location || '').trim() || 'No location'}
+                  />
+                </dl>
+              </div>
+            </>
+          );
+        })()}
       </Modal>
 
       {/* ── Remove false positive — keep Directory and archive Remove request ── */}

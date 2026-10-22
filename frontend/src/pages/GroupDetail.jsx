@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { AdminPageScroll, Toast, useToast } from '../components/ui';
 import GroupResolutionView from '../components/GroupResolutionView';
 import { usePartners } from '../context/PartnerContext';
+import { useRealtimeBroadcast } from '../hooks/useRealtimeBroadcast';
 import { fetchJson } from '../utils/api';
 import {
   getNewRequestsPage,
@@ -22,6 +23,20 @@ import {
   readCachedGroup,
 } from '../utils/groupDetailCache';
 
+/** Faster than New Requests list — admins watching a group need arrivals quickly. */
+const GROUP_DETAIL_POLL_MS = 4000;
+
+function memberIdsFromGroup(data) {
+  return (data?.members || []).map((m) => m.id).filter(Boolean);
+}
+
+function personLabel(member) {
+  const first = member?.person?.firstName || member?.firstName || '';
+  const last = member?.person?.lastName || member?.lastName || '';
+  const name = [first, last].filter(Boolean).join(' ').trim();
+  return name || 'A new request';
+}
+
 export default function GroupDetail() {
   const { groupId } = useParams();
   const navigate = useNavigate();
@@ -38,6 +53,7 @@ export default function GroupDetail() {
     () => !applyListSeed(groupId, readCachedGroup(groupId), listSeed),
   );
   const [notFound, setNotFound] = useState(false);
+  const [arrivalAlert, setArrivalAlert] = useState(null);
 
   const requestsCacheKey = selectedPartnerId
     ? `${REQUESTS_PAGE_CACHE_KEY}:${selectedPartnerId}`
@@ -47,7 +63,78 @@ export default function GroupDetail() {
     : 'directory_persons';
   const groupCacheKey = groupDetailCacheKey(groupId);
 
+  const memberIdsRef = useRef(new Set(memberIdsFromGroup(
+    applyListSeed(groupId, readCachedGroup(groupId), listSeed),
+  )));
+  const liveReadyRef = useRef(false);
+  const refreshInFlightRef = useRef(false);
+  const showToastRef = useRef(showToast);
+  showToastRef.current = showToast;
+
   const goBack = useCallback(() => navigate('/new-requests'), [navigate]);
+
+  const applyGroupDetail = useCallback((data, { alertNewMembers = false } = {}) => {
+    if (!data || data.status === 'resolved' || data.status === 'dismissed') {
+      setNotFound(true);
+      setGroup(null);
+      return;
+    }
+
+    const nextIds = memberIdsFromGroup(data);
+    const prevIds = memberIdsRef.current;
+    const added = nextIds.filter((id) => !prevIds.has(id));
+
+    setGroup(data);
+    setNotFound(false);
+    memberIdsRef.current = new Set(nextIds);
+
+    if (alertNewMembers && liveReadyRef.current && added.length > 0) {
+      const addedMembers = (data.members || []).filter((m) => added.includes(m.id));
+      const label = addedMembers.length === 1
+        ? personLabel(addedMembers[0])
+        : `${added.length} new requests`;
+      const hero = [
+        data.directoryPerson?.firstName || data.directoryPerson?.person?.firstName,
+        data.directoryPerson?.lastName || data.directoryPerson?.person?.lastName,
+      ].filter(Boolean).join(' ').trim()
+        || [
+          data.members?.find((m) => m.isRepresentative)?.person?.firstName,
+          data.members?.find((m) => m.isRepresentative)?.person?.lastName,
+        ].filter(Boolean).join(' ').trim()
+        || 'this group';
+
+      const message = added.length === 1
+        ? `New request for ${hero}: ${label} joined this group.`
+        : `New requests for ${hero}: ${label} joined this group.`;
+
+      setArrivalAlert({
+        message,
+        count: added.length,
+        at: Date.now(),
+      });
+      showToastRef.current(message, 'warning');
+    }
+  }, []);
+
+  const refreshGroupDetail = useCallback(({ alertNewMembers = true, bustCache = false } = {}) => {
+    if (!groupId || refreshInFlightRef.current) return Promise.resolve();
+    refreshInFlightRef.current = true;
+    // Do NOT bump epoch on live polls — that races in-flight GETs and drops apply().
+    if (bustCache) bumpCacheEpoch(groupCacheKey);
+    return refreshCache(
+      groupCacheKey,
+      () => fetchGroupDetail(groupId),
+      (data) => {
+        applyGroupDetail(data, { alertNewMembers });
+        liveReadyRef.current = true;
+        setLoading(false);
+      },
+    )
+      .catch(() => {})
+      .finally(() => {
+        refreshInFlightRef.current = false;
+      });
+  }, [applyGroupDetail, groupCacheKey, groupId]);
 
   // Directory is optional context — do not block the group UI on it.
   useEffect(() => {
@@ -64,8 +151,12 @@ export default function GroupDetail() {
   useEffect(() => {
     let cancelled = false;
     setNotFound(false);
+    setArrivalAlert(null);
+    liveReadyRef.current = false;
+    refreshInFlightRef.current = false;
 
     const seeded = applyListSeed(groupId, readCachedGroup(groupId), listSeed);
+    memberIdsRef.current = new Set(memberIdsFromGroup(seeded));
     if (seeded) {
       setGroup(seeded);
       setLoading(false);
@@ -75,35 +166,56 @@ export default function GroupDetail() {
       setLoading(true);
     }
 
-    bumpCacheEpoch(groupCacheKey);
+    // Single initial network load — no epoch bump so poll cannot invalidate it.
+    refreshInFlightRef.current = true;
     refreshCache(
       groupCacheKey,
       () => fetchGroupDetail(groupId),
       (data) => {
         if (cancelled) return;
-        if (!data || data.status === 'resolved' || data.status === 'dismissed') {
-          setNotFound(true);
-          setGroup(null);
-        } else {
-          setGroup(data);
-          setNotFound(false);
-        }
+        applyGroupDetail(data, { alertNewMembers: false });
+        liveReadyRef.current = true;
         setLoading(false);
       },
-    ).catch(() => {
-      if (cancelled) return;
-      if (!readCachedGroup(groupId) && !listSeed) {
-        setNotFound(true);
-        setGroup(null);
-      }
-      setLoading(false);
-    });
+    )
+      .catch(() => {
+        if (cancelled) return;
+        if (!readCachedGroup(groupId) && !listSeed) {
+          setNotFound(true);
+          setGroup(null);
+        }
+        liveReadyRef.current = true;
+        setLoading(false);
+      })
+      .finally(() => {
+        if (!cancelled) refreshInFlightRef.current = false;
+      });
 
     return () => {
       cancelled = true;
     };
     // Seed by request id only — avoid re-running on new state object identity.
-  }, [groupId, groupCacheKey, listSeed?.id]);
+  }, [groupId, groupCacheKey, listSeed?.id, applyGroupDetail]);
+
+  // Live updates while standing on this group — realtime + focus + poll.
+  useEffect(() => {
+    if (!groupId) return undefined;
+    const refresh = () => {
+      if (document.hidden || !liveReadyRef.current) return;
+      refreshGroupDetail({ alertNewMembers: true });
+    };
+    window.addEventListener('focus', refresh);
+    const poll = window.setInterval(refresh, GROUP_DETAIL_POLL_MS);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      window.clearInterval(poll);
+    };
+  }, [groupId, refreshGroupDetail]);
+
+  useRealtimeBroadcast('requests-changed', () => {
+    if (!liveReadyRef.current) return;
+    refreshGroupDetail({ alertNewMembers: true });
+  }, { enabled: Boolean(groupId) });
 
   /** Called by GroupResolutionView when any resolve or unlink action completes. */
   const handleResolved = useCallback(
@@ -196,7 +308,7 @@ export default function GroupDetail() {
           toastMsg = name ? `Deleted request for ${name}.` : 'Request deleted.';
           break;
         case 'peers_merged':
-          toastMsg = 'Merged into one request. Choose Keep Existing or Merge and Update Directory.';
+          toastMsg = 'Combined into one request. Choose Keep Existing or continue on the current request.';
           break;
         case 'unlinked_dissolved':
           toastMsg = 'Group dissolved successfully.';
@@ -216,13 +328,8 @@ export default function GroupDetail() {
         || type === 'member_deleted'
         || type === 'peers_merged'
       ) {
-        // Member set changed — refresh group cache so revisit stays accurate.
-        bumpCacheEpoch(groupCacheKey);
-        refreshCache(groupCacheKey, () => fetchGroupDetail(groupId), (data) => {
-          if (data && data.status !== 'resolved' && data.status !== 'dismissed') {
-            setGroup(data);
-          }
-        }).catch(() => {});
+        // Member set changed — refresh so live baseline matches this visit.
+        refreshGroupDetail({ alertNewMembers: false, bustCache: true });
         return;
       }
 
@@ -248,7 +355,7 @@ export default function GroupDetail() {
 
       navigate('/new-requests');
     },
-    [groupId, group?.members, navigate, requestsCacheKey, directoryCacheKey, groupCacheKey, selectedPartnerId, showToast],
+    [groupId, group?.members, navigate, requestsCacheKey, directoryCacheKey, groupCacheKey, selectedPartnerId, showToast, refreshGroupDetail],
   );
 
   /* ── loading state ── */
@@ -288,6 +395,27 @@ export default function GroupDetail() {
   return (
     <AdminPageScroll dataPage="group-detail" contentClassName="min-w-0 pb-2">
       <Toast />
+      {arrivalAlert ? (
+        <div
+          role="status"
+          className="mb-4 flex items-start justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-[var(--color-text-primary)] shadow-[0_1px_0_rgba(26,26,46,0.04)]"
+        >
+          <div className="min-w-0">
+            <p className="font-semibold">New request arrived</p>
+            <p className="mt-0.5 text-[var(--color-text-secondary)]">{arrivalAlert.message}</p>
+            <p className="mt-1 text-xs text-[var(--color-text-muted)]">
+              Open Previous Requests to review all {group?.members?.length || 0} matching requests.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setArrivalAlert(null)}
+            className="shrink-0 rounded-md px-2 py-1 text-xs font-semibold text-[var(--color-text-secondary)] hover:bg-white cursor-pointer"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
       <GroupResolutionView
         group={group}
         directory={directory}

@@ -18,6 +18,7 @@ before comparing requests; these functions receive already-filtered sets.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Callable, List, Optional, Set, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
@@ -155,6 +156,70 @@ def get_all_dismissed_pairs(db: Session) -> Set[Tuple[str, str]]:
         pairs.add((r.request_id_1, r.request_id_2))
         pairs.add((r.request_id_2, r.request_id_1))
     return pairs
+
+
+def get_all_rejected_nickname_pairs(db: Session) -> Set[Tuple[str, str]]:
+    """Ordered (name_a, name_b) pairs admin marked as different nicknames."""
+    # Use a SAVEPOINT so a missing table (pre-migration) does not poison the
+    # outer transaction — critical for SQLite in-memory tests and mid-deploy.
+    try:
+        with db.begin_nested():
+            rows = db.query(models.RejectedNicknamePair).all()
+            return {(r.name_a, r.name_b) for r in rows if r.name_a and r.name_b}
+    except Exception:
+        return set()
+
+
+def record_rejected_nickname_pair(
+    db: Session,
+    left: Optional[str],
+    right: Optional[str],
+    *,
+    admin_id: Optional[str] = None,
+    source_group_id: Optional[str] = None,
+) -> Optional[models.RejectedNicknamePair]:
+    """Persist that two nickname-linked first names are different people.
+
+    No-op when names are empty, exact after normalize, or already stored.
+    """
+    from app.nickname_match import is_nickname_only_first_match, ordered_nickname_pair
+    import uuid as _uuid
+
+    key = ordered_nickname_pair(left, right)
+    if not key:
+        return None
+    if not is_nickname_only_first_match(left, right):
+        return None
+
+    existing = (
+        db.query(models.RejectedNicknamePair)
+        .filter(
+            models.RejectedNicknamePair.name_a == key[0],
+            models.RejectedNicknamePair.name_b == key[1],
+        )
+        .first()
+    )
+    if existing:
+        return existing
+
+    admin_uuid = None
+    if admin_id and admin_id != "dev-bypass":
+        try:
+            from uuid import UUID
+            admin_uuid = UUID(admin_id)
+        except ValueError:
+            pass
+
+    row = models.RejectedNicknamePair(
+        id=f"rnick-{_uuid.uuid4().hex[:12]}",
+        name_a=key[0],
+        name_b=key[1],
+        rejected_by_admin_id=admin_uuid,
+        source_group_id=source_group_id,
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(row)
+    return row
 
 
 def are_requests_dismissed(
