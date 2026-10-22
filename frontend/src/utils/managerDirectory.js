@@ -1,41 +1,34 @@
-const FIELD_RANK = { Name: 3, Email: 2, Location: 1 };
+const FIELD_RANK = { Name: 3, Email: 2, Location: 1, 'Email + location': 2 };
 
-const MATCH_RULES = [
-  {
-    test: (form, person) => form.email && person.email === form.email,
-    fields: ['Email'],
-  },
-  {
-    test: (form, person) =>
-      form.first && form.last && person.first === form.first && person.last === form.last,
-    fields: ['Name'],
-  },
-  {
-    test: (form, person) =>
-      form.first && form.location && person.first === form.first && person.location === form.location,
-    fields: ['Name', 'Location'],
-  },
-  {
-    test: (form, person) =>
-      form.last && form.location && person.last === form.last && person.location === form.location,
-    fields: ['Name', 'Location'],
-  },
-  {
-    test: (form, person) =>
-      form.email && form.location && person.email === form.email && person.location === form.location,
-    fields: ['Email', 'Location'],
-  },
-  {
-    test: (form, person) =>
-      form.first &&
-      form.last &&
-      form.location &&
-      person.first === form.first &&
-      person.last === form.last &&
-      person.location === form.location,
-    fields: ['Name', 'Location'],
-  },
-];
+/** Local-mirror of backend manager_form_directory_overlap_reasons. */
+function getMatchFields(form, person, { isGll = false } = {}) {
+  const sameFirst = Boolean(form.first && person.first === form.first);
+  const sameLast = Boolean(form.last && person.last === form.last);
+  const sameEmail = Boolean(form.email && person.email === form.email);
+  const sameLoc = Boolean(form.location && person.location === form.location);
+
+  if (isGll) {
+    const matchedCount = [sameFirst, sameLast, sameEmail].filter(Boolean).length;
+    if (matchedCount < 2) return new Set();
+    const fields = new Set();
+    if (sameFirst && sameLast) fields.add('Name');
+    if (sameEmail) fields.add('Email');
+    if (fields.size === 0) fields.add('Match');
+    return fields;
+  }
+
+  // Non-GLL: Name is one entity (first AND last).
+  const nameMatch = sameFirst && sameLast;
+  if ([nameMatch, sameEmail, sameLoc].filter(Boolean).length < 2) return new Set();
+
+  const fields = new Set();
+  if (nameMatch) fields.add('Name');
+  if (sameEmail && sameLoc) fields.add('Email + location');
+  else if (sameEmail) fields.add('Email');
+  if (sameLoc && nameMatch && !sameEmail) fields.add('Location');
+  if (fields.size === 0) fields.add('Match');
+  return fields;
+}
 
 export function formHasMatchCriteria(personForm) {
   const email = personForm.email.trim();
@@ -220,16 +213,6 @@ export function filterDirectorySearch(people, query, limit = 25) {
     .slice(0, limit);
 }
 
-function getMatchFields(form, person) {
-  const fields = new Set();
-  for (const rule of MATCH_RULES) {
-    if (rule.test(form, person)) {
-      rule.fields.forEach((field) => fields.add(field));
-    }
-  }
-  return fields;
-}
-
 export function mergeFormMatchRows(rowsByFormIndex) {
   const byId = new Map();
   const usersByRowId = new Map();
@@ -261,7 +244,7 @@ export function mergeFormMatchRows(rowsByFormIndex) {
   };
 }
 
-export function findFormMatchCandidates(people, personForm, limit = 15) {
+export function findFormMatchCandidates(people, personForm, limit = 15, { isGll = false } = {}) {
   const form = {
     email: personForm.email.trim().toLowerCase(),
     first: personForm.firstName.trim().toLowerCase(),
@@ -281,7 +264,7 @@ export function findFormMatchCandidates(people, personForm, limit = 15) {
       location: (person.location || '').toLowerCase(),
     };
 
-    const matchFields = getMatchFields(form, personFields);
+    const matchFields = getMatchFields(form, personFields, { isGll });
     if (matchFields.size === 0) continue;
 
     matches.push({

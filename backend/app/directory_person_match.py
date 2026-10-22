@@ -101,8 +101,19 @@ def manager_form_directory_overlap_reasons(
     last: str,
     location: str,
     row: models.ManagerRequest,
+    is_gll: bool = False,
 ) -> set[str]:
-    """Manager Check Directory warnings: same row, at least two corresponding fields match."""
+    """Manager Check Directory / match-candidates warning reasons.
+
+    Non-GLL (name is one entity among {Name, Email, Location}):
+      Name = first AND last both match.
+      Warn when at least two entities match:
+        Name+Email, Name+Location, or Email+Location.
+      Name alone, first+email, last+email, first+location, last+location → no warn.
+
+    GLL (first/last stay separate; no location):
+      Warn when at least two of {first, last, email} match (unchanged).
+    """
     matched = _manager_form_matched_field_keys(
         email=email,
         first=first,
@@ -110,20 +121,34 @@ def manager_form_directory_overlap_reasons(
         location=location,
         row=row,
     )
-    if len(matched) < 2:
+
+    if is_gll:
+        if len(matched) < 2:
+            return set()
+        reasons: set[str] = set()
+        if "firstName" in matched and "lastName" in matched:
+            reasons.add("Name")
+        if "email" in matched:
+            reasons.add("Email")
+        if not reasons:
+            reasons.add("Match")
+        return reasons
+
+    name_match = "firstName" in matched and "lastName" in matched
+    email_match = "email" in matched
+    loc_match = "location" in matched
+    if sum((name_match, email_match, loc_match)) < 2:
         return set()
 
-    reasons: set[str] = set()
-    if "firstName" in matched and "lastName" in matched:
+    reasons = set()
+    if name_match:
         reasons.add("Name")
-    if "email" in matched and "location" in matched:
+    if email_match and loc_match:
         reasons.add("Email + location")
-    elif "email" in matched:
+    elif email_match:
         reasons.add("Email")
-    if "firstName" in matched and "location" in matched and "lastName" not in matched:
-        reasons.add("First name + location")
-    if "lastName" in matched and "location" in matched and "firstName" not in matched:
-        reasons.add("Last name + location")
+    if loc_match and name_match and not email_match:
+        reasons.add("Location")
     if not reasons:
         reasons.add("Match")
     return reasons
@@ -573,7 +598,7 @@ def roster_match_candidates(
     limit: int = 10,
     partner_id: Optional[str] = None,
 ) -> List[models.ManagerRequest]:
-    """Roster rows for manager form warnings (two-or-more field overlap on the same row)."""
+    """Roster rows for manager form warnings (entity-overlap on the same row)."""
     email, first, last, location = _person_probe_fields(person)
     gll = _is_gll(db, partner_id)
     candidates = _roster_sql_candidates(
@@ -595,6 +620,7 @@ def roster_match_candidates(
             last=last,
             location=location,
             row=row,
+            is_gll=gll,
         )
     ]
     return matches[:limit]

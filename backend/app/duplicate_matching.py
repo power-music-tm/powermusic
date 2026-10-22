@@ -1,7 +1,8 @@
 """Duplicate matching logic supporting name derivatives, location probes, and false-positive dismissal checks.
 
-PureGym and Health Fitness share the same 4-field duplicate matching:
-  first name, last name, email, location
+PureGym and Health Fitness share the same duplicate matching model with
+name treated as ONE entity (first+last), plus email and location:
+  Name (first nickname-match AND last exact), email, location
 
 For Health Fitness, the "location" field stores what the partner calls "client".
 
@@ -298,9 +299,13 @@ def match_classification(
       same first AND same last AND same email AND same location
       (exact equality — unchanged from previous behaviour)
 
-    Potential duplicate:
-      number of True field flags >= MIN_MATCHED_FIELDS_FOR_POTENTIAL
-      AND (same_last OR same_email)
+    Potential duplicate (name treated as ONE entity):
+      Entities: Name, Email, Location
+      Name matches only when first_match AND same_last are both True
+        (first uses nickname matching; last is exact).
+      Potential when at least two of those three entities match.
+      Examples: Name+Email, Name+Location, Email+Location.
+      Name alone (first+last, different email/location) is NOT enough.
 
     The numeric score is still computed with the original weights and returned
     for display/debugging.  It no longer gates the classification decision.
@@ -333,12 +338,12 @@ def match_classification(
     if same_first and same_last_exact and same_email_exact and same_loc_exact:
         return "confirmed_duplicate", total_score
 
-    # 2. Potential Duplicate — field-flag rule (replaces threshold gate)
-    flags    = _field_flags(left, right, use_location=True)
-    matched  = sum(flags.values())
-    anchored = flags["same_last"] or flags["same_email"]
+    # 2. Potential Duplicate — name is one entity among {Name, Email, Location}
+    flags = _field_flags(left, right, use_location=True)
+    name_match = flags["first_match"] and flags["same_last"]
+    entity_matched = sum((name_match, flags["same_email"], flags["same_loc"]))
 
-    if matched >= MIN_MATCHED_FIELDS_FOR_POTENTIAL and anchored:
+    if entity_matched >= MIN_MATCHED_FIELDS_FOR_POTENTIAL:
         return "potential_duplicate", total_score
 
     return None, total_score

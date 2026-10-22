@@ -76,13 +76,32 @@ class TestFourFieldClassification:
         assert label == "confirmed_duplicate"
         assert score == 100.0
 
-    # Test 4 – Same last + same first, different email/location → potential
-    def test_04_same_last_same_first_different_email_loc_potential(self):
+    # Test 4 – Same last + same first, different email/location → None
+    # Name is one entity; name alone is not enough without email or location.
+    def test_04_same_last_same_first_different_email_loc_none(self):
         left  = _p("John", "Smith", "a@example.com", "GymA")
         right = _p("John", "Smith", "b@example.com", "GymB")
         label, _ = match_classification(left, right)
+        assert label is None, (
+            f"Name alone (same first+last) should be None without email/loc, got {label}"
+        )
+
+    # Test 4b – Name + email (different location) → potential
+    def test_04b_name_plus_email_potential(self):
+        left  = _p("John", "Smith", "shared@example.com", "GymA")
+        right = _p("John", "Smith", "shared@example.com", "GymB")
+        label, _ = match_classification(left, right)
         assert label == "potential_duplicate", (
-            f"Same last + same first should be potential_duplicate, got {label}"
+            f"Name + email should be potential_duplicate, got {label}"
+        )
+
+    # Test 4c – Name + location (different email) → potential
+    def test_04c_name_plus_location_potential(self):
+        left  = _p("John", "Smith", "a@example.com", "GymA")
+        right = _p("John", "Smith", "b@example.com", "GymA")
+        label, _ = match_classification(left, right)
+        assert label == "potential_duplicate", (
+            f"Name + location should be potential_duplicate, got {label}"
         )
 
     # Test 5 – Same last only → None
@@ -102,24 +121,25 @@ class TestFourFieldClassification:
         label, _ = match_classification(left, right)
         assert label is None, f"Same email only should be None, got {label}"
 
-    # Test 7 – Same last + same email → potential
-    def test_07_same_last_same_email_potential(self):
+    # Test 7 – Same last + same email, different first → None (name incomplete)
+    def test_07_same_last_same_email_different_first_none(self):
         left  = _p("Alice", "Brown", "shared@example.com", "GymA")
         right = _p("Bob",   "Brown", "shared@example.com", "GymB")
-        # same_last=True, same_email=True → matched=2, anchored=True → potential
+        # Name requires first_match AND same_last; Alice≠Bob → name=False
+        # email only (loc differs) → entity_matched=1 → None
         label, _ = match_classification(left, right)
-        assert label == "potential_duplicate", (
-            f"Same last + same email should be potential_duplicate, got {label}"
+        assert label is None, (
+            f"Last + email without first match should be None, got {label}"
         )
 
-    # Test 8 – Same last + same location → potential
-    def test_08_same_last_same_location_potential(self):
+    # Test 8 – Same last + same location, different first → None (name incomplete)
+    def test_08_same_last_same_location_different_first_none(self):
         left  = _p("Alice", "Brown", "alice@example.com", "GymA")
         right = _p("Bob",   "Brown", "bob@example.com",   "GymA")
-        # same_last=True, same_loc=True → matched=2, anchored=True (same_last) → potential
+        # name=False (first differs), email=False, loc=True → entity_matched=1 → None
         label, _ = match_classification(left, right)
-        assert label == "potential_duplicate", (
-            f"Same last + same location should be potential_duplicate, got {label}"
+        assert label is None, (
+            f"Last + location without first match should be None, got {label}"
         )
 
     # Test 9 – Same email + same location → potential
@@ -132,14 +152,14 @@ class TestFourFieldClassification:
             f"Same email + same location should be potential_duplicate, got {label}"
         )
 
-    # Test 10 – Mike vs Michael, same email, different last → potential
-    def test_10_mike_vs_michael_same_email_potential(self):
+    # Test 10 – Mike vs Michael, same email, different last → None
+    # First soft-matches but last differs → Name entity is False; email alone ≠ 2.
+    def test_10_mike_vs_michael_same_email_different_last_none(self):
         left  = _p("Mike",    "Johnson", "shared@example.com", "GymA")
         right = _p("Michael", "Smith",   "shared@example.com", "GymB")
-        # Nickname dataset links Mike↔Michael; same_email anchors → potential
         label, _ = match_classification(left, right)
-        assert label == "potential_duplicate", (
-            f"Mike/Michael same email should be potential_duplicate, got {label}"
+        assert label is None, (
+            f"First + email without same last should be None, got {label}"
         )
 
     # Test 11 – Same first only → None
@@ -151,16 +171,14 @@ class TestFourFieldClassification:
         label, _ = match_classification(left, right)
         assert label is None, f"Same first name only should be None, got {label}"
 
-    # Test 12 – Case/whitespace normalization → same last
+    # Test 12 – Case/whitespace normalization forms Name entity; + email → potential
     def test_12_case_whitespace_normalization(self):
-        left  = _p("John", "  Smith  ", "a@example.com", "GymA")
-        right = _p("John", "SMITH",     "b@example.com", "GymB")
-        # After _norm: both become "smith" → same_last=True
-        # first_match=True (identical after norm)
-        # matched=2, anchored=True → potential
+        left  = _p("John", "  Smith  ", "shared@example.com", "GymA")
+        right = _p("John", "SMITH",     "shared@example.com", "GymB")
+        # After _norm: both last names become "smith" → Name entity True + email
         label, _ = match_classification(left, right)
         assert label == "potential_duplicate", (
-            f"Case/whitespace should normalize last name; got {label}"
+            f"Case/whitespace should normalize last name into Name entity; got {label}"
         )
 
     # Test 13 – Both emails empty → email does not count
@@ -333,13 +351,20 @@ class TestBoundaryConditions:
         assert flags["first_match"] is False
 
     def test_boundary_first_name_nickname_counts(self):
-        """Nickname first_match produces potential when anchored by last name."""
-        left  = _p("Jon",  "Smith", "a@example.com")
-        right = _p("John", "Smith", "b@example.com")
+        """Nickname first_match forms Name entity; + location → potential."""
+        left  = _p("Jon",  "Smith", "a@example.com", "GymA")
+        right = _p("John", "Smith", "b@example.com", "GymA")
         label, _ = match_classification(left, right)
         assert label == "potential_duplicate", (
-            f"jon/john same last should be potential_duplicate, got {label}"
+            f"jon/john Name + location should be potential_duplicate, got {label}"
         )
+
+    def test_name_alone_not_potential(self):
+        """Full Name entity without email or location is not enough."""
+        left  = _p("Jon",  "Smith", "a@example.com", "GymA")
+        right = _p("John", "Smith", "b@example.com", "GymB")
+        label, _ = match_classification(left, right)
+        assert label is None, f"Name alone should be None, got {label}"
 
     def test_empty_fields_never_count_as_match(self):
         """None, empty string, and whitespace-only values must not count as matches."""

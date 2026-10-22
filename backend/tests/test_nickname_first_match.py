@@ -61,9 +61,10 @@ class TestNicknameDatasetFirstMatch:
 
 
 class TestPotentialUsesNicknameNotJw:
-    def test_spacing_variant_same_last_is_potential(self):
+    def test_spacing_variant_same_last_plus_location_is_potential(self):
+        # Name entity (spacing-normalized first + same last) + location → potential
         left = _p("Ru Bab", "Smith", "a@x.com", "GymA")
-        right = _p("RUBAB", "Smith", "b@x.com", "GymB")
+        right = _p("RUBAB", "Smith", "b@x.com", "GymA")
         label, _ = match_classification(left, right)
         assert label == "potential_duplicate"
 
@@ -94,8 +95,16 @@ class TestPotentialUsesNicknameNotJw:
         label, _ = match_classification(left, right)
         assert label is None
 
-    def test_mike_michael_same_email_potential(self):
+    def test_mike_michael_same_email_different_last_none(self):
+        # Nickname first-match alone does not form Name; email alone is not enough.
         left = _p("Mike", "Johnson", "shared@example.com", "GymA")
+        right = _p("Michael", "Smith", "shared@example.com", "GymB")
+        label, _ = match_classification(left, right)
+        assert label is None
+
+    def test_mike_michael_same_last_and_email_potential(self):
+        # Full Name entity (nickname first + same last) + email → potential
+        left = _p("Mike", "Smith", "shared@example.com", "GymA")
         right = _p("Michael", "Smith", "shared@example.com", "GymB")
         label, _ = match_classification(left, right)
         assert label == "potential_duplicate"

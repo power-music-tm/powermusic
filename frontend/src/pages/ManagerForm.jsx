@@ -322,6 +322,7 @@ export default function ManagerForm() {
     rosterOutcome: directoryOutcome,
     localSnapshot: directoryPeople,
     enabled: formActive && !submitted && Boolean(session?.access_token),
+    isGll,
   });
 
   const managerGridClass = isGll

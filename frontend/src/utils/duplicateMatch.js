@@ -4,10 +4,14 @@
  * First-name Potential flag uses the nickname dataset (not Jaro-Winkler):
  * exact match OR nickname-graph related (shared token length >= 3).
  * Confirmed: exact equality on all identity fields.
- * Potential: matched field count >= 2 AND (same_last OR same_email)
+ *
+ * Potential (non-GLL): name is ONE entity (first_match AND same_last);
+ * any two of {Name, Email, Location} → potential_duplicate.
+ * Potential (GLL): first/last stay separate flags; matched >= 2 AND
+ * (same_last OR same_email).
  */
 
-import nicknameRelated from '../data/nicknameRelated.json';
+import nicknameRelated from '../data/nicknameRelated.json' with { type: 'json' };
 
 const MIN_SHARED_TOKEN_LEN = 3;
 
@@ -72,20 +76,23 @@ export function matchClassification(left, right, options = {}) {
   const sameEmail = Boolean(emailL && emailR && emailL === emailR);
   const sameLoc = Boolean(locL && locR && locL === locR);
 
-  const anchorFieldMatched = sameLast || sameEmail;
-
   if (sameFirst && sameLast && sameEmail && (isGll || sameLoc)) {
     return 'confirmed_duplicate';
   }
 
-  const matchedCount = [
-    sameLast,
-    firstMatch,
-    sameEmail,
-    isGll ? false : sameLoc,
-  ].filter(Boolean).length;
+  if (isGll) {
+    // GLL: first and last remain separate flags; any two + last/email anchor.
+    const matchedCount = [sameLast, firstMatch, sameEmail].filter(Boolean).length;
+    if (matchedCount >= 2 && (sameLast || sameEmail)) {
+      return 'potential_duplicate';
+    }
+    return null;
+  }
 
-  if (matchedCount >= 2 && anchorFieldMatched) {
+  // Non-GLL: name is one entity (first_match AND same_last).
+  const nameMatch = firstMatch && sameLast;
+  const entityMatched = [nameMatch, sameEmail, sameLoc].filter(Boolean).length;
+  if (entityMatched >= 2) {
     return 'potential_duplicate';
   }
 

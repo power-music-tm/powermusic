@@ -200,6 +200,7 @@ def _find_related_people(
     partner_id: Optional[str] = None,
 ) -> list[tuple[models.ManagerRequest, set[str]]]:
     from app.directory_person_match import manager_form_directory_overlap_reasons
+    from app.duplicate_matching import is_gll_partner
 
     probe = schemas.PersonInfo(
         firstName=first_name,
@@ -207,6 +208,7 @@ def _find_related_people(
         email=email,
         location=location,
     )
+    gll = is_gll_partner(db, partner_id)
     rows = roster_match_candidates(db, probe, partner_id=partner_id)
     return [
         (
@@ -217,6 +219,7 @@ def _find_related_people(
                 last=last_name,
                 location=location,
                 row=row,
+                is_gll=gll,
             )
             or {"Match"},
         )

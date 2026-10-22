@@ -81,7 +81,82 @@ test('form match criteria and ranking', () => {
     location: 'London',
   });
   assert.equal(matches[0].id, '1');
-  assert.ok(matches[0].matchReasons.includes('Email'));
+  assert.ok(matches[0].matchReasons.includes('Name'));
+  assert.ok(matches[0].matchReasons.includes('Email + location'));
+});
+
+test('non-GLL form match requires name entity or email+location', () => {
+  const people = [
+    { id: '1', firstName: 'Sam', lastName: 'Lee', email: 'sam@x.com', location: 'London' },
+  ];
+
+  // Name alone → no warning
+  assert.equal(
+    findFormMatchCandidates(people, {
+      firstName: 'Sam',
+      lastName: 'Lee',
+      email: 'other@x.com',
+      location: 'Manchester',
+    }).length,
+    0,
+  );
+
+  // First + email without last → no warning
+  assert.equal(
+    findFormMatchCandidates(people, {
+      firstName: 'Sam',
+      lastName: 'Other',
+      email: 'sam@x.com',
+      location: 'Manchester',
+    }).length,
+    0,
+  );
+
+  // Name + email → warn
+  assert.equal(
+    findFormMatchCandidates(people, {
+      firstName: 'Sam',
+      lastName: 'Lee',
+      email: 'sam@x.com',
+      location: 'Manchester',
+    }).length,
+    1,
+  );
+
+  // Email + location → warn
+  assert.equal(
+    findFormMatchCandidates(people, {
+      firstName: 'Other',
+      lastName: 'Person',
+      email: 'sam@x.com',
+      location: 'London',
+    }).length,
+    1,
+  );
+});
+
+test('GLL form match still allows first+email or name alone', () => {
+  const people = [
+    { id: '1', firstName: 'Sam', lastName: 'Lee', email: 'sam@x.com', location: '' },
+  ];
+  assert.equal(
+    findFormMatchCandidates(
+      people,
+      { firstName: 'Sam', lastName: 'Lee', email: 'other@x.com', location: '' },
+      15,
+      { isGll: true },
+    ).length,
+    1,
+  );
+  assert.equal(
+    findFormMatchCandidates(
+      people,
+      { firstName: 'Sam', lastName: 'Other', email: 'sam@x.com', location: '' },
+      15,
+      { isGll: true },
+    ).length,
+    1,
+  );
 });
 
 test('mergeFormMatchRows merges reasons and user row labels', () => {

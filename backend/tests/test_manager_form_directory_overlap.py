@@ -22,29 +22,51 @@ def _row(**kwargs):
     return SimpleNamespace(**defaults)
 
 
-class TestManagerFormDirectoryOverlap:
+class TestManagerFormDirectoryOverlapNonGll:
+    """Non-GLL: Name is one entity; any two of {Name, Email, Location} warn."""
+
     @pytest.mark.parametrize(
         "form,expect_reason",
         [
-            ({"first": "josie", "last": "miller", "email": "", "location": ""}, "Name"),
-            ({"first": "josie", "last": "", "email": "mjose101@yahoo.co.uk", "location": ""}, "Email"),
-            ({"first": "josie", "last": "", "email": "", "location": "london gym"}, "First name + location"),
-            ({"first": "", "last": "miller", "email": "mjose101@yahoo.co.uk", "location": ""}, "Email"),
-            ({"first": "", "last": "miller", "email": "", "location": "london gym"}, "Last name + location"),
+            (
+                {"first": "josie", "last": "miller", "email": "mjose101@yahoo.co.uk", "location": ""},
+                "Name",
+            ),
+            (
+                {"first": "josie", "last": "miller", "email": "", "location": "london gym"},
+                "Name",
+            ),
             (
                 {"first": "", "last": "", "email": "mjose101@yahoo.co.uk", "location": "london gym"},
                 "Email + location",
             ),
+            (
+                {
+                    "first": "josie",
+                    "last": "miller",
+                    "email": "mjose101@yahoo.co.uk",
+                    "location": "london gym",
+                },
+                "Name",
+            ),
         ],
     )
-    def test_two_field_pairs_warn(self, form, expect_reason):
+    def test_entity_pairs_warn(self, form, expect_reason):
         row = _row()
-        reasons = manager_form_directory_overlap_reasons(row=row, **form)
+        reasons = manager_form_directory_overlap_reasons(row=row, is_gll=False, **form)
         assert expect_reason in reasons
 
     @pytest.mark.parametrize(
         "form",
         [
+            # Name alone
+            {"first": "josie", "last": "miller", "email": "", "location": ""},
+            # Partial name + one other field (incomplete Name entity)
+            {"first": "josie", "last": "", "email": "mjose101@yahoo.co.uk", "location": ""},
+            {"first": "", "last": "miller", "email": "mjose101@yahoo.co.uk", "location": ""},
+            {"first": "josie", "last": "", "email": "", "location": "london gym"},
+            {"first": "", "last": "miller", "email": "", "location": "london gym"},
+            # Singles
             {"first": "josie", "last": "", "email": "", "location": ""},
             {"first": "", "last": "miller", "email": "", "location": ""},
             {"first": "", "last": "", "email": "mjose101@yahoo.co.uk", "location": ""},
@@ -52,22 +74,26 @@ class TestManagerFormDirectoryOverlap:
             {"first": "wrong", "last": "miller", "email": "", "location": ""},
         ],
     )
-    def test_single_field_or_mismatch_does_not_warn(self, form):
+    def test_incomplete_entity_pairs_do_not_warn(self, form):
         row = _row()
-        assert manager_form_directory_overlap_reasons(row=row, **form) == set()
+        assert manager_form_directory_overlap_reasons(row=row, is_gll=False, **form) == set()
 
-    def test_email_alone_does_not_warn(self):
+
+class TestManagerFormDirectoryOverlapGll:
+    """GLL: first/last remain separate; any two of {first, last, email} warn."""
+
+    @pytest.mark.parametrize(
+        "form,expect_reason",
+        [
+            ({"first": "josie", "last": "miller", "email": "", "location": ""}, "Name"),
+            ({"first": "josie", "last": "", "email": "mjose101@yahoo.co.uk", "location": ""}, "Email"),
+            ({"first": "", "last": "miller", "email": "mjose101@yahoo.co.uk", "location": ""}, "Email"),
+        ],
+    )
+    def test_two_field_pairs_warn(self, form, expect_reason):
         row = _row()
-        assert (
-            manager_form_directory_overlap_reasons(
-                email="mjose101@yahoo.co.uk",
-                first="",
-                last="",
-                location="",
-                row=row,
-            )
-            == set()
-        )
+        reasons = manager_form_directory_overlap_reasons(row=row, is_gll=True, **form)
+        assert expect_reason in reasons
 
     def test_overlap_without_same_person_gll_identity(self):
         """GLL name-only warns for manager form but is not same_person_gll identity."""
@@ -90,6 +116,7 @@ class TestManagerFormDirectoryOverlap:
             last="miller",
             location="",
             row=row,
+            is_gll=True,
         )
         assert "Name" in reasons
         assert not same_person_gll(form_probe, row_model)

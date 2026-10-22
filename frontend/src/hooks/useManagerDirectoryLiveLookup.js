@@ -35,6 +35,7 @@ export function useManagerDirectoryLiveLookup({
   debounceMs = 400,
   rosterOutcome = 'Added',
   localSnapshot = [],
+  isGll = false,
 } = {}) {
   const [serverSearchResults, setServerSearchResults] = useState([]);
   const [formMatchResults, setFormMatchResults] = useState([]);
@@ -59,11 +60,13 @@ export function useManagerDirectoryLiveLookup({
     const rowsByFormIndex = personForms
       .map((form, formIndex) => ({
         formIndex,
-        rows: formHasMatchCriteria(form) ? findFormMatchCandidates(localSnapshot, form) : [],
+        rows: formHasMatchCriteria(form)
+          ? findFormMatchCandidates(localSnapshot, form, MATCH_LIMIT, { isGll })
+          : [],
       }))
       .filter(({ rows }) => rows.length > 0);
     return mergeFormMatchRows(rowsByFormIndex);
-  }, [useServerLookup, enabled, localSnapshot, personForms, formsKey]);
+  }, [useServerLookup, enabled, localSnapshot, personForms, formsKey, isGll]);
 
   useEffect(() => {
     if (!useServerLookup) {

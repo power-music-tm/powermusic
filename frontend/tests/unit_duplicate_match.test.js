@@ -26,10 +26,10 @@ test('confirmed when all identity fields match (location required unless GLL)', 
   );
 });
 
-test('potential when JW first-name soft-match + last name anchor', () => {
-  // "Jonathan" vs "Johnathan" is typically JW >= 0.65
+test('potential when name entity + location (nickname first + same last)', () => {
+  // Name = nickname first + same last; + same location → potential (non-GLL)
   const result = matchClassification(base, {
-    firstName: 'Johnathan',
+    firstName: 'Jon',
     lastName: 'Smith',
     email: 'other@puregym.com',
     location: 'London',
@@ -37,15 +37,50 @@ test('potential when JW first-name soft-match + last name anchor', () => {
   assert.equal(result, 'potential_duplicate');
 });
 
-test('null without anchor (no same last and no same email)', () => {
+test('null when name alone (same first+last, different email and location)', () => {
+  assert.equal(
+    matchClassification(base, {
+      firstName: 'Jonathan',
+      lastName: 'Smith',
+      email: 'other@x.com',
+      location: 'Manchester',
+    }),
+    null,
+  );
+});
+
+test('null when first + email without same last (non-GLL name entity)', () => {
   assert.equal(
     matchClassification(base, {
       firstName: 'Jonathan',
       lastName: 'Other',
-      email: 'other@x.com',
-      location: 'London',
+      email: 'jon@puregym.com',
+      location: 'Manchester',
     }),
     null,
+  );
+});
+
+test('potential when email + location without name (non-GLL)', () => {
+  assert.equal(
+    matchClassification(base, {
+      firstName: 'Alice',
+      lastName: 'Other',
+      email: 'jon@puregym.com',
+      location: 'London',
+    }),
+    'potential_duplicate',
+  );
+});
+
+test('GLL still allows first + email without same last', () => {
+  assert.equal(
+    matchClassification(
+      { firstName: 'Jon', lastName: 'Smith', email: 'shared@x.com', location: 'A' },
+      { firstName: 'John', lastName: 'Taylor', email: 'shared@x.com', location: 'B' },
+      { isGll: true },
+    ),
+    'potential_duplicate',
   );
 });
 
