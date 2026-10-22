@@ -26,6 +26,7 @@ import {
   displayFirstName,
   isNicknameOnlyFirstMatch,
   matchClassification,
+  normalizeFirstName,
 } from '../utils/duplicateMatch';
 import {
   alignClassificationSummaryWithMembers,
@@ -350,7 +351,10 @@ export default function GroupResolutionView({
       (m) => !sessionUnlinkedIds.includes(m.id) && m.id !== group.directoryPersonId,
     ).length;
 
-  /** Nickname-only first-name pair vs Directory (for the dedicated check modal). */
+  /**
+   * First-name check vs Directory for Keep / Add New.
+   * Prefer nickname-linked pairs (learning applies); otherwise any different first names.
+   */
   const nicknameCheckPair = () => {
     if (!hasDirectory) return null;
     const directoryFirst =
@@ -365,40 +369,57 @@ export default function GroupResolutionView({
     if (repMember?.person?.firstName || repMember?.firstName) {
       candidates.push(repMember?.person?.firstName || repMember?.firstName);
     }
-    // Any live member may be the nickname variant (e.g. Kiara in a Kierra group).
     for (const m of members) {
       if (m?.id === group.directoryPersonId) continue;
       const first = m?.person?.firstName || m?.firstName;
       if (first) candidates.push(first);
     }
 
+    let differentPair = null;
     for (const requestFirst of candidates) {
-      if (!isNicknameOnlyFirstMatch(requestFirst, directoryFirst)) continue;
-      return {
+      const reqNorm = normalizeFirstName(requestFirst);
+      const dirNorm = normalizeFirstName(directoryFirst);
+      if (!reqNorm || !dirNorm || reqNorm === dirNorm) continue;
+      const pair = {
         requestFirst: displayFirstName(requestFirst),
         directoryFirst: displayFirstName(directoryFirst),
+        isNickname: isNicknameOnlyFirstMatch(requestFirst, directoryFirst),
       };
+      if (pair.isNickname) return pair;
+      if (!differentPair) differentPair = pair;
     }
-    return null;
+    return differentPair;
+  };
+
+  /** After nickname answer (or when no nickname pair): history if siblings, else confirm. */
+  const proceedKeepOrAddAsNew = (action) => {
+    if (incomingMemberCount() > 1 && !mergePageOpen) {
+      setPendingConfirmAction(action);
+      openHistoryPage({ clearPending: false });
+      return;
+    }
+    setPendingConfirmAction(null);
+    setConfirmAction(action);
   };
 
   const openConfirmOrNicknameCheck = (nextAction) => {
+    // Nickname modal first — including before Request History when peers exist.
     if (nicknameCheckPair()) {
       setConfirmAction('nickname_check');
       return;
     }
-    setConfirmAction(nextAction);
+    proceedKeepOrAddAsNew(nextAction);
   };
 
   const continueAfterNicknameYes = () => {
-    // Right nickname → same person → Keep Existing.
-    setConfirmAction('keep');
+    // Same person → Keep Existing (Directory unchanged).
+    proceedKeepOrAddAsNew('keep');
   };
 
   const continueAfterNicknameNo = () => {
-    // Not the right nickname → different people → Add New (learns rejection).
+    // Different people → Add New (learns rejection on confirm).
     setModalValues((prev) => prev || { ...form });
-    setConfirmAction('add_as_new');
+    proceedKeepOrAddAsNew('add_as_new');
   };
 
   const startMergeEdit = () => {
@@ -427,30 +448,19 @@ export default function GroupResolutionView({
     setMergePageOpen(true);
   };
 
-  /* ── keep existing — open Previous Requests first when group has siblings ── */
+  /* ── keep existing — nickname check first, then history / confirm ── */
   const openKeepConfirm = () => {
     if (submitting) return;
-    if (incomingMemberCount() > 1 && !mergePageOpen) {
-      setPendingConfirmAction('keep');
-      openHistoryPage({ clearPending: false });
-      return;
-    }
-    setPendingConfirmAction(null);
+    setModalValues({ ...form });
     openConfirmOrNicknameCheck('keep');
   };
 
-  /* ── not the same as Directory — add as new person ── */
+  /* ── not the same as Directory — nickname check first, then history / confirm ── */
   const openAddAsNewConfirm = () => {
     if (submitting || !hasDirectory) return;
     if (currentRep?.action === 'Remove') return;
     setModalValues({ ...form });
     setDraftForm({ ...form });
-    if (incomingMemberCount() > 1 && !mergePageOpen) {
-      setPendingConfirmAction('add_as_new');
-      openHistoryPage({ clearPending: false });
-      return;
-    }
-    setPendingConfirmAction(null);
     openConfirmOrNicknameCheck('add_as_new');
   };
 
@@ -1790,11 +1800,15 @@ export default function GroupResolutionView({
         </label>
       </Modal>
 
-      {/* ── Nickname check (before Keep / Add New when first names are nickname-related) ── */}
+      {/* ── First-name check (before Keep / Add New when names differ) ── */}
       <Modal
         isOpen={confirmAction === 'nickname_check'}
         onClose={closeConfirmModal}
-        title="Is this the right nickname?"
+        title={
+          nicknameCheckPair()?.isNickname
+            ? 'Is this the right nickname?'
+            : 'Different first names'
+        }
         footer={
           <>
             <button
@@ -1818,18 +1832,32 @@ export default function GroupResolutionView({
           const pair = nicknameCheckPair();
           const requestName = pair?.requestFirst || '—';
           const directoryName = pair?.directoryFirst || '—';
+          const isNickname = Boolean(pair?.isNickname);
           return (
             <>
               <p className="text-sm text-[var(--color-text-secondary)]">
-                Is{' '}
-                <span className="font-semibold text-[var(--color-text-primary)]">{requestName}</span>
-                {' '}a nickname for{' '}
-                <span className="font-semibold text-[var(--color-text-primary)]">{directoryName}</span>
-                ?
+                {isNickname ? (
+                  <>
+                    Is{' '}
+                    <span className="font-semibold text-[var(--color-text-primary)]">{requestName}</span>
+                    {' '}a nickname for{' '}
+                    <span className="font-semibold text-[var(--color-text-primary)]">{directoryName}</span>
+                    ?
+                  </>
+                ) : (
+                  <>
+                    The new request is{' '}
+                    <span className="font-semibold text-[var(--color-text-primary)]">{requestName}</span>
+                    {' '}and Directory is{' '}
+                    <span className="font-semibold text-[var(--color-text-primary)]">{directoryName}</span>
+                    . Are they the same person?
+                  </>
+                )}
               </p>
               <p className="mt-3 text-xs text-[var(--color-text-muted)]">
-                Keeping them linked leaves the Directory unchanged. Separating them
-                adds a new Directory person and stops these first names matching as nicknames.
+                {isNickname
+                  ? 'Keeping them linked leaves the Directory unchanged. Separating them adds a new Directory person and stops these first names matching as nicknames.'
+                  : 'Keeping them linked leaves the Directory unchanged. Separating them adds a new Directory person.'}
               </p>
             </>
           );

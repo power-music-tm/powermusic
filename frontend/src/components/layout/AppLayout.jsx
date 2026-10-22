@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Menu } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { usePartners } from '../../context/PartnerContext';
 import Sidebar from './Sidebar';
 import { HoverTip } from '../ui';
 import AdminPortalIntro, {
@@ -10,6 +12,12 @@ import AdminPortalIntro, {
 import { resolveAdminDisplayName, resolveAdminFirstName } from '../../utils/adminDisplayName';
 
 const SIDEBAR_EXPANDED_KEY = 'adminSidebarExpanded';
+
+/** Nested admin detail routes → section home when the gym/partner changes. */
+function sectionHomeForPath(pathname) {
+  if (pathname.startsWith('/new-requests/')) return '/new-requests';
+  return null;
+}
 
 function readSidebarExpanded() {
   try {
@@ -23,10 +31,26 @@ function readSidebarExpanded() {
 
 export default function AppLayout({ children }) {
   const { user, profile } = useAuth();
+  const { selectedPartnerId } = usePartners();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [sidebarExpanded, setSidebarExpanded] = useState(readSidebarExpanded);
   const [portalIntro, setPortalIntro] = useState(null);
   const introCheckedRef = useRef(false);
+  const prevPartnerIdRef = useRef(undefined);
+
+  // Switching gym while on a request/group detail → that gym's New Requests list.
+  useEffect(() => {
+    const prev = prevPartnerIdRef.current;
+    prevPartnerIdRef.current = selectedPartnerId;
+    if (prev === undefined) return;
+    if (String(prev ?? '') === String(selectedPartnerId ?? '')) return;
+    const home = sectionHomeForPath(location.pathname);
+    if (home && location.pathname !== home) {
+      navigate(home, { replace: true });
+    }
+  }, [selectedPartnerId, location.pathname, navigate]);
 
   const adminDetails = useMemo(
     () => ({

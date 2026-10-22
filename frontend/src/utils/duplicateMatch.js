@@ -22,7 +22,7 @@ function norm(val) {
 }
 
 /** Lowercase + strip all spaces — RUBAB / ru bab / rubab are the same. */
-function normalizeFirstName(val) {
+export function normalizeFirstName(val) {
   if (!val) return '';
   return String(val).trim().toLowerCase().replace(/\s+/g, '');
 }
