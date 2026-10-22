@@ -735,6 +735,18 @@ class ResolveAddAsNewIn(BaseModel):
     sourceRequestId: Optional[str] = None
 
 
+class ResolveKeepExistingAndArchiveIn(BaseModel):
+    """POST /api/duplicate-groups/{id}/resolve-keep-existing-and-archive.
+
+    Remove-request false positive vs Directory: leave Directory unchanged, dismiss
+    the pair, and archive the incoming Remove request with finalValues.
+    """
+
+    finalValues: PersonInfo
+    adminNote: Optional[str] = Field(default=None, max_length=5000)
+    sourceRequestId: Optional[str] = None
+
+
 class ResolveAndUpdateIn(BaseModel):
     """POST /api/duplicate-groups/{id}/resolve-update (Case B — Directory person exists).
 
@@ -816,7 +828,7 @@ class ResolveGroupResultOut(BaseModel):
 
     status: str  # "resolved"
     groupId: str
-    resolutionType: str  # "add" | "add_as_new" | "update" | "keep_existing"
+    resolutionType: str  # "add" | "add_as_new" | "update" | "keep_existing" | "keep_existing_and_archive"
     directoryPersonId: Optional[str] = None  # new or existing dir row id
     resolvedRequestCount: int = 0
 

@@ -1539,6 +1539,141 @@ def resolve_group_add_as_new(
     return dir_row
 
 
+def resolve_group_keep_existing_and_archive(
+    db: Session,
+    group: models.DuplicateGroup,
+    *,
+    final_values: schemas.PersonInfo,
+    admin_id: Optional[str],
+    admin_note: Optional[str] = None,
+    source_request_id: Optional[str] = None,
+) -> models.ManagerRequest:
+    """False-positive Remove vs Directory: leave Directory unchanged; archive the Remove request.
+
+    Mirrors add-as-new for Remove flows:
+      - Dismisses pairs vs the linked Directory person so regrouping does not re-attach.
+      - Applies final_values onto the retained Remove request.
+      - Marks that request handled / Removed / archived (existing archive convention).
+      - Permanently deletes other incoming members.
+      - Does NOT modify the Directory record.
+
+    Requires group.directory_person_id. Does NOT call db.commit().
+    Returns the archived Remove request row.
+    """
+    from app.manager_request_stats import decrement_manager_pending_stat
+    from app.manager_request_summary_cache import invalidate_manager_request_summary
+    from app.manager_request_tags import TAG_REMOVED
+
+    old_dir_id = group.directory_person_id
+    if not old_dir_id:
+        raise ValueError(
+            "This group has no linked Directory person. Use resolve-mark-removed instead."
+        )
+
+    _validate_final_values(final_values)
+    now = datetime.now(timezone.utc)
+    admin_uuid = None
+    if admin_id and admin_id != "dev-bypass":
+        try:
+            from uuid import UUID
+            admin_uuid = UUID(admin_id)
+        except ValueError:
+            pass
+
+    members = get_group_members(db, group.id)
+    if not members:
+        raise ValueError("No incoming requests to archive in this group.")
+
+    for member in members:
+        if not member.id or member.id == old_dir_id:
+            continue
+        if not are_requests_dismissed(db, old_dir_id, member.id):
+            db.add(
+                models.DismissedDuplicateMatch(
+                    id=f"dism-{uuid.uuid4().hex[:12]}",
+                    request_id_1=old_dir_id,
+                    request_id_2=member.id,
+                    dismissed_by_admin_id=admin_uuid,
+                    created_at=now,
+                )
+            )
+
+    retained_req = _current_request_member(
+        members,
+        source_request_id=source_request_id,
+        representative_request_id=group.representative_request_id,
+    )
+    if retained_req is None:
+        retained_req = max(members, key=lambda m: _norm_dt(m.received_at))
+
+    was_new = retained_req.status == "new"
+    retained_req.status = "handled"
+    retained_req.outcome = "Removed"
+    retained_req.action = "Remove"
+    retained_req.handled_at = now
+    retained_req.archived_at = now
+    retained_req.person_first_name = (final_values.firstName or "").strip()
+    retained_req.person_last_name = (final_values.lastName or "").strip()
+    retained_req.person_email = (final_values.email or "").strip()
+    retained_req.person_location = (final_values.location or "").strip()
+    if hasattr(final_values, "role") and final_values.role is not None:
+        retained_req.role = (final_values.role or "").strip() or None
+    if getattr(final_values, "directorFirst", None) is not None or getattr(final_values, "directorLast", None) is not None:
+        from app.intake_persons import set_director_fields
+        set_director_fields(
+            retained_req,
+            getattr(final_values, "directorFirst", None) or "",
+            getattr(final_values, "directorLast", None) or "",
+        )
+
+    manager_source = _current_request_member(
+        members,
+        source_request_id=source_request_id,
+        representative_request_id=group.representative_request_id,
+    )
+    _apply_merge_manager_provenance(retained_req, manager_source, final_values=final_values)
+
+    if admin_uuid:
+        retained_req.handled_by_admin_id = admin_uuid
+    if admin_note:
+        retained_req.admin_notes = admin_note
+    _clear_duplicate_tags(retained_req)
+    tags = list(retained_req.tags or [])
+    if TAG_REMOVED not in tags:
+        tags.append(TAG_REMOVED)
+    retained_req.tags = tags
+    retained_req.duplicate_group_id = None
+
+    if was_new:
+        decrement_manager_pending_stat(db, retained_req)
+        if retained_req.manager_id:
+            invalidate_manager_request_summary(str(retained_req.manager_id))
+
+    discarded_ids = [m.id for m in members if m.id != retained_req.id]
+    if discarded_ids:
+        permanently_delete_requests(db, discarded_ids)
+
+    # Directory link stays for audit; Directory row itself is untouched.
+    group.representative_request_id = retained_req.id
+
+    _finalize_group(
+        db, group,
+        resolution_type="keep_existing_and_archive",
+        final_values=final_values,
+        previous_values=None,
+        admin_id=admin_id,
+        admin_note=admin_note,
+        now=now,
+    )
+    meta = dict(group.resolution_metadata or {})
+    meta["resolution_type"] = "keep_existing_and_archive"
+    meta["dismissed_directory_person_id"] = old_dir_id
+    meta["archived_request_id"] = retained_req.id
+    group.resolution_metadata = meta
+    db.flush()
+    return retained_req
+
+
 # ── Case B: Resolve & Update ─────────────────────────────────────────────────
 
 

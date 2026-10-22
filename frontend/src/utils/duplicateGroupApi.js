@@ -53,6 +53,20 @@ export const resolveGroupAddAsNew = (groupId, { finalValues, adminNote, sourceRe
   });
 
 /**
+ * POST /api/duplicate-groups/{groupId}/resolve-keep-existing-and-archive
+ * Remove false positive vs Directory — leave Directory unchanged, archive Remove request.
+ */
+export const resolveGroupKeepExistingAndArchive = (groupId, { finalValues, adminNote, sourceRequestId }) =>
+  groupRequest(`/api/duplicate-groups/${groupId}/resolve-keep-existing-and-archive`, {
+    method: 'POST',
+    body: JSON.stringify({
+      finalValues,
+      adminNote: adminNote || null,
+      sourceRequestId: sourceRequestId || null,
+    }),
+  });
+
+/**
  * POST /api/duplicate-groups/{groupId}/resolve-update/preview
  * Dry-run — returns field-by-field diff without writing anything.
  */

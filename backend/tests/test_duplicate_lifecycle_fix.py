@@ -25,6 +25,7 @@ from app.duplicate_group_service import (
     process_request_grouping,
     resolve_group_add,
     resolve_group_add_as_new,
+    resolve_group_keep_existing_and_archive,
     unlink_duplicate_members,
     get_group_members,
 )
@@ -481,79 +482,169 @@ class TestDuplicateLifecycleFix:
         assert r2.id in ledger_ids
 
     def test_add_as_new_leaves_directory_and_creates_separate_person(self, db: Session):
-        """Not the same person vs Directory: Sally stays; Darcy becomes a new Directory row."""
+        """Not the same person vs Directory: existing stays; incoming becomes a new Directory row.
+
+        Grouped via Name + location (different emails) under the name-as-entity rule.
+        """
         from app.directory_person_match import find_directory_conflict, person_from_model
         from app.duplicate_matching import are_requests_dismissed
 
         now = datetime.now(timezone.utc)
-        sally = models.ManagerRequest(
-            id=f"test-sally-{uuid.uuid4().hex[:6]}",
-            person_first_name="Sally",
-            person_last_name="Moore",
-            person_email="sallymoore@example.com",
-            person_location="New Barnet",
+        existing = models.ManagerRequest(
+            id=f"test-exist-{uuid.uuid4().hex[:6]}",
+            person_first_name="Jamie",
+            person_last_name="Cole",
+            person_email="jamie.existing@example.com",
+            person_location="London",
             action="Add",
             status="handled",
             outcome="Added",
             handled_at=now - timedelta(days=1),
             received_at=now - timedelta(days=1),
         )
-        darcy = models.ManagerRequest(
-            id=f"test-darcy-{uuid.uuid4().hex[:6]}",
-            person_first_name="Darcy",
-            person_last_name="Moore",
-            person_email="darcymoore@example.com",
-            person_location="Donyngs",
+        incoming = models.ManagerRequest(
+            id=f"test-new-{uuid.uuid4().hex[:6]}",
+            person_first_name="Jamie",
+            person_last_name="Cole",
+            person_email="jamie.new@example.com",
+            person_location="London",
             action="Add",
             status="new",
             received_at=now,
         )
-        db.add_all([sally, darcy])
+        db.add_all([existing, incoming])
         db.flush()
 
-        group = process_request_grouping(db, darcy)
+        group = process_request_grouping(db, incoming)
         db.flush()
         assert group is not None
-        assert group.directory_person_id == sally.id
+        assert group.directory_person_id == existing.id
 
         new_dir = resolve_group_add_as_new(
             db,
             group,
             final_values=schemas.PersonInfo(
-                firstName="Darcy",
-                lastName="Moore",
-                email="darcymoore@example.com",
-                location="Donyngs",
+                firstName="Jamie",
+                lastName="Cole",
+                email="jamie.new@example.com",
+                location="Manchester",
             ),
             admin_id="dev-bypass",
-            source_request_id=darcy.id,
+            source_request_id=incoming.id,
         )
         db.flush()
 
-        sally_db = db.query(models.ManagerRequest).filter_by(id=sally.id).first()
-        assert sally_db is not None
-        assert sally_db.person_first_name == "Sally"
-        assert sally_db.person_email == "sallymoore@example.com"
-        assert sally_db.outcome == "Added"
+        existing_db = db.query(models.ManagerRequest).filter_by(id=existing.id).first()
+        assert existing_db is not None
+        assert existing_db.person_first_name == "Jamie"
+        assert existing_db.person_email == "jamie.existing@example.com"
+        assert existing_db.outcome == "Added"
 
-        assert new_dir.id == darcy.id
+        assert new_dir.id == incoming.id
         assert new_dir.status == "handled"
         assert new_dir.outcome == "Added"
-        assert new_dir.person_first_name == "Darcy"
-        assert new_dir.person_email == "darcymoore@example.com"
+        assert new_dir.person_first_name == "Jamie"
+        assert new_dir.person_email == "jamie.new@example.com"
+        assert new_dir.person_location == "Manchester"
 
         assert group.status == "resolved"
         assert (group.resolution_metadata or {}).get("resolution_type") == "add_as_new"
-        assert (group.resolution_metadata or {}).get("dismissed_directory_person_id") == sally.id
-        assert are_requests_dismissed(db, sally.id, darcy.id) is True
+        assert (group.resolution_metadata or {}).get("dismissed_directory_person_id") == existing.id
+        assert are_requests_dismissed(db, existing.id, incoming.id) is True
 
         conflict = find_directory_conflict(
-            person=person_from_model(darcy),
+            person=person_from_model(incoming),
             action="Add",
-            directory_rows=[sally],
+            directory_rows=[existing],
             db=db,
-            req_id=darcy.id,
+            req_id=incoming.id,
         )
         assert conflict is None
+
+    def test_keep_existing_and_archive_leaves_directory_and_archives_remove(self, db: Session):
+        """Remove false positive vs Directory: Directory stays; Remove request is archived."""
+        from app.duplicate_matching import are_requests_dismissed
+        from app.manager_request_tags import TAG_REMOVED
+
+        now = datetime.now(timezone.utc)
+        existing = models.ManagerRequest(
+            id=f"test-dir-{uuid.uuid4().hex[:6]}",
+            person_first_name="Jamie",
+            person_last_name="Cole",
+            person_email="jamie.cole@example.com",
+            person_location="London",
+            action="Add",
+            status="handled",
+            outcome="Added",
+            handled_at=now - timedelta(days=2),
+            received_at=now - timedelta(days=2),
+        )
+        remove_req = models.ManagerRequest(
+            id=f"test-rm-{uuid.uuid4().hex[:6]}",
+            person_first_name="Jamie",
+            person_last_name="Cole",
+            person_email="jamie.other@example.com",
+            person_location="London",
+            action="Remove",
+            status="new",
+            received_at=now,
+        )
+        db.add_all([existing, remove_req])
+        db.flush()
+
+        group = process_request_grouping(db, remove_req)
+        db.flush()
+        assert group is not None
+        assert group.directory_person_id == existing.id
+
+        archived = resolve_group_keep_existing_and_archive(
+            db,
+            group,
+            final_values=schemas.PersonInfo(
+                firstName="Jamie",
+                lastName="Cole",
+                email="jamie.archived@example.com",
+                location="Manchester",
+            ),
+            admin_id="dev-bypass",
+            source_request_id=remove_req.id,
+        )
+        db.flush()
+
+        existing_db = db.query(models.ManagerRequest).filter_by(id=existing.id).first()
+        assert existing_db is not None
+        assert existing_db.person_first_name == "Jamie"
+        assert existing_db.person_email == "jamie.cole@example.com"
+        assert existing_db.outcome == "Added"
+        assert existing_db.archived_at is None
+        assert existing_db.status == "handled"
+
+        assert archived.id == remove_req.id
+        assert archived.status == "handled"
+        assert archived.outcome == "Removed"
+        assert archived.action == "Remove"
+        assert archived.archived_at is not None
+        assert archived.person_email == "jamie.archived@example.com"
+        assert archived.person_location == "Manchester"
+        assert TAG_REMOVED in (archived.tags or [])
+        assert archived.duplicate_group_id is None
+
+        assert group.status == "resolved"
+        assert (group.resolution_metadata or {}).get("resolution_type") == "keep_existing_and_archive"
+        assert (group.resolution_metadata or {}).get("dismissed_directory_person_id") == existing.id
+        assert (group.resolution_metadata or {}).get("archived_request_id") == remove_req.id
+        assert are_requests_dismissed(db, existing.id, remove_req.id) is True
+
+        # No second active Directory person created from the Remove request
+        active_added = (
+            db.query(models.ManagerRequest)
+            .filter(
+                models.ManagerRequest.person_email == "jamie.archived@example.com",
+                models.ManagerRequest.outcome == "Added",
+                models.ManagerRequest.archived_at.is_(None),
+            )
+            .count()
+        )
+        assert active_added == 0
 
 

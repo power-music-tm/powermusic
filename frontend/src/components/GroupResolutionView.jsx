@@ -17,6 +17,7 @@ import {
   resolveGroupAddAsNew,
   resolveGroupUpdate,
   resolveGroupKeepExisting,
+  resolveGroupKeepExistingAndArchive,
   unlinkGroupMember,
   resolveGroupDeleteFromDirectory,
   resolveGroupMarkRemoved,
@@ -246,10 +247,10 @@ export default function GroupResolutionView({
   const [mergePageOpen, setMergePageOpen] = useState(false);
 
   // Keep confirmation + merge-page values
-  // confirmAction: 'keep' | 'merge' | 'peers_merge' | 'add_as_new' | null
+  // confirmAction: 'keep' | 'merge' | 'peers_merge' | 'add_as_new' | 'keep_and_archive' | null
   const [confirmAction, setConfirmAction] = useState(null);
   // Which resolve action opened Request History — history Merge resumes this modal.
-  // pendingConfirmAction: 'keep' | 'merge' | 'add_as_new' | null
+  // pendingConfirmAction: 'keep' | 'merge' | 'add_as_new' | 'keep_and_archive' | null
   const [pendingConfirmAction, setPendingConfirmAction] = useState(null);
   const [markUnlinkedTarget, setMarkUnlinkedTarget] = useState(null);
   const [modalValues, setModalValues] = useState(null);
@@ -382,6 +383,22 @@ export default function GroupResolutionView({
     setConfirmAction('add_as_new');
   };
 
+  /* ── Remove false positive vs Directory — archive Remove request ── */
+  const openKeepAndArchiveConfirm = () => {
+    if (submitting || !hasDirectory) return;
+    if (currentRep?.action !== 'Remove') return;
+    setModalValues({ ...form });
+    setDraftForm({ ...form });
+    setMergeEditing(false);
+    if (incomingMemberCount() > 1 && !mergePageOpen) {
+      setPendingConfirmAction('keep_and_archive');
+      openHistoryPage({ clearPending: false });
+      return;
+    }
+    setPendingConfirmAction(null);
+    setConfirmAction('keep_and_archive');
+  };
+
   const openMergePage = () => {
     if (submitting) return;
     setPendingConfirmAction(null);
@@ -428,7 +445,11 @@ export default function GroupResolutionView({
   // buttons show on the Current Request card.
   useEffect(() => {
     if (!mergePageOpen) return;
-    if (pendingConfirmAction !== 'keep' && pendingConfirmAction !== 'add_as_new') return;
+    if (
+      pendingConfirmAction !== 'keep'
+      && pendingConfirmAction !== 'add_as_new'
+      && pendingConfirmAction !== 'keep_and_archive'
+    ) return;
     const count = members.filter(
       (m) => !sessionUnlinkedIds.includes(m.id) && m.id !== group.directoryPersonId,
     ).length;
@@ -520,15 +541,19 @@ export default function GroupResolutionView({
 
   /*
    * History Merge:
-   * - Keep / Add New intent → peers-merge confirm (editable final values), then
-   *   back to Current Request for Keep Existing.
+   * - Keep / Add New / Keep & Archive intent → peers-merge confirm (editable final
+   *   values), then back to Current Request for Keep Existing actions.
    * - Merge and Update / Previous Requests → directory merge confirm.
    */
   const continueFromHistoryMerge = () => {
     if (submitting || !isFormValid) return;
     setModalValues({ ...form });
     setDraftForm({ ...form });
-    if (pendingConfirmAction === 'keep' || pendingConfirmAction === 'add_as_new') {
+    if (
+      pendingConfirmAction === 'keep'
+      || pendingConfirmAction === 'add_as_new'
+      || pendingConfirmAction === 'keep_and_archive'
+    ) {
       if (incomingMemberCount() > 1) {
         setConfirmAction('peers_merge');
         return;
@@ -650,6 +675,35 @@ export default function GroupResolutionView({
       onResolved('add_as_new', personFullName(values));
     } catch (err) {
       onResolved('error', err.message || 'Failed to add as new person.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  /* ── Remove false positive — keep Directory, archive Remove request ── */
+  const handleKeepAndArchive = async (values = form) => {
+    if (!values.firstName.trim() || !values.lastName.trim() || submitting) return;
+    if (!hasDirectory || currentRep?.action !== 'Remove') return;
+    setSubmitting(true);
+    try {
+      await resolveGroupKeepExistingAndArchive(group.id, {
+        finalValues: {
+          firstName: values.firstName.trim(),
+          lastName: values.lastName.trim(),
+          email: (values.email || '').trim(),
+          location: (values.location || '').trim(),
+          role: (values.role || '').trim() || null,
+          directorFirst: (values.directorFirst || '').trim() || null,
+          directorLast: (values.directorLast || '').trim() || null,
+        },
+        adminNote: adminNote.trim() || null,
+        sourceRequestId: currentSourceRequestId,
+      });
+      closeConfirmModal();
+      closeMergePage();
+      onResolved('keep_and_archive', personFullName(values));
+    } catch (err) {
+      onResolved('error', err.message || 'Failed to archive remove request.');
     } finally {
       setSubmitting(false);
     }
@@ -1236,6 +1290,16 @@ export default function GroupResolutionView({
                   Keep Existing and Add New
                 </button>
               ) : null}
+              {hasDirectory && incomingMemberCount() === 1 && currentRep?.action === 'Remove' ? (
+                <button
+                  type="button"
+                  disabled={!isFormValid || submitting || isEditing}
+                  onClick={openKeepAndArchiveConfirm}
+                  className={BTN_SECONDARY}
+                >
+                  Keep Existing and Archive
+                </button>
+              ) : null}
               <button
                 type="button"
                 disabled={
@@ -1279,8 +1343,28 @@ export default function GroupResolutionView({
               Directory record details not available locally. Values shown in the confirmation step.
             </p>
           )}
-          <p className="mt-4 text-xs text-[var(--color-text-muted)]">
-            This is the existing Directory record. Keep Existing and Delete removes the new request; Keep Existing and Add New creates a separate Directory person; Add and Update overwrites this record.
+          <p className="mt-4 text-xs leading-relaxed text-[var(--color-text-muted)]">
+            {currentRep?.action === 'Remove' ? (
+              <>
+                This is the existing Directory record.{' '}
+                <span className="font-semibold text-[var(--color-text-secondary)]">Keep Existing and Delete</span>
+                {' '}removes the new request.{' '}
+                <span className="font-semibold text-[var(--color-text-secondary)]">Keep Existing and Archive</span>
+                {' '}archives the Remove request without changing Directory.{' '}
+                <span className="font-semibold text-[var(--color-text-secondary)]">Remove and Update</span>
+                {' '}marks this Directory person as removed.
+              </>
+            ) : (
+              <>
+                This is the existing Directory record.{' '}
+                <span className="font-semibold text-[var(--color-text-secondary)]">Keep Existing and Delete</span>
+                {' '}removes the new request.{' '}
+                <span className="font-semibold text-[var(--color-text-secondary)]">Keep Existing and Add New</span>
+                {' '}creates a separate Directory person.{' '}
+                <span className="font-semibold text-[var(--color-text-secondary)]">Add and Update</span>
+                {' '}overwrites this record.
+              </>
+            )}
           </p>
         </SectionCard>
       )}
@@ -1360,6 +1444,16 @@ export default function GroupResolutionView({
                     className={BTN_SECONDARY}
                   >
                     Keep Existing and Add New
+                  </button>
+                ) : null}
+                {hasDirectory && currentRep?.action === 'Remove' ? (
+                  <button
+                    type="button"
+                    disabled={!isFormValid || submitting || isEditing}
+                    onClick={openKeepAndArchiveConfirm}
+                    className={BTN_SECONDARY}
+                  >
+                    Keep Existing and Archive
                   </button>
                 ) : null}
                 <button
@@ -1726,6 +1820,181 @@ export default function GroupResolutionView({
             />
           </dl>
         </div>
+      </Modal>
+
+      {/* ── Remove false positive — keep Directory and archive Remove request ── */}
+      <Modal
+        isOpen={confirmAction === 'keep_and_archive'}
+        onClose={closeConfirmModal}
+        title="Keep existing and archive?"
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={closeConfirmModal}
+              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={
+                submitting
+                || !(mergeEditing ? draftForm : (modalValues || form)).firstName?.trim()
+                || !(mergeEditing ? draftForm : (modalValues || form)).lastName?.trim()
+                || mergeEditing
+              }
+              onClick={() => handleKeepAndArchive(mergeEditing ? draftForm : (modalValues || form))}
+              className="px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer disabled:opacity-60"
+            >
+              {submitting ? 'Archiving…' : 'Keep Existing and Archive'}
+            </button>
+          </>
+        }
+      >
+        <p className="text-sm text-[var(--color-text-secondary)]">
+          The existing Directory record will stay unchanged. This Remove request will be archived with the values below, and it will not be linked again as a duplicate of that Directory record.
+        </p>
+        <div className="mt-4 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-surface-bg)]/60 p-3.5">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+              Archived Remove request values
+            </p>
+            {!mergeEditing ? (
+              <button
+                type="button"
+                onClick={startMergeEdit}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-white px-2.5 py-1 text-xs font-semibold text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-panel)] hover:text-[var(--color-brand-primary)] cursor-pointer"
+              >
+                <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                Edit
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={saveMergeEdit}
+                disabled={!draftForm.firstName.trim() || !draftForm.lastName.trim()}
+                className="inline-flex items-center gap-1.5 rounded-md bg-[var(--color-brand-primary)] px-2.5 py-1 text-xs font-semibold text-white transition-colors hover:bg-[var(--color-surface-sidebar-hover)] disabled:opacity-60 cursor-pointer"
+              >
+                <Check className="h-3.5 w-3.5" aria-hidden="true" />
+                Save
+              </button>
+            )}
+          </div>
+
+          {!mergeEditing ? (
+            <dl className="grid grid-cols-2 gap-x-6 gap-y-3">
+              <MetaItem label="First Name" value={(modalValues || form).firstName || '—'} />
+              <MetaItem label="Last Name" value={(modalValues || form).lastName || '—'} />
+              <MetaItem label="Email" value={(modalValues || form).email || '—'} />
+              <MetaItem
+                label={isGll ? 'Gym Location' : (isHealthFitness ? 'Client' : 'Location')}
+                value={((modalValues || form).location || '').trim() || 'No location'}
+              />
+              {isHealthFitness && (
+                <>
+                  <MetaItem label="Director First Name" value={(modalValues || form).directorFirst || '—'} />
+                  <MetaItem label="Director Last Name" value={(modalValues || form).directorLast || '—'} />
+                </>
+              )}
+              {(!isGll && (terms.isJdGyms || Boolean((modalValues || form).role))) && (
+                <MetaItem label="Role" value={((modalValues || form).role || '').trim() || 'No role'} />
+              )}
+            </dl>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label className={LABEL_CLASS}>First Name *</label>
+                <input
+                  type="text"
+                  value={draftForm.firstName}
+                  onChange={(e) => updateDraftField('firstName', e.target.value)}
+                  className={INPUT_CLASS}
+                  placeholder="First name"
+                />
+              </div>
+              <div>
+                <label className={LABEL_CLASS}>Last Name *</label>
+                <input
+                  type="text"
+                  value={draftForm.lastName}
+                  onChange={(e) => updateDraftField('lastName', e.target.value)}
+                  className={INPUT_CLASS}
+                  placeholder="Last name"
+                />
+              </div>
+              <div>
+                <label className={LABEL_CLASS}>Email</label>
+                <input
+                  type="email"
+                  value={draftForm.email}
+                  onChange={(e) => updateDraftField('email', e.target.value)}
+                  className={INPUT_CLASS}
+                  placeholder="Email address"
+                />
+              </div>
+              <div>
+                <label className={LABEL_CLASS}>{isGll ? 'Gym Location (Optional)' : (isHealthFitness ? 'Client' : 'Location')}</label>
+                <input
+                  type="text"
+                  value={draftForm.location}
+                  onChange={(e) => updateDraftField('location', e.target.value)}
+                  className={INPUT_CLASS}
+                  placeholder={isGll ? 'e.g. London, Manchester' : (isHealthFitness ? 'Client' : 'Location')}
+                />
+              </div>
+              {isHealthFitness && (
+                <>
+                  <div>
+                    <label className={LABEL_CLASS}>Director First Name</label>
+                    <input
+                      type="text"
+                      value={draftForm.directorFirst || ''}
+                      onChange={(e) => updateDraftField('directorFirst', e.target.value)}
+                      className={INPUT_CLASS}
+                      placeholder="Director first name"
+                    />
+                  </div>
+                  <div>
+                    <label className={LABEL_CLASS}>Director Last Name</label>
+                    <input
+                      type="text"
+                      value={draftForm.directorLast || ''}
+                      onChange={(e) => updateDraftField('directorLast', e.target.value)}
+                      className={INPUT_CLASS}
+                      placeholder="Director last name"
+                    />
+                  </div>
+                </>
+              )}
+              {(!isGll && (terms.isJdGyms || Boolean(draftForm.role))) && (
+                <div>
+                  <label className={LABEL_CLASS}>Role</label>
+                  <input
+                    type="text"
+                    value={draftForm.role || ''}
+                    onChange={(e) => updateDraftField('role', e.target.value)}
+                    className={INPUT_CLASS}
+                    placeholder="Role (e.g. Assistant Manager)"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        <label htmlFor="keep-archive-confirm-note" className="mt-4 block w-full">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+            Admin note <span className="normal-case tracking-normal">(optional)</span>
+          </span>
+          <textarea
+            id="keep-archive-confirm-note"
+            value={adminNote}
+            onChange={(e) => setAdminNote(e.target.value)}
+            placeholder="Saved with the resolution record"
+            rows={2}
+            className="mt-2 w-full resize-none rounded-lg border border-[var(--color-border-default)] bg-white px-3.5 py-2.5 text-sm text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] transition-colors focus:border-[var(--color-brand-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-brand-secondary)]/15"
+          />
+        </label>
       </Modal>
 
       {/* ── Unlink step-by-step modal ── */}

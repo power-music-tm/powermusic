@@ -1948,6 +1948,63 @@ def resolve_group_add_as_new_api(
     }
 
 
+@router.post(
+    "/api/duplicate-groups/{group_id}/resolve-keep-existing-and-archive",
+    response_model=schemas.ResolveGroupResultOut,
+)
+def resolve_group_keep_existing_and_archive_api(
+    group_id: str,
+    payload: schemas.ResolveKeepExistingAndArchiveIn,
+    db: Session = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    """Remove false positive vs Directory — leave Directory unchanged; archive Remove request.
+
+    Persists dismissed pairs vs the linked Directory person, applies finalValues onto
+    the incoming Remove request, archives it (handled / Removed / archived_at), and
+    does not modify the Directory record.
+    """
+    from app.duplicate_group_service import resolve_group_keep_existing_and_archive
+
+    group = db.query(models.DuplicateGroup).filter(models.DuplicateGroup.id == group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Duplicate group not found")
+    if group.status != "active":
+        raise HTTPException(status_code=409, detail=f"Group is already '{group.status}'. Cannot resolve again")
+    if not group.directory_person_id:
+        raise HTTPException(
+            status_code=409,
+            detail="This group has no linked Directory person. Use resolve-mark-removed instead.",
+        )
+
+    admin_id = str(admin.id) if getattr(admin, "id", None) else None
+    members = get_group_members(db, group.id)
+    member_count = len(members)
+    directory_person_id = group.directory_person_id
+
+    try:
+        resolve_group_keep_existing_and_archive(
+            db, group,
+            final_values=payload.finalValues,
+            admin_id=admin_id,
+            admin_note=payload.adminNote,
+            source_request_id=payload.sourceRequestId,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    db.commit()
+    notify_admin_requests_changed("group_resolve_keep_existing_and_archive")
+
+    return {
+        "status": "resolved",
+        "groupId": group_id,
+        "resolutionType": "keep_existing_and_archive",
+        "directoryPersonId": directory_person_id,
+        "resolvedRequestCount": member_count,
+    }
+
+
 # ── Task 2: Resolve & Update — Preview (dry run) ──────────────────────────────
 
 @router.post(

@@ -119,6 +119,7 @@ export default function GroupDetail() {
       if (
         type === 'add' ||
         type === 'add_as_new' ||
+        type === 'keep_and_archive' ||
         type === 'mark_removed' ||
         type === 'remove_group' ||
         type === 'update' ||
@@ -143,6 +144,11 @@ export default function GroupDetail() {
           toastMsg = name
             ? `${name} added as a new Directory person. Existing record left unchanged.`
             : 'Added as a new Directory person. Existing record left unchanged.';
+          break;
+        case 'keep_and_archive':
+          toastMsg = name
+            ? `${name} archived. Existing Directory record left unchanged.`
+            : 'Remove request archived. Existing Directory record left unchanged.';
           break;
         case 'mark_removed':
           toastMsg = 'Request resolved and person marked as removed.';
