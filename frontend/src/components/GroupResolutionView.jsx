@@ -11,7 +11,7 @@ import { formatAdminDateTime, formatRequestDisplayId } from '../utils/requestDis
 import { getManagerDisplayName, isManualEntry, MANUAL_ENTRY_CLUB } from '../utils/manualEntry';
 import { readManagerNotes } from '../utils/managerNotes';
 import { fetchJson } from '../utils/api';
-import { dismissRequest, getDismissImpact, suppressNewRequests, removeRequestsFromCache, REQUESTS_PAGE_CACHE_KEY } from '../utils/pilot2Api';
+import { dismissRequest, getDismissImpact, bulkDismissRequests, suppressNewRequests, removeRequestsFromCache, REQUESTS_PAGE_CACHE_KEY } from '../utils/pilot2Api';
 import {
   resolveGroupAdd,
   resolveGroupAddAsNew,
@@ -246,8 +246,11 @@ export default function GroupResolutionView({
   const [mergePageOpen, setMergePageOpen] = useState(false);
 
   // Keep confirmation + merge-page values
-  // confirmAction: 'keep' | 'merge' | 'add_as_new' | null
+  // confirmAction: 'keep' | 'merge' | 'peers_merge' | 'add_as_new' | null
   const [confirmAction, setConfirmAction] = useState(null);
+  // Which resolve action opened Request History — history Merge resumes this modal.
+  // pendingConfirmAction: 'keep' | 'merge' | 'add_as_new' | null
+  const [pendingConfirmAction, setPendingConfirmAction] = useState(null);
   const [markUnlinkedTarget, setMarkUnlinkedTarget] = useState(null);
   const [modalValues, setModalValues] = useState(null);
   const [mergeEditing, setMergeEditing] = useState(false);
@@ -341,11 +344,13 @@ export default function GroupResolutionView({
   const closeMergePage = () => {
     setMergePageOpen(false);
     setModalValues(null);
+    setPendingConfirmAction(null);
   };
 
   /* ── open the Request History page (timeline + Merge) ── */
-  const openHistoryPage = () => {
+  const openHistoryPage = ({ clearPending = true } = {}) => {
     if (submitting) return;
+    if (clearPending) setPendingConfirmAction(null);
     setHistoryExpanded(true);
     setMergePageOpen(true);
   };
@@ -354,9 +359,11 @@ export default function GroupResolutionView({
   const openKeepConfirm = () => {
     if (submitting) return;
     if (incomingMemberCount() > 1 && !mergePageOpen) {
-      openHistoryPage();
+      setPendingConfirmAction('keep');
+      openHistoryPage({ clearPending: false });
       return;
     }
+    setPendingConfirmAction(null);
     setConfirmAction('keep');
   };
 
@@ -367,14 +374,17 @@ export default function GroupResolutionView({
     setModalValues({ ...form });
     setDraftForm({ ...form });
     if (incomingMemberCount() > 1 && !mergePageOpen) {
-      openHistoryPage();
+      setPendingConfirmAction('add_as_new');
+      openHistoryPage({ clearPending: false });
       return;
     }
+    setPendingConfirmAction(null);
     setConfirmAction('add_as_new');
   };
 
   const openMergePage = () => {
     if (submitting) return;
+    setPendingConfirmAction(null);
     setHistoryExpanded(true);
     setValuesOpen(true);
     setModalValues({ ...form });
@@ -385,6 +395,13 @@ export default function GroupResolutionView({
     if (!isFormValid || submitting) return;
     setModalValues({ ...form });
     setDraftForm({ ...form });
+    // Same as Keep flows: review Previous Requests first when multiple matches.
+    if (incomingMemberCount() > 1 && !mergePageOpen) {
+      setPendingConfirmAction('merge');
+      openHistoryPage({ clearPending: false });
+      return;
+    }
+    setPendingConfirmAction(null);
     setConfirmAction('merge');
   };
 
@@ -399,6 +416,132 @@ export default function GroupResolutionView({
     } else {
       await handleResolveAdd(values);
     }
+  };
+
+  const returnToCurrentRequest = () => {
+    setMergePageOpen(false);
+    setModalValues(null);
+    setPendingConfirmAction(null);
+  };
+
+  // If peers are reduced to one (e.g. Delete), leave history so Keep Existing
+  // buttons show on the Current Request card.
+  useEffect(() => {
+    if (!mergePageOpen) return;
+    if (pendingConfirmAction !== 'keep' && pendingConfirmAction !== 'add_as_new') return;
+    const count = members.filter(
+      (m) => !sessionUnlinkedIds.includes(m.id) && m.id !== group.directoryPersonId,
+    ).length;
+    if (count !== 1) return;
+    setMergePageOpen(false);
+    setModalValues(null);
+    setPendingConfirmAction(null);
+  }, [
+    mergePageOpen,
+    pendingConfirmAction,
+    members,
+    sessionUnlinkedIds,
+    group.directoryPersonId,
+  ]);
+
+  /* Dismiss older peers so only the current request remains — no Directory write. */
+  const consolidatePeersToCurrent = async (values = form) => {
+    if (submitting) return;
+    const nextValues = {
+      firstName: (values.firstName || '').trim(),
+      lastName: (values.lastName || '').trim(),
+      email: (values.email || '').trim(),
+      location: (values.location || '').trim(),
+      role: (values.role || '').trim(),
+      directorFirst: (values.directorFirst || '').trim(),
+      directorLast: (values.directorLast || '').trim(),
+    };
+    if (!nextValues.firstName || !nextValues.lastName) return;
+
+    const active = members.filter(
+      (m) => !sessionUnlinkedIds.includes(m.id) && m.id !== group.directoryPersonId,
+    );
+    const sorted = [...active].sort(
+      (a, b) => new Date(b.receivedAt || 0) - new Date(a.receivedAt || 0),
+    );
+    const survivor = sorted[0];
+    const discardIds = sorted.slice(1).map((m) => m.id).filter(Boolean);
+
+    setForm(nextValues);
+    setModalValues(nextValues);
+
+    if (discardIds.length === 0) {
+      closeConfirmModal();
+      returnToCurrentRequest();
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await bulkDismissRequests(discardIds);
+      suppressNewRequests({ requestIds: discardIds });
+      removeRequestsFromCache(requestsCacheKey, { requestIds: discardIds });
+      const discardSet = new Set(discardIds);
+      setMembers((prev) => prev
+        .filter((m) => !discardSet.has(m.id))
+        .map((m) => (
+          survivor && m.id === survivor.id
+            ? {
+                ...m,
+                person: {
+                  ...(m.person || {}),
+                  firstName: nextValues.firstName,
+                  lastName: nextValues.lastName,
+                  email: nextValues.email,
+                  location: nextValues.location,
+                  role: nextValues.role || null,
+                  directorFirst: nextValues.directorFirst || null,
+                  directorLast: nextValues.directorLast || null,
+                },
+                firstName: nextValues.firstName,
+                lastName: nextValues.lastName,
+                email: nextValues.email,
+                location: nextValues.location,
+                role: nextValues.role || null,
+                directorFirst: nextValues.directorFirst || null,
+                directorLast: nextValues.directorLast || null,
+              }
+            : m
+        )));
+      setSessionUnlinkedIds((prev) => prev.filter((id) => !discardSet.has(id)));
+      closeConfirmModal();
+      returnToCurrentRequest();
+      onResolved('peers_merged', null);
+    } catch (err) {
+      onResolved('error', err.message || 'Failed to merge requests.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  /*
+   * History Merge:
+   * - Keep / Add New intent → peers-merge confirm (editable final values), then
+   *   back to Current Request for Keep Existing.
+   * - Merge and Update / Previous Requests → directory merge confirm.
+   */
+  const continueFromHistoryMerge = () => {
+    if (submitting || !isFormValid) return;
+    setModalValues({ ...form });
+    setDraftForm({ ...form });
+    if (pendingConfirmAction === 'keep' || pendingConfirmAction === 'add_as_new') {
+      if (incomingMemberCount() > 1) {
+        setConfirmAction('peers_merge');
+        return;
+      }
+      returnToCurrentRequest();
+      return;
+    }
+    setConfirmAction('merge');
+  };
+
+  const handleConfirmPeersMerge = async () => {
+    const values = mergeEditing ? draftForm : (modalValues || form);
+    await consolidatePeersToCurrent(values);
   };
 
   /* Current request = newest active member (the card Merge is clicked on). */
@@ -1095,20 +1238,16 @@ export default function GroupResolutionView({
               ) : null}
               <button
                 type="button"
-                disabled={submitting || !isFormValid || isEditing}
-                onClick={() => {
-                  setModalValues({ ...form });
-                  setDraftForm({ ...form });
-                  setConfirmAction('merge');
-                }}
+                disabled={
+                  submitting
+                  || isEditing
+                  || (pendingConfirmAction !== 'keep' && !isFormValid)
+                }
+                onClick={continueFromHistoryMerge}
                 className={BTN_PRIMARY}
               >
                 <Check className="h-4 w-4" aria-hidden="true" />
-                {submitting
-                  ? 'Merging…'
-                  : (incomingMemberCount() > 1
-                    ? 'Merge'
-                    : (hasDirectory ? 'Merge and Update Directory' : 'Merge'))}
+                {submitting ? 'Merging…' : 'Merge'}
               </button>
             </div>
           ) : null}
@@ -1311,12 +1450,14 @@ export default function GroupResolutionView({
         </>
       )}
 
-      {/* ── Merge confirmation ── */}
+      {/* ── Merge confirmation (Directory resolve OR peer consolidate) ── */}
       <Modal
-        isOpen={confirmAction === 'merge'}
+        isOpen={confirmAction === 'merge' || confirmAction === 'peers_merge'}
         onClose={closeConfirmModal}
         title={
-          currentRep?.action === 'Remove'
+          confirmAction === 'peers_merge'
+            ? 'Merge requests?'
+            : currentRep?.action === 'Remove'
             ? 'Merge and Remove?'
             : hasDirectory
             ? (members.length > 1 ? 'Merge and Update Directory?' : 'Add and Update Directory?')
@@ -1333,21 +1474,30 @@ export default function GroupResolutionView({
             </button>
             <button
               type="button"
-              disabled={submitting || !isFormValid || mergeEditing}
-              onClick={handleConfirmMerge}
+              disabled={
+                submitting
+                || !(mergeEditing ? draftForm : form).firstName.trim()
+                || !(mergeEditing ? draftForm : form).lastName.trim()
+                || mergeEditing
+              }
+              onClick={confirmAction === 'peers_merge' ? handleConfirmPeersMerge : handleConfirmMerge}
               className="px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer disabled:opacity-60"
             >
               {submitting
-                ? (members.length === 1 ? 'Processing…' : 'Merging…')
-                : members.length === 1
-                ? (currentRep?.action === 'Remove' ? 'Remove and Update Directory' : 'Add and Update Directory')
-                : (hasDirectory ? 'Merge and Update Directory' : (currentRep?.action === 'Remove' ? 'Merge and Remove' : 'Merge & Add to Directory'))}
+                ? 'Merging…'
+                : confirmAction === 'peers_merge'
+                  ? 'Merge'
+                  : members.length === 1
+                    ? (currentRep?.action === 'Remove' ? 'Remove and Update Directory' : 'Add and Update Directory')
+                    : (hasDirectory ? 'Merge and Update Directory' : (currentRep?.action === 'Remove' ? 'Merge and Remove' : 'Merge & Add to Directory'))}
             </button>
           </>
         }
       >
         <p className="text-sm text-[var(--color-text-secondary)]">
-          {currentRep?.action === 'Remove'
+          {confirmAction === 'peers_merge'
+            ? `These ${incomingMemberCount()} new requests will be merged into the person below, and the older versions will be removed. Directory stays unchanged for now. After this, choose Keep Existing or Merge and Update Directory.`
+            : currentRep?.action === 'Remove'
             ? (hasDirectory && members.length > 1
                 ? 'The incoming requests will be merged/resolved, the final resolved values will be used, the existing Directory record will be updated to Removed, and the historical request versions will be dissolved.'
                 : 'The final resolved values will be used, and the person will be marked as removed in the Directory. The requests in this group will be closed.')

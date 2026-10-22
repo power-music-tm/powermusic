@@ -189,6 +189,9 @@ export default function GroupDetail() {
         case 'member_deleted_done':
           toastMsg = name ? `Deleted request for ${name}.` : 'Request deleted.';
           break;
+        case 'peers_merged':
+          toastMsg = 'Merged into one request. Choose Keep Existing or Merge and Update Directory.';
+          break;
         case 'unlinked_dissolved':
           toastMsg = 'Group dissolved successfully.';
           break;
@@ -201,7 +204,12 @@ export default function GroupDetail() {
 
       // Stay on this page after unlink / partial handle / partial delete so the
       // admin can keep working here for this visit.
-      if (type === 'unlinked' || type === 'unlinked_handled' || type === 'member_deleted') {
+      if (
+        type === 'unlinked'
+        || type === 'unlinked_handled'
+        || type === 'member_deleted'
+        || type === 'peers_merged'
+      ) {
         // Member set changed — refresh group cache so revisit stays accurate.
         bumpCacheEpoch(groupCacheKey);
         refreshCache(groupCacheKey, () => fetchGroupDetail(groupId), (data) => {
