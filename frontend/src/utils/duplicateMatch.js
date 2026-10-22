@@ -12,6 +12,7 @@
  */
 
 import nicknameRelated from '../data/nicknameRelated.json' with { type: 'json' };
+import nicknameExtras from '../data/nicknameExtras.json' with { type: 'json' };
 
 const MIN_SHARED_TOKEN_LEN = 3;
 
@@ -21,7 +22,7 @@ function norm(val) {
 }
 
 /** Lowercase + strip all spaces — RUBAB / ru bab / rubab are the same. */
-function normalizeFirstName(val) {
+export function normalizeFirstName(val) {
   if (!val) return '';
   return String(val).trim().toLowerCase().replace(/\s+/g, '');
 }
@@ -34,15 +35,14 @@ function relatedFirstNames(name) {
   if (Array.isArray(extras)) {
     for (const x of extras) related.add(x);
   }
+  const local = nicknameExtras[n];
+  if (Array.isArray(local)) {
+    for (const x of local) related.add(x);
+  }
   return related;
 }
 
-/** Mirror of backend first_names_nickname_match */
-export function firstNamesNicknameMatch(left, right) {
-  const a = normalizeFirstName(left);
-  const b = normalizeFirstName(right);
-  if (!a || !b) return false;
-  if (a === b) return true;
+function nicknameGraphRelated(a, b) {
   const ra = relatedFirstNames(a);
   const rb = relatedFirstNames(b);
   if (ra.has(b) || rb.has(a)) return true;
@@ -50,6 +50,38 @@ export function firstNamesNicknameMatch(left, right) {
     if (rb.has(token) && token.length >= MIN_SHARED_TOKEN_LEN) return true;
   }
   return false;
+}
+
+/** Mirror of backend first_names_nickname_match */
+export function firstNamesNicknameMatch(left, right, options = {}) {
+  const a = normalizeFirstName(left);
+  const b = normalizeFirstName(right);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const rejected = options?.rejectedPairs;
+  if (rejected instanceof Set) {
+    const key = a <= b ? `${a}|${b}` : `${b}|${a}`;
+    if (rejected.has(key)) return false;
+  }
+  return nicknameGraphRelated(a, b);
+}
+
+/**
+ * True when first names differ after normalize but are nickname-graph related.
+ * Used to show the "learn these nicknames are different" confirmation on
+ * Keep Existing and Add New.
+ */
+export function isNicknameOnlyFirstMatch(left, right) {
+  const a = normalizeFirstName(left);
+  const b = normalizeFirstName(right);
+  if (!a || !b || a === b) return false;
+  return nicknameGraphRelated(a, b);
+}
+
+/** Display-safe first name (trimmed original casing when present). */
+export function displayFirstName(value, fallback = '—') {
+  const raw = String(value || '').trim();
+  return raw || fallback;
 }
 
 /**

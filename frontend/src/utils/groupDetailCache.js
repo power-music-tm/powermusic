@@ -1,4 +1,5 @@
 import { writeCache } from './pilot2Api';
+import { alignClassificationSummaryWithMembers } from './requestTags';
 
 export function groupDetailCacheKey(groupId) {
   return `duplicate_group:${groupId}`;
@@ -95,11 +96,12 @@ export function applyListSeed(groupId, cached, seed) {
 
   const prev = cached?.classificationSummary || {};
   const next = listSummary || prev;
-  const potentialCount = Math.max(
-    prev.potentialCount || 0,
-    next.potentialCount || 0,
-    members.length,
-  );
+  const merged = {
+    alreadyExists: Boolean(next.alreadyExists ?? prev.alreadyExists),
+    alreadyRemoved: Boolean(next.alreadyRemoved ?? prev.alreadyRemoved),
+    duplicateCount: next.duplicateCount || prev.duplicateCount || 0,
+    potentialCount: Math.max(prev.potentialCount || 0, next.potentialCount || 0),
+  };
 
   return {
     ...(cached || {}),
@@ -130,12 +132,7 @@ export function applyListSeed(groupId, cached, seed) {
       || null,
     representativeRequestId: repId || cached?.representativeRequestId || null,
     members,
-    classificationSummary: {
-      alreadyExists: Boolean(next.alreadyExists ?? prev.alreadyExists),
-      alreadyRemoved: Boolean(next.alreadyRemoved ?? prev.alreadyRemoved),
-      duplicateCount: next.duplicateCount || prev.duplicateCount || 0,
-      potentialCount,
-    },
+    classificationSummary: alignClassificationSummaryWithMembers(merged, members.length),
   };
 }
 

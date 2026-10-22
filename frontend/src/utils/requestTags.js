@@ -192,6 +192,42 @@ export function directoryStatusTag(request) {
 }
 
 /**
+ * Keep Duplicate / Potential × N in sync with live Request History size.
+ *
+ * Peer classification (or a stale cache summary) can undercount while members
+ * already grew — e.g. Potential × 2 with History (6). Fill the gap so × N
+ * covers every active member (confirmed keeps its count; remainder → potential).
+ *
+ * @param {{ alreadyExists?: boolean, alreadyRemoved?: boolean, duplicateCount?: number, potentialCount?: number, already_exists?: boolean, already_removed?: boolean } | null | undefined} summary
+ * @param {number} memberCount
+ */
+export function alignClassificationSummaryWithMembers(summary, memberCount) {
+  if (!summary) return summary;
+  const n = Number(memberCount) || 0;
+  const duplicateCount = Number(summary.duplicateCount) || 0;
+  const potentialCount = Number(summary.potentialCount) || 0;
+  const alreadyExists = Boolean(summary.alreadyExists ?? summary.already_exists);
+  const alreadyRemoved = Boolean(summary.alreadyRemoved ?? summary.already_removed);
+  let nextDup = duplicateCount;
+  let nextPot = potentialCount;
+  const classified = nextDup + nextPot;
+  if (n >= 2 && n > classified) {
+    if (nextDup > 0) {
+      nextPot = n - nextDup;
+    } else {
+      nextPot = Math.max(nextPot, n);
+    }
+  }
+  return {
+    ...summary,
+    alreadyExists,
+    alreadyRemoved,
+    duplicateCount: nextDup,
+    potentialCount: nextPot,
+  };
+}
+
+/**
  * Convert a groupClassificationSummary object into an ordered array of pill
  * descriptors for display.
  *

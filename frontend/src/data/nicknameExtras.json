@@ -1,0 +1,614 @@
+{
+  "alex": [
+    "lex",
+    "sasha",
+    "xander"
+  ],
+  "alexander": [
+    "lex",
+    "sasha",
+    "xander"
+  ],
+  "alexandra": [
+    "lexi",
+    "sasha"
+  ],
+  "angus": [
+    "gus"
+  ],
+  "anthony": [
+    "anton",
+    "antony"
+  ],
+  "anton": [
+    "anthony",
+    "antonio",
+    "antony",
+    "tony"
+  ],
+  "antonio": [
+    "anton",
+    "antony"
+  ],
+  "antony": [
+    "anthony",
+    "anton",
+    "antonio",
+    "tony"
+  ],
+  "bella": [
+    "izzie",
+    "izzy"
+  ],
+  "ben": [
+    "benji"
+  ],
+  "benjamin": [
+    "benji"
+  ],
+  "benji": [
+    "ben",
+    "benjamin",
+    "benny"
+  ],
+  "benny": [
+    "benji"
+  ],
+  "carol": [
+    "lynne"
+  ],
+  "caroline": [
+    "lynne"
+  ],
+  "carolyn": [
+    "lynne"
+  ],
+  "carrie": [
+    "lynne"
+  ],
+  "catherine": [
+    "katharine",
+    "katrina"
+  ],
+  "charles": [
+    "chas"
+  ],
+  "charlie": [
+    "chas"
+  ],
+  "chas": [
+    "charles",
+    "charlie",
+    "chuck"
+  ],
+  "chiara": [
+    "ciara",
+    "keara",
+    "keira",
+    "kiara",
+    "kiarra",
+    "kiera",
+    "kierra",
+    "kira",
+    "kyra"
+  ],
+  "chris": [
+    "topher"
+  ],
+  "christopher": [
+    "topher"
+  ],
+  "chuck": [
+    "chas"
+  ],
+  "ciara": [
+    "chiara",
+    "keara",
+    "keira",
+    "kiara",
+    "kiarra",
+    "kiera",
+    "kierra",
+    "kira",
+    "kyra"
+  ],
+  "cindi": [
+    "cindy",
+    "cyndi",
+    "cynthia"
+  ],
+  "cindy": [
+    "cindi",
+    "cyndi"
+  ],
+  "cyndi": [
+    "cindi",
+    "cindy",
+    "cynthia"
+  ],
+  "cynthia": [
+    "cindi",
+    "cyndi"
+  ],
+  "dave": [
+    "davy"
+  ],
+  "davey": [
+    "davy"
+  ],
+  "david": [
+    "davy"
+  ],
+  "davy": [
+    "dave",
+    "davey",
+    "david"
+  ],
+  "elizabeth": [
+    "ellie",
+    "elsie"
+  ],
+  "ellie": [
+    "elizabeth",
+    "elsie"
+  ],
+  "elsie": [
+    "elizabeth",
+    "ellie"
+  ],
+  "greta": [
+    "margaret"
+  ],
+  "gus": [
+    "angus"
+  ],
+  "gwen": [
+    "gwynn"
+  ],
+  "gwendolyn": [
+    "gwynn"
+  ],
+  "gwynn": [
+    "gwen",
+    "gwendolyn",
+    "wendy"
+  ],
+  "isabel": [
+    "izzie",
+    "izzy"
+  ],
+  "isabella": [
+    "izzie",
+    "izzy"
+  ],
+  "isabelle": [
+    "izzie",
+    "izzy"
+  ],
+  "izzie": [
+    "bella",
+    "isabel",
+    "isabella",
+    "isabelle",
+    "izzy"
+  ],
+  "izzy": [
+    "bella",
+    "isabel",
+    "isabella",
+    "isabelle",
+    "izzie"
+  ],
+  "james": [
+    "jay"
+  ],
+  "jamie": [
+    "jay"
+  ],
+  "jay": [
+    "james",
+    "jamie",
+    "jim",
+    "jimmy"
+  ],
+  "jerome": [
+    "jerry"
+  ],
+  "jerry": [
+    "jerome"
+  ],
+  "jim": [
+    "jay"
+  ],
+  "jimmy": [
+    "jay"
+  ],
+  "joe": [
+    "jose"
+  ],
+  "joey": [
+    "jose"
+  ],
+  "jose": [
+    "joe",
+    "joey",
+    "joseph"
+  ],
+  "joseph": [
+    "jose"
+  ],
+  "katharine": [
+    "catherine",
+    "katherine",
+    "kathryn",
+    "katrina"
+  ],
+  "katherine": [
+    "katharine",
+    "katrina"
+  ],
+  "kathryn": [
+    "katharine",
+    "katrina"
+  ],
+  "katrina": [
+    "catherine",
+    "katharine",
+    "katherine",
+    "kathryn"
+  ],
+  "keara": [
+    "chiara",
+    "ciara",
+    "keira",
+    "kiara",
+    "kiarra",
+    "kiera",
+    "kierra",
+    "kira",
+    "kyra"
+  ],
+  "keira": [
+    "chiara",
+    "ciara",
+    "keara",
+    "kiara",
+    "kiarra",
+    "kiera",
+    "kierra",
+    "kira",
+    "kyra"
+  ],
+  "kiara": [
+    "chiara",
+    "ciara",
+    "keara",
+    "keira",
+    "kiarra",
+    "kiera",
+    "kierra",
+    "kira",
+    "kyra"
+  ],
+  "kiarra": [
+    "chiara",
+    "ciara",
+    "keara",
+    "keira",
+    "kiara",
+    "kiera",
+    "kierra",
+    "kira",
+    "kyra"
+  ],
+  "kiera": [
+    "chiara",
+    "ciara",
+    "keara",
+    "keira",
+    "kiara",
+    "kiarra",
+    "kierra",
+    "kira",
+    "kyra"
+  ],
+  "kierra": [
+    "chiara",
+    "ciara",
+    "keara",
+    "keira",
+    "kiara",
+    "kiarra",
+    "kiera",
+    "kira",
+    "kyra"
+  ],
+  "kim": [
+    "kimmy"
+  ],
+  "kimberley": [
+    "kimmy"
+  ],
+  "kimberly": [
+    "kimmy"
+  ],
+  "kimmy": [
+    "kim",
+    "kimberley",
+    "kimberly"
+  ],
+  "kira": [
+    "chiara",
+    "ciara",
+    "keara",
+    "keira",
+    "kiara",
+    "kiarra",
+    "kiera",
+    "kierra",
+    "kyra"
+  ],
+  "kit": [
+    "topher"
+  ],
+  "kyra": [
+    "chiara",
+    "ciara",
+    "keara",
+    "keira",
+    "kiara",
+    "kiarra",
+    "kiera",
+    "kierra",
+    "kira"
+  ],
+  "laura": [
+    "laurie"
+  ],
+  "laurie": [
+    "laura"
+  ],
+  "lenny": [
+    "leonardo"
+  ],
+  "leo": [
+    "leonardo"
+  ],
+  "leon": [
+    "leonardo"
+  ],
+  "leonard": [
+    "leonardo"
+  ],
+  "leonardo": [
+    "lenny",
+    "leo",
+    "leon",
+    "leonard"
+  ],
+  "lex": [
+    "alex",
+    "alexander",
+    "sasha",
+    "xander"
+  ],
+  "lexi": [
+    "alexandra",
+    "sasha"
+  ],
+  "liam": [
+    "william"
+  ],
+  "lynn": [
+    "lynne"
+  ],
+  "lynne": [
+    "carol",
+    "caroline",
+    "carolyn",
+    "carrie",
+    "lynn"
+  ],
+  "margaret": [
+    "greta"
+  ],
+  "maria": [
+    "masha"
+  ],
+  "marie": [
+    "masha"
+  ],
+  "mary": [
+    "masha"
+  ],
+  "masha": [
+    "maria",
+    "marie",
+    "mary"
+  ],
+  "meagan": [
+    "megan",
+    "meghan",
+    "megyn"
+  ],
+  "megan": [
+    "meagan",
+    "megyn"
+  ],
+  "meghan": [
+    "meagan",
+    "megyn"
+  ],
+  "megyn": [
+    "meagan",
+    "megan",
+    "meghan"
+  ],
+  "mel": [
+    "melanie"
+  ],
+  "melanie": [
+    "mel"
+  ],
+  "nicola": [
+    "nicole",
+    "nikki"
+  ],
+  "nicole": [
+    "nicola"
+  ],
+  "nikki": [
+    "nicola"
+  ],
+  "noel": [
+    "noella",
+    "noelle"
+  ],
+  "noella": [
+    "noel",
+    "noelle"
+  ],
+  "noelle": [
+    "noel",
+    "noella"
+  ],
+  "robbie": [
+    "robby",
+    "robert"
+  ],
+  "robby": [
+    "robbie"
+  ],
+  "robert": [
+    "robbie"
+  ],
+  "sam": [
+    "sammie"
+  ],
+  "samantha": [
+    "sammie"
+  ],
+  "sammie": [
+    "sam",
+    "samantha",
+    "sammy",
+    "samuel"
+  ],
+  "sammy": [
+    "sammie"
+  ],
+  "samuel": [
+    "sammie"
+  ],
+  "sasha": [
+    "alex",
+    "alexander",
+    "alexandra",
+    "lex",
+    "lexi",
+    "xander"
+  ],
+  "sean": [
+    "shaun",
+    "shawn"
+  ],
+  "shaun": [
+    "sean"
+  ],
+  "shawn": [
+    "sean"
+  ],
+  "sofia": [
+    "sofie",
+    "sofya",
+    "sophia",
+    "sophie"
+  ],
+  "sofie": [
+    "sofia",
+    "sofya",
+    "sophia",
+    "sophie"
+  ],
+  "sofya": [
+    "sofia",
+    "sofie",
+    "sophia",
+    "sophie"
+  ],
+  "sophia": [
+    "sofia",
+    "sofie",
+    "sofya"
+  ],
+  "sophie": [
+    "sofia",
+    "sofie",
+    "sofya"
+  ],
+  "stan": [
+    "stanley"
+  ],
+  "stanley": [
+    "stan"
+  ],
+  "stefan": [
+    "stephan",
+    "stephen",
+    "steven"
+  ],
+  "stefanie": [
+    "steph",
+    "stephanie"
+  ],
+  "steph": [
+    "stefanie"
+  ],
+  "stephan": [
+    "stefan"
+  ],
+  "stephanie": [
+    "stefanie"
+  ],
+  "stephen": [
+    "stefan"
+  ],
+  "steven": [
+    "stefan"
+  ],
+  "tess": [
+    "therese"
+  ],
+  "tessa": [
+    "therese"
+  ],
+  "theresa": [
+    "therese"
+  ],
+  "therese": [
+    "tess",
+    "tessa",
+    "theresa"
+  ],
+  "tony": [
+    "anton",
+    "antony"
+  ],
+  "topher": [
+    "chris",
+    "christopher",
+    "kit"
+  ],
+  "wendy": [
+    "gwynn"
+  ],
+  "william": [
+    "liam"
+  ],
+  "xander": [
+    "alex",
+    "alexander",
+    "lex",
+    "sasha"
+  ]
+}

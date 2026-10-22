@@ -485,9 +485,10 @@ class TestDuplicateLifecycleFix:
         """Not the same person vs Directory: existing stays; incoming becomes a new Directory row.
 
         Grouped via Name + location (different emails) under the name-as-entity rule.
+        Same first names → no rejected-nickname learning.
         """
         from app.directory_person_match import find_directory_conflict, person_from_model
-        from app.duplicate_matching import are_requests_dismissed
+        from app.duplicate_matching import are_requests_dismissed, get_all_rejected_nickname_pairs
 
         now = datetime.now(timezone.utc)
         existing = models.ManagerRequest(
@@ -550,6 +551,8 @@ class TestDuplicateLifecycleFix:
         assert group.status == "resolved"
         assert (group.resolution_metadata or {}).get("resolution_type") == "add_as_new"
         assert (group.resolution_metadata or {}).get("dismissed_directory_person_id") == existing.id
+        assert (group.resolution_metadata or {}).get("rejected_nickname_pair") is None
+        assert get_all_rejected_nickname_pairs(db) == set()
         assert are_requests_dismissed(db, existing.id, incoming.id) is True
 
         conflict = find_directory_conflict(
@@ -646,5 +649,64 @@ class TestDuplicateLifecycleFix:
             .count()
         )
         assert active_added == 0
+
+    def test_add_as_new_learns_rejected_nickname_pair(self, db: Session):
+        """Nickname-only Directory false positive → learn Bob ≠ Robert for future matching."""
+        from app.duplicate_matching import get_all_rejected_nickname_pairs
+        from app.nickname_match import first_names_nickname_match, rejected_nickname_pairs_scope
+
+        now = datetime.now(timezone.utc)
+        robert = models.ManagerRequest(
+            id=f"test-robert-{uuid.uuid4().hex[:6]}",
+            person_first_name="Robert",
+            person_last_name="Smith",
+            person_email="robertsmith@example.com",
+            person_location="Birmingham",
+            action="Add",
+            status="handled",
+            outcome="Added",
+            handled_at=now - timedelta(days=1),
+            received_at=now - timedelta(days=1),
+        )
+        bob = models.ManagerRequest(
+            id=f"test-bob-{uuid.uuid4().hex[:6]}",
+            person_first_name="Bob",
+            person_last_name="Smith",
+            person_email="bobsmith@example.com",
+            # Same location so Name (nickname+last) + Location groups under name-as-entity.
+            person_location="Birmingham",
+            action="Add",
+            status="new",
+            received_at=now,
+        )
+        db.add_all([robert, bob])
+        db.flush()
+
+        group = process_request_grouping(db, bob)
+        db.flush()
+        assert group is not None
+        assert group.directory_person_id == robert.id
+
+        resolve_group_add_as_new(
+            db,
+            group,
+            final_values=schemas.PersonInfo(
+                firstName="Bob",
+                lastName="Smith",
+                email="bobsmith@example.com",
+                location="Birmingham",
+            ),
+            admin_id="dev-bypass",
+            source_request_id=bob.id,
+        )
+        db.flush()
+
+        pairs = get_all_rejected_nickname_pairs(db)
+        assert ("bob", "robert") in pairs
+        meta = group.resolution_metadata or {}
+        assert meta.get("rejected_nickname_pair") == {"nameA": "bob", "nameB": "robert"}
+
+        with rejected_nickname_pairs_scope(pairs):
+            assert first_names_nickname_match("Bob", "Robert") is False
 
 
