@@ -366,6 +366,15 @@ export default function GroupResolutionView({
   // Freeze the pair shown in the nickname modal so content does not flip mid-click.
   const [nicknameModalPair, setNicknameModalPair] = useState(null);
 
+  // Newest linked request among current members (same as Current request card).
+  const formValuesFromLatest = (list = members) => {
+    const linked = (Array.isArray(list) ? list : []).filter(
+      (m) => m?.id && !sessionUnlinkedIds.includes(m.id) && m.id !== group.directoryPersonId,
+    );
+    const newest = latestMember(linked) || latestMember(list, group.directoryPersonId);
+    return newest ? memberFormValues(newest) : null;
+  };
+
   // When parent refreshes group detail (cache → network), sync members/form so
   // pills and history don't stay stuck on the stale cached snapshot.
   useEffect(() => {
@@ -379,7 +388,9 @@ export default function GroupResolutionView({
 
     if (isEditing || mergeEditing || confirmAction) return;
     const nextRep =
-      latestMember(nextMembers, group.directoryPersonId)
+      latestMember(
+        nextMembers.filter((m) => m?.id && m.id !== group.directoryPersonId),
+      )
       || nextMembers.find((m) => m.isRepresentative)
       || nextMembers[0]
       || null;
@@ -387,8 +398,38 @@ export default function GroupResolutionView({
     const nextForm = memberFormValues(nextRep);
     setForm(nextForm);
     setDraftForm(nextForm);
+    // History / merge preview must follow the new Current request — do not keep
+    // an older modalValues snapshot (e.g. location 111 after 112 arrives).
+    if (mergePageOpen) setModalValues(nextForm);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: sync from group.members only
   }, [group.members, group.id]);
+
+  // Keep final-values form on the Current request even when the member set was
+  // already complete on first paint (no id-join change to trigger the effect above).
+  const latestOpenId = latestMember(
+    members.filter(
+      (m) => m?.id && !sessionUnlinkedIds.includes(m.id) && m.id !== group.directoryPersonId,
+    ),
+  )?.id || null;
+  useEffect(() => {
+    if (!latestOpenId || isEditing || mergeEditing || confirmAction) return;
+    const nextForm = formValuesFromLatest();
+    if (!nextForm) return;
+    setForm((prev) => (
+      prev.firstName === nextForm.firstName
+      && prev.lastName === nextForm.lastName
+      && prev.email === nextForm.email
+      && prev.location === nextForm.location
+      && prev.role === nextForm.role
+      && prev.directorFirst === nextForm.directorFirst
+      && prev.directorLast === nextForm.directorLast
+        ? prev
+        : nextForm
+    ));
+    setDraftForm(nextForm);
+    if (mergePageOpen) setModalValues(nextForm);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- align to Current request id only
+  }, [latestOpenId]);
 
 
   const openUnlinkModal = (member) => {
@@ -618,7 +659,9 @@ export default function GroupResolutionView({
   /* ── keep existing — nickname check first, then history / confirm ── */
   const openKeepConfirm = () => {
     if (submitting) return;
-    setModalValues({ ...form });
+    const latestValues = formValuesFromLatest() || { ...form };
+    setForm(latestValues);
+    setModalValues(latestValues);
     openConfirmOrNicknameCheck('keep');
   };
 
@@ -626,8 +669,10 @@ export default function GroupResolutionView({
   const openAddAsNewConfirm = () => {
     if (submitting || !hasDirectoryLink) return;
     if (currentRep?.action === 'Remove') return;
-    setModalValues({ ...form });
-    setDraftForm({ ...form });
+    const latestValues = formValuesFromLatest() || { ...form };
+    setForm(latestValues);
+    setModalValues(latestValues);
+    setDraftForm(latestValues);
     openConfirmOrNicknameCheck('add_as_new');
   };
 
@@ -635,8 +680,10 @@ export default function GroupResolutionView({
   const openKeepAndArchiveConfirm = () => {
     if (submitting || !hasDirectoryLink) return;
     if (currentRep?.action !== 'Remove') return;
-    setModalValues({ ...form });
-    setDraftForm({ ...form });
+    const latestValues = formValuesFromLatest() || { ...form };
+    setForm(latestValues);
+    setModalValues(latestValues);
+    setDraftForm(latestValues);
     setMergeEditing(false);
     if (incomingMemberCount() > 1 && !mergePageOpen) {
       setPendingConfirmAction('keep_and_archive');
@@ -654,7 +701,11 @@ export default function GroupResolutionView({
     setPendingConfirmAction(null);
     setHistoryExpanded(true);
     setValuesOpen(true);
-    setModalValues({ ...form });
+    // Always seed from Current request — form may still hold an older visit's values.
+    const latestValues = formValuesFromLatest() || { ...form };
+    setForm(latestValues);
+    setDraftForm(latestValues);
+    setModalValues(latestValues);
     setMergePageOpen(true);
   };
 
@@ -674,8 +725,10 @@ export default function GroupResolutionView({
 
   const openMergeConfirm = () => {
     if (!isFormValid || submitting) return;
-    setModalValues({ ...form });
-    setDraftForm({ ...form });
+    const latestValues = formValuesFromLatest() || { ...form };
+    setForm(latestValues);
+    setModalValues(latestValues);
+    setDraftForm(latestValues);
     // Same as Keep flows: review Previous Requests first when multiple matches.
     if (incomingMemberCount() > 1 && !mergePageOpen) {
       setPendingConfirmAction('merge');
@@ -756,6 +809,17 @@ export default function GroupResolutionView({
   const openPeersMergeConfirm = () => {
     const ids = snapshotPeersForMerge();
     if (ids.length < 2) return false;
+    // Final values = newest request in this merge set (Current request card).
+    const snapshotMembers = members.filter(
+      (m) => ids.includes(m.id) && m.id !== group.directoryPersonId,
+    );
+    const latestValues = memberFormValues(latestMember(snapshotMembers)) || formValuesFromLatest();
+    if (latestValues) {
+      setForm(latestValues);
+      setDraftForm(latestValues);
+      setModalValues(latestValues);
+    }
+    setMergeEditing(false);
     // Freeze now — live arrivals after this stay in the group, not this merge.
     setPeersMergeMemberIds(ids);
     setConfirmAction('peers_merge');
@@ -910,8 +974,8 @@ export default function GroupResolutionView({
    */
   const continueFromHistoryMerge = () => {
     if (submitting || !isFormValid) return;
-    setModalValues({ ...form });
-    setDraftForm({ ...form });
+    // openPeersMergeConfirm re-seeds from the latest snapshot member; only
+    // pre-fill here when we are not about to open that confirm.
     if (
       pendingConfirmAction === 'keep'
       || pendingConfirmAction === 'add_as_new'
@@ -921,6 +985,10 @@ export default function GroupResolutionView({
         openPeersMergeConfirm();
         return;
       }
+      const latestValues = formValuesFromLatest() || { ...form };
+      setForm(latestValues);
+      setModalValues(latestValues);
+      setDraftForm(latestValues);
       returnToCurrentRequest();
       return;
     }
@@ -928,6 +996,10 @@ export default function GroupResolutionView({
       openPeersMergeConfirm();
       return;
     }
+    const latestValues = formValuesFromLatest() || { ...form };
+    setForm(latestValues);
+    setModalValues(latestValues);
+    setDraftForm(latestValues);
     // Peers already consolidated (or only one request) after starting Add/Remove
     // and Update: continue to Directory selection / status-aware confirm.
     if (pendingConfirmAction === 'merge') {
