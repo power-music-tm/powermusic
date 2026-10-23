@@ -86,7 +86,12 @@ def request_duplicate_tags_for_person(
     confirmed = False
     potential = False
 
-    query = db.query(models.ManagerRequest).filter(models.ManagerRequest.action == action)
+    from app.request_visibility import admin_visible_filter
+
+    query = db.query(models.ManagerRequest).filter(
+        models.ManagerRequest.action == action,
+        admin_visible_filter(),
+    )
     if partner_id:
         query = query.filter(models.ManagerRequest.partner_id == partner_id)
 

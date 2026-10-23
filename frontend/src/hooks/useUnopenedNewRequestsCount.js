@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getNewRequestsPage } from '../utils/pilot2Api';
+import { applyNewRequestsSuppressions, getNewRequestsPage } from '../utils/pilot2Api';
 import {
   ADMIN_NEW_REQUESTS_BADGE_EVENT,
   countUnopenedNewRequests,
@@ -27,9 +27,11 @@ export function useUnopenedNewRequestsCount(partnerId) {
     const id = partnerRef.current;
     try {
       const data = await getNewRequestsPage(id || '');
-      const requests = Array.isArray(data?.requests) ? data.requests : [];
+      const requests = applyNewRequestsSuppressions(
+        Array.isArray(data?.requests) ? data.requests : [],
+      );
       // Only refresh pending ids for the badge — do not re-run highlight bootstrap here.
-      syncPendingRequestIdsForBadge(requests.map((row) => row.id));
+      syncPendingRequestIdsForBadge(requests.map((row) => row.id), { fetchedAt: data?.fetchedAt });
       setCount(countUnopenedNewRequests());
     } catch {
       readLocal();

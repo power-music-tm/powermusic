@@ -15,13 +15,12 @@ import { useClientPagination } from '../hooks/useClientPagination';
 import {
   markDirectoryPersonHighlight,
   isRequestUnseen,
-  markRequestViewed,
+  markRequestsViewed,
   removeRequestHighlight,
   registerNewRequestsPageVisit,
   flushViewedRequestHighlights,
   recordNewRequestsPageDeparted,
   syncAdminNewRequestHighlights,
-  syncPendingRequestIdsForBadge,
   ADMIN_NEW_ROW_HIGHLIGHT_CLASS,
 } from '../utils/adminUiHighlights';
 import { useAuth } from '../context/AuthContext';
@@ -556,13 +555,38 @@ export default function Requests() {
   const requestsCacheKey = selectedPartnerId ? `${REQUESTS_PAGE_CACHE_KEY}:${selectedPartnerId}` : REQUESTS_PAGE_CACHE_KEY;
   const directoryCacheKey = selectedPartnerId ? `directory_persons:${selectedPartnerId}` : 'directory_persons';
 
+  // Paint from session cache on first render so returning from detail does not
+  // flash an empty/skeleton table for the /page round-trip.
+  const cachedPageRef = useRef(null);
+  if (cachedPageRef.current?.key !== requestsCacheKey) {
+    let cached = null;
+    try {
+      const raw = sessionStorage.getItem(`pm_cache_${requestsCacheKey}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.requests)) {
+          cached = {
+            key: requestsCacheKey,
+            requests: applyNewRequestsSuppressions(parsed.requests),
+            persons: Array.isArray(parsed.persons) ? parsed.persons : [],
+          };
+        }
+      }
+    } catch { /* ignore */ }
+    cachedPageRef.current = cached
+      ? cached
+      : { key: requestsCacheKey, requests: null, persons: null };
+  }
+  const warmCachedRequests = cachedPageRef.current?.requests;
+  const warmCachedPersons = cachedPageRef.current?.persons;
+
   // ── Action tab (Add / Remove) ──
   const [actionTab, setActionTab] = useState('All');
 
   // ── New requests data ──
-  const [newRequests, setNewRequests] = useState([]);
-  const [liveDirectory, setLiveDirectory] = useState([]);
-  const [tableLoading, setTableLoading] = useState(true);
+  const [newRequests, setNewRequests] = useState(() => warmCachedRequests || []);
+  const [liveDirectory, setLiveDirectory] = useState(() => warmCachedPersons || []);
+  const [tableLoading, setTableLoading] = useState(() => !Array.isArray(warmCachedRequests));
   const [highlightVersion, setHighlightVersion] = useState(0);
 
   const bumpHighlights = () => setHighlightVersion((v) => v + 1);
@@ -572,15 +596,12 @@ export default function Requests() {
     [highlightVersion],
   );
 
-  // Keep sidebar unopened badge in sync with the live queue (source of truth here).
-  // Skip the empty initial mount so we do not wipe opened-ids before the first fetch.
-  useEffect(() => {
-    if (tableLoading && newRequests.length === 0) return;
-    syncPendingRequestIdsForBadge(newRequests.map((row) => row.id));
-  }, [newRequests, tableLoading]);
-
   const handleOpenRequest = (row) => {
-    markRequestViewed(row.id);
+    // Group rep can change as members arrive — mark every member opened.
+    markRequestsViewed([
+      row.id,
+      ...(row.groupMembers || row.groupPreview?.members || []).map((m) => m?.id),
+    ].filter(Boolean));
     bumpHighlights();
     if (row.duplicateGroupId) {
       navigate(
@@ -689,6 +710,8 @@ export default function Requests() {
         clearNewRequestsSuppressions({
           requestIds: data.requests.map((r) => r.id).filter(Boolean),
           groupIds: data.requests.map((r) => r.duplicateGroupId).filter(Boolean),
+          // A GET that started before Delete/Confirm committed can still list the row.
+          includeHard: false,
         });
       }
       const server = applyNewRequestsSuppressions(data.requests);
@@ -716,7 +739,7 @@ export default function Requests() {
       setLiveDirectory(data.persons);
       setTableLoading(false);
       if (!isStale) {
-        const changed = syncAdminNewRequestHighlights(server, { isManualEntry });
+        const changed = syncAdminNewRequestHighlights(server, { isManualEntry, fetchedAt: data.fetchedAt });
         if (changed) bumpHighlights();
       }
     }
@@ -746,8 +769,8 @@ export default function Requests() {
 
   useEffect(() => {
     pendingCreatedIdsRef.current.clear();
-    // Prefer a warm session cache (e.g. after Not-the-same-person redirect) so
-    // the table does not flash empty for the full /page round-trip (~poll interval).
+    // Re-apply warm cache when the gym key changes; never wipe rows to [] while
+    // a prior partner's list is still on screen (avoids empty flash on back-nav).
     let hadCache = false;
     try {
       const raw = sessionStorage.getItem(`pm_cache_${requestsCacheKey}`);
@@ -760,8 +783,7 @@ export default function Requests() {
       }
     } catch { /* ignore */ }
     if (!hadCache) {
-      setNewRequests([]);
-      setLiveDirectory([]);
+      // Only clear when we truly have nothing to show for this gym.
       setTableLoading(true);
     }
     refreshRequestsPage();
@@ -1166,7 +1188,7 @@ export default function Requests() {
           )
         : [directoryPersonPayload, ...liveDirectory];
 
-    suppressNewRequests({ requestIds: [handledId] });
+    suppressNewRequests({ requestIds: [handledId], hard: true });
     removeRequestsFromCache(requestsCacheKey, { requestIds: [handledId] });
     bumpCacheEpoch(requestsCacheKey);
     setNewRequests(nextRequests);
@@ -1199,7 +1221,7 @@ export default function Requests() {
       showToast(err.message || 'Failed to save. Refreshing list.', 'error');
       loadWithCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data, isStale) => {
         if (!isStale && Array.isArray(data.requests)) {
-          syncAdminNewRequestHighlights(data.requests, { isManualEntry });
+          syncAdminNewRequestHighlights(data.requests, { isManualEntry, fetchedAt: data.fetchedAt });
         }
         setNewRequests(data.requests);
         setLiveDirectory(data.persons);
@@ -1252,7 +1274,7 @@ export default function Requests() {
     const removeSet = new Set(removeIds);
     const nextRequests = newRequests.filter((r) => !removeSet.has(r.id));
 
-    suppressNewRequests({ requestIds: removeIds });
+    suppressNewRequests({ requestIds: removeIds, hard: true });
     removeRequestsFromCache(requestsCacheKey, { requestIds: removeIds });
     bumpCacheEpoch(requestsCacheKey);
     setNewRequests(nextRequests);
@@ -1271,8 +1293,9 @@ export default function Requests() {
       if ((impact?.potentialSiblingCount || 0) > 0 || req.duplicateGroupId) {
         refreshCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data, isStale) => {
           if (!isStale && Array.isArray(data.requests)) {
-            syncAdminNewRequestHighlights(data.requests, { isManualEntry });
-            setNewRequests(data.requests);
+            const server = applyNewRequestsSuppressions(data.requests);
+            syncAdminNewRequestHighlights(server, { isManualEntry, fetchedAt: data.fetchedAt });
+            setNewRequests(server);
             setLiveDirectory(data.persons);
           }
         }).catch(() => {});
@@ -1283,7 +1306,7 @@ export default function Requests() {
       showToast(err.message || 'Failed to delete. Refreshing list.', 'error');
       loadWithCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data, isStale) => {
         if (!isStale && Array.isArray(data.requests)) {
-          syncAdminNewRequestHighlights(data.requests, { isManualEntry });
+          syncAdminNewRequestHighlights(data.requests, { isManualEntry, fetchedAt: data.fetchedAt });
         }
         setNewRequests(data.requests);
         setLiveDirectory(data.persons);
@@ -1370,7 +1393,7 @@ export default function Requests() {
 
     const nextRequests = newRequests.filter((r) => !removeSet.has(r.id));
 
-    suppressNewRequests({ requestIds: removeIds });
+    suppressNewRequests({ requestIds: removeIds, hard: true });
     removeRequestsFromCache(requestsCacheKey, { requestIds: removeIds });
     bumpCacheEpoch(requestsCacheKey);
     setNewRequests(nextRequests);
@@ -1383,8 +1406,9 @@ export default function Requests() {
       // Survivors (late arrivals / potentials) may need a list refresh.
       refreshCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data, isStale) => {
         if (!isStale && Array.isArray(data.requests)) {
-          syncAdminNewRequestHighlights(data.requests, { isManualEntry });
-          setNewRequests(data.requests);
+          const server = applyNewRequestsSuppressions(data.requests);
+          syncAdminNewRequestHighlights(server, { isManualEntry, fetchedAt: data.fetchedAt });
+          setNewRequests(server);
           setLiveDirectory(data.persons);
         }
       }).catch(() => {});
@@ -1394,7 +1418,7 @@ export default function Requests() {
       showToast(err.message || 'Failed to bulk delete. Refreshing list.', 'error');
       loadWithCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data, isStale) => {
         if (!isStale && Array.isArray(data.requests)) {
-          syncAdminNewRequestHighlights(data.requests, { isManualEntry });
+          syncAdminNewRequestHighlights(data.requests, { isManualEntry, fetchedAt: data.fetchedAt });
         }
         setNewRequests(data.requests);
         setLiveDirectory(data.persons);
@@ -1793,7 +1817,7 @@ export default function Requests() {
 
       <NewRequestsMobileList
         rows={pageItems}
-        loading={tableLoading}
+        loading={tableLoading && newRequests.length === 0}
         emptyMessage={emptyListMessage}
         onOpenRequest={handleOpenRequest}
         onMarkAs={(row) => {
@@ -1818,7 +1842,7 @@ export default function Requests() {
           compact
           centerHeaders
           accent
-          loading={tableLoading}
+          loading={tableLoading && newRequests.length === 0}
           selectedIds={selectedIds}
           onToggleSelect={handleToggleSelect}
           onToggleSelectAll={handleToggleSelectAll}

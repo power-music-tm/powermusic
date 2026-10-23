@@ -680,9 +680,13 @@ def _process_request_grouping_impl(
 
     # If the best-matching pending request is already in a group, join that group.
     if best_match_req and best_match_req.duplicate_group_id:
+        # Same lock as merge_group_peers — waits out an in-flight merge so the
+        # representative sync below sees its result.
         group = (
             db.query(models.DuplicateGroup)
             .filter(models.DuplicateGroup.id == best_match_req.duplicate_group_id)
+            .with_for_update()
+            .populate_existing()
             .first()
         )
         if group:
@@ -1929,17 +1933,18 @@ def _current_request_member(
     source_request_id: Optional[str] = None,
     representative_request_id: Optional[str] = None,
 ) -> Optional[models.ManagerRequest]:
-    """The current request Merge was clicked on (explicit id → rep → newest)."""
+    """The newest request in ``members`` — merges always land on the latest one.
+
+    ``source_request_id`` / ``representative_request_id`` only break received_at
+    ties: the stored representative can lag behind a request that joined while a
+    merge was committing.
+    """
     if not members:
         return None
-    by_id = {m.id: m for m in members}
-    if source_request_id and source_request_id in by_id:
-        return by_id[source_request_id]
-    if representative_request_id and representative_request_id in by_id:
-        return by_id[representative_request_id]
+    preferred = {rid for rid in (source_request_id, representative_request_id) if rid}
     return max(
         members,
-        key=lambda m: _norm_dt(m.received_at),
+        key=lambda m: (_norm_dt(m.received_at), m.id in preferred, m.id or ""),
     )
 
 
@@ -2157,9 +2162,14 @@ def merge_group_peers(
     """
     _validate_final_values(final_values)
 
+    # Lock before reading members: a request joining mid-merge must either be
+    # visible below (stays as a late arrival) or wait, so neither transaction
+    # overwrites the other's representative with an older request.
     group = (
         db.query(models.DuplicateGroup)
         .filter(models.DuplicateGroup.id == group_id)
+        .with_for_update()
+        .populate_existing()
         .first()
     )
     if not group or group.status != "active":
@@ -2211,7 +2221,7 @@ def merge_group_peers(
             discarded_ids,
             admin_id=admin_id,
         )
-        permanently_delete_requests(db, discarded_ids)
+        merge_requests_into(db, discarded_ids, survivor)
 
     # Critical: do NOT call finalize_group_after_selective_dismiss — that path
     # ungroups a sole peer when there is no Directory match.
@@ -2299,34 +2309,8 @@ def permanently_delete_requests(db: Session, request_ids: List[str]) -> int:
             if r.manager_id:
                 invalidate_manager_request_summary(str(r.manager_id))
 
-    # 1. Nullify references in DuplicateGroup
-    db.execute(
-        update(models.DuplicateGroup)
-        .where(models.DuplicateGroup.directory_person_id.in_(actual_ids))
-        .values(directory_person_id=None)
-    )
-    db.execute(
-        update(models.DuplicateGroup)
-        .where(models.DuplicateGroup.representative_request_id.in_(actual_ids))
-        .values(representative_request_id=None)
-    )
-
-    # 2. Delete related DismissedDuplicateMatch rows
-    db.execute(
-        delete(models.DismissedDuplicateMatch)
-        .where(
-            or_(
-                models.DismissedDuplicateMatch.request_id_1.in_(actual_ids),
-                models.DismissedDuplicateMatch.request_id_2.in_(actual_ids),
-            )
-        )
-    )
-
-    # 3. Delete related DismissedGroupMatch rows
-    db.execute(
-        delete(models.DismissedGroupMatch)
-        .where(models.DismissedGroupMatch.request_id.in_(actual_ids))
-    )
+    # 1–3. Group pointers + duplicate dismissals
+    _clear_admin_references(db, actual_ids)
 
     # 4. Delete related ManagerRequestView rows
     db.execute(
@@ -2342,6 +2326,159 @@ def permanently_delete_requests(db: Session, request_ids: List[str]) -> int:
     )
     db.flush()
     return deleted_count
+
+
+def _clear_admin_references(db: Session, request_ids: List[str]) -> None:
+    """Drop duplicate-group pointers and dismissal pairs for rows leaving the admin app."""
+    from sqlalchemy import delete, update
+
+    if not request_ids:
+        return
+    db.execute(
+        update(models.DuplicateGroup)
+        .where(models.DuplicateGroup.directory_person_id.in_(request_ids))
+        .values(directory_person_id=None)
+    )
+    db.execute(
+        update(models.DuplicateGroup)
+        .where(models.DuplicateGroup.representative_request_id.in_(request_ids))
+        .values(representative_request_id=None)
+    )
+    db.execute(
+        delete(models.DismissedDuplicateMatch)
+        .where(
+            or_(
+                models.DismissedDuplicateMatch.request_id_1.in_(request_ids),
+                models.DismissedDuplicateMatch.request_id_2.in_(request_ids),
+            )
+        )
+    )
+    db.execute(
+        delete(models.DismissedGroupMatch)
+        .where(models.DismissedGroupMatch.request_id.in_(request_ids))
+    )
+
+
+def _hide_from_admin(
+    db: Session,
+    rows: List[models.ManagerRequest],
+    *,
+    status: str,
+    merged_into_id: Optional[str] = None,
+) -> None:
+    if not rows:
+        return
+    _clear_admin_references(db, [r.id for r in rows])
+    for r in rows:
+        r.status = status
+        r.merged_into_request_id = merged_into_id
+        r.duplicate_group_id = None
+    db.flush()
+
+
+def admin_delete_requests(db: Session, request_ids: List[str]) -> int:
+    """Admin Delete (New Requests, group members, Directory).
+
+    Manager portal submissions are hidden from the admin app but kept, unchanged,
+    in the manager's request history. Rows no manager can see are permanently deleted.
+    Returns the number of rows removed from the admin app.
+    """
+    from app.manager_request_stats import is_manager_portal_request
+    from app.request_visibility import STATUS_ADMIN_DELETED, admin_visible_filter
+
+    valid_ids = [rid for rid in (request_ids or []) if rid]
+    if not valid_ids:
+        return 0
+    rows = (
+        db.query(models.ManagerRequest)
+        .filter(models.ManagerRequest.id.in_(valid_ids), admin_visible_filter())
+        .all()
+    )
+    if not rows:
+        return 0
+
+    keep = [r for r in rows if is_manager_portal_request(r)]
+    drop_ids = [r.id for r in rows if not is_manager_portal_request(r)]
+    _hide_from_admin(db, keep, status=STATUS_ADMIN_DELETED)
+    if drop_ids:
+        permanently_delete_requests(db, drop_ids)
+    return len(rows)
+
+
+def sync_requests_merged_into(db: Session, survivor: Optional[models.ManagerRequest]) -> int:
+    """Merged duplicates show as Handled to their managers once the survivor is handled."""
+    from app.manager_request_stats import decrement_manager_pending_stat
+    from app.manager_request_summary_cache import invalidate_manager_request_summary
+    from app.request_visibility import STATUS_HANDLED, STATUS_MERGED
+
+    if survivor is None or survivor.status != STATUS_HANDLED or not survivor.handled_at:
+        return 0
+    peers = (
+        db.query(models.ManagerRequest)
+        .filter(
+            models.ManagerRequest.merged_into_request_id == survivor.id,
+            models.ManagerRequest.status == STATUS_MERGED,
+            models.ManagerRequest.handled_at.is_(None),
+        )
+        .all()
+    )
+    for peer in peers:
+        peer.handled_at = survivor.handled_at
+        peer.outcome = survivor.outcome
+        decrement_manager_pending_stat(db, peer)
+        if peer.manager_id:
+            invalidate_manager_request_summary(str(peer.manager_id))
+    if peers:
+        db.flush()
+    return len(peers)
+
+
+def merge_requests_into(
+    db: Session,
+    request_ids: List[str],
+    survivor: Optional[models.ManagerRequest],
+) -> int:
+    """Fold duplicate requests into ``survivor`` (merge peers / resolve a group).
+
+    Manager portal rows are kept as status "merged": Pending to the manager while
+    the survivor is open, Handled (with the survivor's outcome) once it is added
+    or removed. Rows no manager can see are permanently deleted.
+    """
+    from app.manager_request_stats import is_manager_portal_request
+    from app.request_visibility import STATUS_MERGED
+
+    if survivor is None:
+        return admin_delete_requests(db, request_ids)
+
+    valid_ids = [rid for rid in (request_ids or []) if rid and rid != survivor.id]
+    if not valid_ids:
+        sync_requests_merged_into(db, survivor)
+        return 0
+    rows = (
+        db.query(models.ManagerRequest)
+        .filter(models.ManagerRequest.id.in_(valid_ids))
+        .all()
+    )
+    if not rows:
+        sync_requests_merged_into(db, survivor)
+        return 0
+
+    # Earlier merges into these rows now resolve to the new survivor.
+    ids = [r.id for r in rows]
+    for chained in (
+        db.query(models.ManagerRequest)
+        .filter(models.ManagerRequest.merged_into_request_id.in_(ids))
+        .all()
+    ):
+        chained.merged_into_request_id = survivor.id
+
+    keep = [r for r in rows if is_manager_portal_request(r)]
+    drop_ids = [r.id for r in rows if not is_manager_portal_request(r)]
+    _hide_from_admin(db, keep, status=STATUS_MERGED, merged_into_id=survivor.id)
+    if drop_ids:
+        permanently_delete_requests(db, drop_ids)
+    sync_requests_merged_into(db, survivor)
+    return len(rows)
 
 
 def _finalize_group(
@@ -2534,10 +2671,10 @@ def resolve_group_add(
         db.add(dir_row)
         db.flush()
 
-    # Permanently delete discarded snapshot peers only (not late arrivals).
+    # Fold discarded snapshot peers into the Directory row (not late arrivals).
     discarded_ids = [m.id for m in members if m.id != dir_row.id]
-    if discarded_ids:
-        permanently_delete_requests(db, discarded_ids)
+    # Unconditional: also syncs requests merged into this row earlier.
+    merge_requests_into(db, discarded_ids, dir_row)
 
     # Link the group to the Directory row
     group.directory_person_id = dir_row.id
@@ -2792,8 +2929,8 @@ def resolve_group_keep_existing_and_archive(
             invalidate_manager_request_summary(str(retained_req.manager_id))
 
     discarded_ids = [m.id for m in members if m.id != retained_req.id]
-    if discarded_ids:
-        permanently_delete_requests(db, discarded_ids)
+    # Unconditional: also syncs requests merged into this row earlier.
+    merge_requests_into(db, discarded_ids, retained_req)
 
     # Directory link stays for audit; Directory row itself is untouched.
     group.representative_request_id = retained_req.id
@@ -2949,10 +3086,10 @@ def resolve_group_update(
     if admin_note:
         directory_person.admin_notes = admin_note
 
-    # Permanently delete snapshot peers only (not late arrivals).
+    # Fold snapshot peers into the Directory row (not late arrivals).
     discarded_ids = [m.id for m in members if m.id != directory_person.id]
-    if discarded_ids:
-        permanently_delete_requests(db, discarded_ids)
+    # Unconditional: also syncs requests merged into this row earlier.
+    merge_requests_into(db, discarded_ids, directory_person)
 
     # Clear representative pointer since snapshot member requests are deleted
     group.representative_request_id = None
@@ -3012,8 +3149,8 @@ def resolve_group_keep_existing(
     discarded_ids = [m.id for m in members if m.id != group.directory_person_id]
     count = len(discarded_ids)
 
-    if discarded_ids:
-        permanently_delete_requests(db, discarded_ids)
+    # Unconditional: also syncs requests merged into this row earlier.
+    merge_requests_into(db, discarded_ids, directory_person)
 
     group.representative_request_id = None
 
@@ -3216,8 +3353,8 @@ def resolve_group_delete_from_directory(
     discarded_ids = [m.id for m in members if m.id != directory_person.id]
     count = len(discarded_ids)
 
-    if discarded_ids:
-        permanently_delete_requests(db, discarded_ids)
+    # Unconditional: also syncs requests merged into this row earlier.
+    merge_requests_into(db, discarded_ids, directory_person)
 
     group.representative_request_id = None
     group.directory_person_id = directory_person.id
@@ -3362,8 +3499,8 @@ def resolve_group_mark_removed(
         db.flush()
 
     discarded_ids = [m.id for m in members if m.id != dir_row.id]
-    if discarded_ids:
-        permanently_delete_requests(db, discarded_ids)
+    # Unconditional: also syncs requests merged into this row earlier.
+    merge_requests_into(db, discarded_ids, dir_row)
 
     group.directory_person_id = dir_row.id
     group.representative_request_id = dir_row.id

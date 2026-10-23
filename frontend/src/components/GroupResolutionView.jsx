@@ -11,7 +11,7 @@ import { formatAdminDateTime, formatRequestDisplayId } from '../utils/requestDis
 import { getManagerDisplayName, isManualEntry, MANUAL_ENTRY_CLUB } from '../utils/manualEntry';
 import { readManagerNotes } from '../utils/managerNotes';
 import { fetchJson } from '../utils/api';
-import { dismissRequest, getDismissImpact, suppressNewRequests, removeRequestsFromCache, REQUESTS_PAGE_CACHE_KEY } from '../utils/pilot2Api';
+import { dismissRequest, getDismissImpact, suppressNewRequests, removeRequestsFromCache, bumpCacheEpoch, REQUESTS_PAGE_CACHE_KEY } from '../utils/pilot2Api';
 import {
   fetchGroupDetail,
   learnNicknamePair,
@@ -48,6 +48,26 @@ import {
 } from '../utils/personDisplay';
 
 /* ─── helpers ────────────────────────────────────────────────────────────── */
+
+const byNewestReceived = (a, b) => new Date(b.receivedAt || 0) - new Date(a.receivedAt || 0);
+
+/** Newest open request — the Current Request card and the merge target. */
+function latestMember(list, excludeId = null) {
+  const open = (Array.isArray(list) ? list : []).filter((m) => m?.id && m.id !== excludeId);
+  return [...open].sort(byNewestReceived)[0] || null;
+}
+
+function memberFormValues(member) {
+  return {
+    firstName: member?.person?.firstName || member?.firstName || '',
+    lastName: member?.person?.lastName || member?.lastName || '',
+    email: member?.person?.email || member?.email || '',
+    location: member?.person?.location || member?.location || '',
+    role: member?.person?.role || member?.role || '',
+    directorFirst: member?.directorFirst || member?.person?.directorFirst || '',
+    directorLast: member?.directorLast || member?.person?.directorLast || '',
+  };
+}
 
 function dismissCascadeCopy(impact) {
   const confirmed = impact?.confirmedSiblingCount || 0;
@@ -296,16 +316,10 @@ export default function GroupResolutionView({
   const managerTerm = terms.managerTerm;
   const locationTerm = terms.locationTerm;
 
-  // Final values form state — pre-filled from representative
-  const [form, setForm] = useState({
-    firstName: repMember?.person?.firstName || repMember?.firstName || '',
-    lastName: repMember?.person?.lastName || repMember?.lastName || '',
-    email: repMember?.person?.email || repMember?.email || '',
-    location: repMember?.person?.location || repMember?.location || '',
-    role: repMember?.person?.role || repMember?.role || '',
-    directorFirst: repMember?.directorFirst || repMember?.person?.directorFirst || '',
-    directorLast: repMember?.directorLast || repMember?.person?.directorLast || '',
-  });
+  // Final values form state — pre-filled from the latest request
+  const [form, setForm] = useState(() => memberFormValues(
+    latestMember(group.members, group.directoryPersonId) || repMember,
+  ));
   const [isEditing, setIsEditing] = useState(false);
   const [draftForm, setDraftForm] = useState(form);
   const [unlinkTargetId, setUnlinkTargetId] = useState(null);
@@ -365,17 +379,12 @@ export default function GroupResolutionView({
 
     if (isEditing || mergeEditing || confirmAction) return;
     const nextRep =
-      nextMembers.find((m) => m.isRepresentative) || nextMembers[0] || null;
+      latestMember(nextMembers, group.directoryPersonId)
+      || nextMembers.find((m) => m.isRepresentative)
+      || nextMembers[0]
+      || null;
     if (!nextRep) return;
-    const nextForm = {
-      firstName: nextRep?.person?.firstName || nextRep?.firstName || '',
-      lastName: nextRep?.person?.lastName || nextRep?.lastName || '',
-      email: nextRep?.person?.email || nextRep?.email || '',
-      location: nextRep?.person?.location || nextRep?.location || '',
-      role: nextRep?.person?.role || nextRep?.role || '',
-      directorFirst: nextRep?.directorFirst || nextRep?.person?.directorFirst || '',
-      directorLast: nextRep?.directorLast || nextRep?.person?.directorLast || '',
-    };
+    const nextForm = memberFormValues(nextRep);
     setForm(nextForm);
     setDraftForm(nextForm);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: sync from group.members only
@@ -775,9 +784,7 @@ export default function GroupResolutionView({
     const active = members.filter(
       (m) => snapshotSet.has(m.id) && m.id !== group.directoryPersonId,
     );
-    const sortedActive = [...active].sort(
-      (a, b) => new Date(b.receivedAt || 0) - new Date(a.receivedAt || 0),
-    );
+    const sortedActive = [...active].sort(byNewestReceived);
     const sourceRequestId = sortedActive[0]?.id || group.representativeRequestId || null;
     if (snapshotIds.length <= 1) {
       setForm(nextValues);
@@ -840,16 +847,28 @@ export default function GroupResolutionView({
           && m.id !== group.directoryPersonId
           && !deletedIds.includes(m.id),
       );
-      const remaining = survivorMember
+      const merged = survivorMember
         ? [
             survivorMember,
             ...lateArrivals.filter((m) => m.id !== survivorMember.id),
           ]
         : lateArrivals;
+      // A request that arrived mid-merge is newer than the survivor: it becomes the
+      // current request, so the next merge lands on it with its own values.
+      const latest = latestMember(merged);
+      const remaining = merged.map((m) => ({ ...m, isRepresentative: m.id === latest?.id }));
+      const survivorEntry = remaining.find((m) => m.id === survivorId) || survivorMember;
+      if (latest && latest.id !== survivorId) {
+        const latestValues = memberFormValues(latest);
+        setForm(latestValues);
+        setDraftForm(latestValues);
+        setModalValues(null);
+      }
 
       if (deletedIds.length > 0) {
-        suppressNewRequests({ requestIds: deletedIds });
+        suppressNewRequests({ requestIds: deletedIds, hard: true });
         removeRequestsFromCache(requestsCacheKey, { requestIds: deletedIds });
+        bumpCacheEpoch(requestsCacheKey);
       }
       if (remaining.length > 0) {
         setMembers(remaining);
@@ -858,12 +877,14 @@ export default function GroupResolutionView({
         );
       }
       const optimisticGroup = writeMergedGroupCache(group.id, group, {
-        survivor: survivorMember,
+        survivor: survivorEntry,
         deletedIds,
         members: remaining,
+        representativeId: latest?.id || null,
       });
       patchRequestsCacheAfterPeerMerge(requestsCacheKey, group.id, {
         survivorId,
+        representativeId: latest?.id || null,
         deletedIds,
         members: remaining,
         classificationSummary: optimisticGroup?.classificationSummary || null,
@@ -1248,7 +1269,7 @@ export default function GroupResolutionView({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ adminNote: null, finalValues }),
         });
-        suppressNewRequests({ requestIds: [memberId] });
+        suppressNewRequests({ requestIds: [memberId], hard: true });
         removeRequestsFromCache(requestsCacheKey, { requestIds: [memberId] });
         const nextMembers = members.filter((m) => m.id !== memberId);
         setMembers(nextMembers);
@@ -1307,8 +1328,10 @@ export default function GroupResolutionView({
     try {
       await dismissRequest(member.id, { alsoDeleteIds: alsoIds });
       const removeIds = [member.id, ...alsoIds];
-      suppressNewRequests({ requestIds: removeIds });
+      suppressNewRequests({ requestIds: removeIds, hard: true });
       removeRequestsFromCache(requestsCacheKey, { requestIds: removeIds });
+      // Drop in-flight list GETs that started before the delete committed.
+      bumpCacheEpoch(requestsCacheKey);
       const nextMembers = members.filter(
         (m) => m.id !== member.id && !alsoSet.has(m.id),
       );
@@ -1319,10 +1342,20 @@ export default function GroupResolutionView({
       setSessionUnlinkedIds(nextUnlinked);
       setDeleteTarget(null);
       setDeleteImpact(null);
-      if (nextMembers.length === 0 || (nextMembers.length === 1 && !hasDirectoryLink)) {
-        onResolved('member_deleted_done', personFullName(member.person));
+      const deletedName = personFullName(member.person);
+      // Group dissolved / solo survivor left → leave this URL (do not refresh into
+      // "Group not found"). Solo survivor opens as its own request detail.
+      if (nextMembers.length === 0) {
+        onResolved('member_deleted_done', { name: deletedName, survivorId: null });
+      } else if (nextMembers.length === 1 && !hasDirectoryLink) {
+        const survivor = nextMembers[0];
+        onResolved('member_deleted_done', {
+          name: deletedName,
+          survivorId: survivor?.id || null,
+          survivor,
+        });
       } else {
-        onResolved('member_deleted', personFullName(member.person));
+        onResolved('member_deleted', { name: deletedName });
       }
     } catch (err) {
       onResolved('error', err.message || 'Failed to delete request.');
@@ -1342,7 +1375,7 @@ export default function GroupResolutionView({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ adminNote: note || null }),
       });
-      suppressNewRequests({ requestIds: [member.id] });
+      suppressNewRequests({ requestIds: [member.id], hard: true });
       removeRequestsFromCache(requestsCacheKey, { requestIds: [member.id] });
       const nextMembers = members.filter((m) => m.id !== member.id);
       const nextUnlinked = sessionUnlinkedIds.filter((id) => id !== member.id);

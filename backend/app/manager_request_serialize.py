@@ -17,6 +17,7 @@ from app.directory_person_match import (
 from app.duplicate_matching import is_gll_partner, is_healthtech_partner
 from app.duplicate_group_service import compute_group_classification_summary
 from app.manager_request_views import is_request_unread
+from app.request_visibility import admin_visible_filter, manager_visible_status
 from app.manager_request_tags import (
     TAG_ALREADY_EXISTS,
     TAG_AUTO_MAIL,
@@ -1109,7 +1110,7 @@ def manager_request_list_item_to_api_dict(
         "directorLast": director["lastName"] or None,
         "role": getattr(req, "role", None),
         "action": req.action,
-        "status": req.status,
+        "status": manager_visible_status(req),
         "outcome": req.outcome,
         "notes": _split_manager_and_automated_notes(req.manager_notes)[0],
         "isUnread": is_request_unread(req, seen_at),
@@ -1146,7 +1147,10 @@ def directory_rows_to_api_dicts(db: Session, rows: List[models.ManagerRequest]) 
     if emails:
         related = (
             db.query(models.ManagerRequest)
-            .filter(func.lower(models.ManagerRequest.person_email).in_(list(emails)))
+            .filter(
+                func.lower(models.ManagerRequest.person_email).in_(list(emails)),
+                admin_visible_filter(),
+            )
             .order_by(models.ManagerRequest.received_at.desc().nullslast())
             .limit(max(200, len(emails) * 12))
             .all()

@@ -69,6 +69,9 @@ class ManagerRequest(Base):
     partner_id = Column(String, ForeignKey("partners.id"), nullable=True, index=True)
     archived_at = Column(DateTime(timezone=True), nullable=True, index=True)
     duplicate_group_id = Column(String, ForeignKey("duplicate_groups.id"), nullable=True, index=True)
+    # Set when status == "merged": the request this duplicate was folded into.
+    # No FK — the survivor may later be hard-deleted (non-portal rows).
+    merged_into_request_id = Column(String, nullable=True, index=True)
 
 
 class DuplicateGroup(Base):

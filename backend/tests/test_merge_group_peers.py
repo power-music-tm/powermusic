@@ -319,6 +319,82 @@ class TestMergeGroupPeers:
         )
         assert {m.id for m in remaining} == {newer.id, late.id}
 
+    def test_next_merge_lands_on_request_that_arrived_mid_merge(self, db: Session):
+        """Late arrival stays out of merge #1, becomes current, and survives merge #2."""
+        now = datetime.now(timezone.utc)
+        partner = _partner(db)
+        older = _new_req(partner.id, location="Pakistan", received_at=now - timedelta(minutes=20))
+        newer = _new_req(partner.id, location="Austin", received_at=now - timedelta(minutes=5))
+        late = _new_req(partner.id, location="Denver", received_at=now - timedelta(seconds=30))
+        db.add_all([older, newer, late])
+        db.flush()
+
+        group = process_request_grouping(db, older)
+        group = process_request_grouping(db, newer) or group
+        group = process_request_grouping(db, late) or group
+        db.flush()
+
+        first = merge_group_peers(
+            db,
+            group.id,
+            _final("Austin"),
+            source_request_id=newer.id,
+            member_ids=[older.id, newer.id],
+        )
+        db.flush()
+        assert first["survivorRequestId"] == newer.id
+        db.refresh(group)
+        assert group.representative_request_id == late.id
+
+        # Page still pointing at the previous survivor must not win over the newer request.
+        second = merge_group_peers(
+            db,
+            group.id,
+            _final("Denver"),
+            source_request_id=newer.id,
+            member_ids=[newer.id, late.id],
+        )
+        db.flush()
+        assert second["survivorRequestId"] == late.id
+        assert newer.id in second["deletedIds"]
+        db.refresh(late)
+        db.refresh(group)
+        assert late.person_location == "Denver"
+        assert group.representative_request_id == late.id
+
+    def test_stale_representative_does_not_pick_older_survivor(self, db: Session):
+        now = datetime.now(timezone.utc)
+        partner = _partner(db)
+        older = _new_req(partner.id, location="Pakistan", received_at=now - timedelta(minutes=20))
+        newer = _new_req(partner.id, location="Austin", received_at=now - timedelta(minutes=5))
+        db.add_all([older, newer])
+        db.flush()
+
+        group = models.DuplicateGroup(
+            id=f"dup-grp-{uuid.uuid4().hex[:12]}",
+            partner_id=partner.id,
+            classification="confirmed_duplicate",
+            status="active",
+            created_at=now,
+            representative_request_id=older.id,
+        )
+        db.add(group)
+        db.flush()
+        older.duplicate_group_id = group.id
+        newer.duplicate_group_id = group.id
+        db.flush()
+
+        result = merge_group_peers(
+            db,
+            group.id,
+            _final("Austin"),
+            source_request_id="req-not-in-snapshot",
+            member_ids=[older.id, newer.id],
+        )
+        db.flush()
+        assert result["survivorRequestId"] == newer.id
+        assert result["deletedIds"] == [older.id]
+
 
 class TestResolveGroupAddSnapshot:
     def test_member_ids_leaves_late_arrival_against_new_directory(self, db: Session):
