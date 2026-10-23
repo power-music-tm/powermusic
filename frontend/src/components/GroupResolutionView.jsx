@@ -30,6 +30,7 @@ import {
   patchRequestsCacheAfterPeerMerge,
   writeMergedGroupCache,
 } from '../utils/groupDetailCache';
+import { markDirectoryPersonHighlight } from '../utils/adminUiHighlights';
 import {
   displayFirstName,
   isNicknameOnlyFirstMatch,
@@ -1165,6 +1166,9 @@ export default function GroupResolutionView({
       });
       closeConfirmModal();
       closeMergePage();
+      if ((values.email || '').trim()) {
+        markDirectoryPersonHighlight(values.email.trim());
+      }
       onResolved('add', personFullName(values));
     } catch (err) {
       onResolved('error', err.message || 'Failed to resolve group.');
@@ -1198,6 +1202,9 @@ export default function GroupResolutionView({
       });
       closeConfirmModal();
       closeMergePage();
+      if ((values.email || '').trim()) {
+        markDirectoryPersonHighlight(values.email.trim());
+      }
       onResolved('add_as_new', personFullName(values));
     } catch (err) {
       onResolved('error', err.message || 'Failed to add as new person.');
@@ -1270,6 +1277,9 @@ export default function GroupResolutionView({
       });
       closeConfirmModal();
       closeMergePage();
+      if ((values.email || '').trim()) {
+        markDirectoryPersonHighlight(values.email.trim());
+      }
       onResolved('update', personFullName(values));
     } catch (err) {
       onResolved('error', err.message || 'Failed to update Directory.');

@@ -309,7 +309,10 @@ export default function RequestDetail() {
       patchCache(requestsCacheKey, { requests: nextRequests, persons: nextDirectory });
       bumpCacheEpoch(requestsCacheKey);
       writeCache(directoryCacheKey, nextDirectory);
-      markDirectoryPersonHighlight(req.person.email);
+      // Active Directory only — archive/Removed must not bump the Directory badge.
+      if (outcome === 'Added' && req.person?.email) {
+        markDirectoryPersonHighlight(req.person.email);
+      }
       sessionStorage.setItem('pm_directory_pending_tab', outcome === 'Added' ? 'Added' : 'Removed');
 
       refreshCache(directoryCacheKey, () => fetchJson(`/api/persons${selectedPartnerId ? `?partner_id=${encodeURIComponent(selectedPartnerId)}` : ''}`)).catch(() => {});

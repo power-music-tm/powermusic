@@ -16,6 +16,7 @@ const PENDING_REQUEST_IDS_FETCHED_AT_KEY = 'pm_admin_pending_request_ids_fetched
 /** Opened this session — badge drops immediately; not cleared on page re-visit. */
 const OPENED_REQUEST_IDS_BADGE_KEY = 'pm_admin_opened_request_ids_badge_v2';
 export const ADMIN_NEW_REQUESTS_BADGE_EVENT = 'pm-admin-new-requests-badge';
+export const ADMIN_DIRECTORY_BADGE_EVENT = 'pm-admin-directory-badge';
 
 const MANAGER_HANDLED_UNSEEN_KEY = 'pm_manager_handled_unseen_request_ids';
 const MANAGER_HANDLED_VIEWED_KEY = 'pm_manager_handled_viewed_request_ids';
@@ -163,6 +164,54 @@ export function syncPendingRequestIdsForBadge(requestIds, { fetchedAt } = {}) {
   return ids;
 }
 
+/**
+ * Instant badge drop for merge / delete / Directory — do not wait for the next
+ * list GET. Bumps fetchedAt so an in-flight older response cannot resurrect ids.
+ */
+export function removePendingRequestIdsFromBadge(requestIds) {
+  const drop = new Set(
+    (requestIds || []).map((id) => normalizeHighlightId(id)).filter(Boolean),
+  );
+  if (drop.size === 0) return false;
+  const pending = readJson(PENDING_REQUEST_IDS_BADGE_KEY, []);
+  if (!Array.isArray(pending) || pending.length === 0) return false;
+  const next = pending.filter((id) => id && !drop.has(normalizeHighlightId(id)));
+  if (next.length === pending.length) return false;
+  writeJson(PENDING_REQUEST_IDS_BADGE_KEY, next);
+  writeJson(PENDING_REQUEST_IDS_FETCHED_AT_KEY, Date.now());
+  notifyNewRequestsBadgeChanged();
+  return true;
+}
+
+/**
+ * Instant badge rise when the visible queue gains rows (e.g. optimistic list
+ * patch) without a full syncPending replace.
+ */
+export function addPendingRequestIdsToBadge(requestIds) {
+  const add = [
+    ...new Set(
+      (requestIds || []).map((id) => normalizeHighlightId(id)).filter(Boolean),
+    ),
+  ];
+  if (add.length === 0) return false;
+  const pending = readJson(PENDING_REQUEST_IDS_BADGE_KEY, []);
+  const prev = Array.isArray(pending) ? pending : [];
+  const have = new Set(prev.map((id) => normalizeHighlightId(id)));
+  const merged = [...prev];
+  let changed = false;
+  for (const id of add) {
+    if (have.has(id)) continue;
+    have.add(id);
+    merged.push(id);
+    changed = true;
+  }
+  if (!changed) return false;
+  writeJson(PENDING_REQUEST_IDS_BADGE_KEY, merged);
+  writeJson(PENDING_REQUEST_IDS_FETCHED_AT_KEY, Date.now());
+  notifyNewRequestsBadgeChanged();
+  return true;
+}
+
 /** Unopened = still in the queue and not opened this session. */
 export function countUnopenedNewRequests() {
   const pending = readJson(PENDING_REQUEST_IDS_BADGE_KEY, []);
@@ -170,7 +219,8 @@ export function countUnopenedNewRequests() {
   const opened = readSet(OPENED_REQUEST_IDS_BADGE_KEY);
   let n = 0;
   for (const id of pending) {
-    if (id && !opened.has(id)) n += 1;
+    const key = normalizeHighlightId(id);
+    if (key && !opened.has(key)) n += 1;
   }
   return n;
 }
@@ -300,18 +350,21 @@ export function markRequestViewed(requestId) {
 export function markRequestsViewed(requestIds) {
   const opened = readSet(OPENED_REQUEST_IDS_BADGE_KEY);
   let changed = false;
+  let sawId = false;
   for (const rawId of requestIds || []) {
     markHighlightViewed(SCOPES.adminNewRequests, rawId);
     const id = normalizeHighlightId(rawId);
-    if (id && !opened.has(id)) {
+    if (!id) continue;
+    sawId = true;
+    if (!opened.has(id)) {
       opened.add(id);
       changed = true;
     }
   }
-  if (changed) {
-    writeSet(OPENED_REQUEST_IDS_BADGE_KEY, opened);
-    notifyNewRequestsBadgeChanged();
-  }
+  if (changed) writeSet(OPENED_REQUEST_IDS_BADGE_KEY, opened);
+  // Always notify when opening — sidebar must drop in the same click, even if
+  // the opened set was already warm from a prior seed / StrictMode pass.
+  if (sawId) notifyNewRequestsBadgeChanged();
 }
 
 /** @deprecated Use markRequestViewed — kept for gradual migration */
@@ -331,14 +384,11 @@ export function removeRequestHighlight(requestId) {
   if (opened.delete(id)) {
     writeSet(OPENED_REQUEST_IDS_BADGE_KEY, opened);
   }
-  const pending = readJson(PENDING_REQUEST_IDS_BADGE_KEY, []);
-  if (Array.isArray(pending) && pending.includes(id)) {
-    writeJson(
-      PENDING_REQUEST_IDS_BADGE_KEY,
-      pending.filter((pendingId) => pendingId !== id),
-    );
+  // Always go through the badge helper so fetchedAt is bumped and the sidebar
+  // re-reads even when the id was already absent from pending.
+  if (!removePendingRequestIdsFromBadge([id])) {
+    notifyNewRequestsBadgeChanged();
   }
-  notifyNewRequestsBadgeChanged();
 }
 
 export function countUnseenRequests() {
@@ -347,12 +397,27 @@ export function countUnseenRequests() {
 
 // ── Admin · Directory ────────────────────────────────────────────────────────
 
-export function registerDirectoryPageVisit(dedupeKey) {
-  registerHighlightPageVisit(SCOPES.adminDirectory, dedupeKey);
+function notifyDirectoryBadgeChanged() {
+  if (typeof window === 'undefined') return;
+  try {
+    window.dispatchEvent(new CustomEvent(ADMIN_DIRECTORY_BADGE_EVENT));
+  } catch {
+    // ignore
+  }
 }
 
+export function registerDirectoryPageVisit(dedupeKey) {
+  registerHighlightPageVisit(SCOPES.adminDirectory, dedupeKey);
+  notifyDirectoryBadgeChanged();
+}
+
+/**
+ * Mark an active Directory addition as unopened.
+ * Archive / Removed rows must not call this — they are not Directory badge targets.
+ */
 export function markDirectoryPersonHighlight(email) {
   markHighlightUnseen(SCOPES.adminDirectory, email);
+  notifyDirectoryBadgeChanged();
 }
 
 export function isDirectoryPersonHighlighted(email) {
@@ -361,6 +426,7 @@ export function isDirectoryPersonHighlighted(email) {
 
 export function markDirectoryPersonViewed(email) {
   markHighlightViewed(SCOPES.adminDirectory, email);
+  notifyDirectoryBadgeChanged();
 }
 
 /** @deprecated Use markDirectoryPersonViewed */
@@ -370,6 +436,44 @@ export function clearDirectoryPersonHighlight(email) {
 
 export function removeDirectoryPersonHighlight(email) {
   removeHighlight(SCOPES.adminDirectory, email);
+  notifyDirectoryBadgeChanged();
+}
+
+/** Unopened = highlighted and not opened this session (viewed set). */
+export function countUnopenedDirectoryPeople() {
+  const unseen = readSet(SCOPES.adminDirectory.unseenKey);
+  if (unseen.size === 0) return 0;
+  const viewed = readSet(SCOPES.adminDirectory.viewedKey);
+  let n = 0;
+  for (const id of unseen) {
+    if (id && !viewed.has(id)) n += 1;
+  }
+  return n;
+}
+
+/**
+ * Drop highlights for emails no longer in the active Directory list
+ * (e.g. archived / deleted) so the sidebar never counts archive rows.
+ */
+export function pruneDirectoryHighlightsToActiveEmails(emails) {
+  const active = new Set(
+    (emails || []).map((email) => normalizeHighlightId(email)).filter(Boolean),
+  );
+  const unseen = readSet(SCOPES.adminDirectory.unseenKey);
+  const viewed = readSet(SCOPES.adminDirectory.viewedKey);
+  let changed = false;
+  for (const id of [...unseen]) {
+    if (!active.has(id)) {
+      unseen.delete(id);
+      viewed.delete(id);
+      changed = true;
+    }
+  }
+  if (!changed) return false;
+  writeSet(SCOPES.adminDirectory.unseenKey, unseen);
+  writeSet(SCOPES.adminDirectory.viewedKey, viewed);
+  notifyDirectoryBadgeChanged();
+  return true;
 }
 
 // ── Manager · Handled requests ───────────────────────────────────────────────

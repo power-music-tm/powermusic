@@ -21,6 +21,7 @@ import {
   flushViewedRequestHighlights,
   recordNewRequestsPageDeparted,
   syncAdminNewRequestHighlights,
+  syncPendingRequestIdsForBadge,
   ADMIN_NEW_ROW_HIGHLIGHT_CLASS,
 } from '../utils/adminUiHighlights';
 import { useAuth } from '../context/AuthContext';
@@ -1128,6 +1129,12 @@ export default function Requests() {
           selectedPartnerId || '',
         );
       }
+      // Active Directory badge only — manual Remove goes to archive, not the count.
+      if (outcome === 'Added') {
+        for (const person of normalizedPeople) {
+          if (person?.email) markDirectoryPersonHighlight(person.email);
+        }
+      }
       sessionStorage.setItem('pm_directory_pending_tab', outcome);
       refreshRequestsPage({ networkOnly: true });
     } catch (err) {
@@ -1192,10 +1199,14 @@ export default function Requests() {
     removeRequestsFromCache(requestsCacheKey, { requestIds: [handledId] });
     bumpCacheEpoch(requestsCacheKey);
     setNewRequests(nextRequests);
+    syncPendingRequestIdsForBadge(nextRequests.map((r) => r.id), { fetchedAt: Date.now() });
     setLiveDirectory(nextDirectory);
     patchCache(requestsCacheKey, { requests: nextRequests, persons: nextDirectory });
     writeCache(directoryCacheKey, nextDirectory);
-    markDirectoryPersonHighlight(req.person.email);
+    // Active Directory only — archive/Removed must not bump the Directory badge.
+    if (outcome === 'Added' && req.person?.email) {
+      markDirectoryPersonHighlight(req.person.email);
+    }
     sessionStorage.setItem('pm_directory_pending_tab', outcome === 'Added' ? 'Added' : 'Removed');
 
     try {
@@ -1278,6 +1289,7 @@ export default function Requests() {
     removeRequestsFromCache(requestsCacheKey, { requestIds: removeIds });
     bumpCacheEpoch(requestsCacheKey);
     setNewRequests(nextRequests);
+    syncPendingRequestIdsForBadge(nextRequests.map((r) => r.id), { fetchedAt: Date.now() });
     patchCache(requestsCacheKey, { requests: nextRequests });
 
     try {
@@ -1397,6 +1409,7 @@ export default function Requests() {
     removeRequestsFromCache(requestsCacheKey, { requestIds: removeIds });
     bumpCacheEpoch(requestsCacheKey);
     setNewRequests(nextRequests);
+    syncPendingRequestIdsForBadge(nextRequests.map((r) => r.id), { fetchedAt: Date.now() });
     patchCache(requestsCacheKey, { requests: nextRequests });
     setSelectedIds(new Set());
 

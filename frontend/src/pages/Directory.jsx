@@ -12,6 +12,7 @@ import {
   registerDirectoryPageVisit,
   isDirectoryPersonHighlighted,
   clearDirectoryPersonHighlight,
+  pruneDirectoryHighlightsToActiveEmails,
   ADMIN_NEW_ROW_HIGHLIGHT_CLASS,
 } from '../utils/adminUiHighlights';
 import { formatRequestDisplayId, formatAdminDateTime, formatAdminDate } from '../utils/requestDisplayId';
@@ -1003,6 +1004,9 @@ export default function UserLedger() {
       if (cancelled) return;
       const activeData = Array.isArray(data) ? data : [];
       setLiveUserLedger(activeData);
+      // Drop archive / deleted emails from the sidebar unopened count.
+      pruneDirectoryHighlightsToActiveEmails(activeData.map((row) => row?.email));
+      setHighlightVersion((v) => v + 1);
       setTableLoading(false);
     };
 
