@@ -2906,17 +2906,21 @@ def resolve_group_update(
 
     # Active Directory only:
     # - Remove request → archive + update fields
-    # - Add request → update fields; stay active
+    # - Add request → update fields; stay active (bump handled_at so Directory sorts it current)
     history_title = "Directory record updated"
+    directory_person.handled_at = now
     if source_action == "Remove":
         directory_person.action = "Remove"
         directory_person.outcome = "Removed"
-        directory_person.handled_at = now
         directory_person.archived_at = now
         if TAG_REMOVED not in (directory_person.tags or []):
             directory_person.tags = list(directory_person.tags or []) + [TAG_REMOVED]
             flag_modified(directory_person, "tags")
         history_title = "Moved to archive"
+    else:
+        directory_person.action = "Add"
+        directory_person.outcome = "Added"
+        directory_person.archived_at = None
 
     snapshot_events = _snapshot_discarded_manager_requests(directory_person, members, existing_stored_ids)
 

@@ -226,7 +226,7 @@ class TestActiveRoster:
 
         assert find_roster_person(db, person) is None
 
-    def test_removed_snapshot_rows_returns_currently_removed_only(self, db: Session):
+    def test_removed_snapshot_rows_returns_every_removed_row(self, db: Session):
         email = f"removed-snapshot-{uuid.uuid4().hex[:8]}@example.com"
         person = _person(email=email)
         added = _handled_row(db, person, outcome="Added", action="Add")
@@ -241,8 +241,7 @@ class TestActiveRoster:
         db.flush()
 
         snapshot_ids = {row.id for row in removed_snapshot_rows(db, limit=100)}
-        assert other_removed.id in snapshot_ids
-        assert removed.id not in snapshot_ids
+        assert {removed.id, other_removed.id} <= snapshot_ids
         assert added.id not in snapshot_ids
         assert readded.id not in snapshot_ids
 
@@ -259,7 +258,8 @@ class TestActiveRoster:
         ledger_by_id = {row.id: row for row in directory_ledger_rows(db, limit=200)}
         assert added.id in ledger_by_id
         assert ledger_by_id[added.id].outcome == "Added"
-        assert prior_added.id not in ledger_by_id
+        # Directory lists every stored Added row; a later Removed row does not hide it.
+        assert prior_added.id in ledger_by_id
 
         archived_by_id = {row.id: row for row in archived_snapshot_rows(db, limit=200)}
         assert removed.id in archived_by_id
@@ -292,3 +292,33 @@ class TestActiveRoster:
         assert final.id in ledger_by_id
         assert hist_a.id not in ledger_by_id
         assert hist_b.id not in ledger_by_id
+
+    def test_directory_ledger_shows_all_same_email_rows(self, db: Session):
+        """Directory Active list does not collapse stacked same-email copies."""
+        suffix = uuid.uuid4().hex[:8]
+        email = f"cj.{suffix}@gmail.com"
+        older = _handled_row(
+            db,
+            _person(firstName="Carl", lastName="Jonson", email=email, location="Manchester"),
+            outcome="Added",
+            action="Add",
+        )
+        older.handled_at = datetime(2026, 10, 14, tzinfo=timezone.utc)
+        newer = _handled_row(
+            db,
+            _person(firstName="Carl", lastName="Jonson", email=email, location="Alaska Country"),
+            outcome="Added",
+            action="Add",
+        )
+        newer.handled_at = datetime(2026, 10, 23, tzinfo=timezone.utc)
+        stacked = _handled_row(
+            db,
+            _person(firstName="Carl", lastName="Jonson", email=email, location="Alaska Country"),
+            outcome="Added",
+            action="Add",
+        )
+        stacked.handled_at = datetime(2026, 10, 22, tzinfo=timezone.utc)
+        db.flush()
+
+        ledger_ids = {row.id for row in directory_ledger_rows(db, limit=500)}
+        assert {older.id, newer.id, stacked.id} <= ledger_ids

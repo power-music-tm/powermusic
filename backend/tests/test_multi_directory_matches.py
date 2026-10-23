@@ -225,6 +225,128 @@ class TestMultiDirectoryMatches:
         )
         assert {p.id for p, _ in collapsed} == {a.id, b.id}
 
+    def test_manager_search_and_match_show_every_row_without_collapse(self, db: Session):
+        """Manager Directory search / match-candidates show stored rows as-is."""
+        from app.directory_person_match import roster_match_candidates, search_roster_rows
+
+        now = datetime.now(timezone.utc)
+        partner = _partner(db)
+        a = _dir_row(
+            partner_id=partner.id,
+            first="Carl",
+            last="Jonson",
+            email="cj@gmail.com",
+            location="Manchester",
+            handled_at=now - timedelta(days=10),
+        )
+        b = _dir_row(
+            partner_id=partner.id,
+            first="Carl",
+            last="Jonson",
+            email="cj@gmail.com",
+            location="Alaska Country",
+            handled_at=now - timedelta(hours=1),
+        )
+        c = _dir_row(
+            partner_id=partner.id,
+            first="Carl",
+            last="Jonson",
+            email="cj@gmail.com",
+            location="Alaska Country",
+            handled_at=now - timedelta(hours=2),
+        )
+        db.add_all([a, b, c])
+        db.flush()
+
+        search_ids = {
+            r.id for r in search_roster_rows(db, "cj@gmail.com", limit=25, partner_id=partner.id)
+        }
+        assert {a.id, b.id, c.id} <= search_ids
+
+        match_ids = {
+            r.id
+            for r in roster_match_candidates(
+                db,
+                schemas.PersonInfo(
+                    firstName="Carl",
+                    lastName="Jonson",
+                    email="cj@gmail.com",
+                    location="Somewhere",
+                ),
+                limit=25,
+                partner_id=partner.id,
+            )
+        }
+        assert {a.id, b.id, c.id} <= match_ids
+
+    def test_directory_lists_show_every_row_without_collapse(self, db: Session):
+        """Active and Archived Directory show stored rows as-is (no identity collapse)."""
+        from app.directory_person_match import archived_snapshot_rows, directory_ledger_rows
+
+        now = datetime.now(timezone.utc)
+        partner = _partner(db)
+        manchester = _dir_row(
+            partner_id=partner.id,
+            first="Carl",
+            last="Jonson",
+            email="cj@gmail.com",
+            location="Manchester",
+            handled_at=now - timedelta(days=10),
+        )
+        alaska = _dir_row(
+            partner_id=partner.id,
+            first="Carl",
+            last="Jonson",
+            email="cj@gmail.com",
+            location="Alaska Country",
+            handled_at=now - timedelta(hours=1),
+        )
+        alaska_copy = _dir_row(
+            partner_id=partner.id,
+            first="Carl",
+            last="Jonson",
+            email="cj@gmail.com",
+            location="Alaska Country",
+            handled_at=now - timedelta(hours=2),
+        )
+        archived_england = _dir_row(
+            partner_id=partner.id,
+            first="Carl",
+            last="Jonson",
+            email="cj@gmail.com",
+            location="England",
+            handled_at=now - timedelta(days=5),
+        )
+        archived_england.archived_at = now - timedelta(days=1)
+        archived_copy = _dir_row(
+            partner_id=partner.id,
+            first="Carl",
+            last="Jonson",
+            email="cj@gmail.com",
+            location="England",
+            handled_at=now - timedelta(days=6),
+            action="Remove",
+            outcome="Removed",
+        )
+        archived_copy.archived_at = now - timedelta(days=2)
+        db.add_all([manchester, alaska, alaska_copy, archived_england, archived_copy])
+        db.flush()
+
+        active_ids = {
+            r.id
+            for r in directory_ledger_rows(db, partner_id=partner.id, limit=50)
+        }
+        assert {manchester.id, alaska.id, alaska_copy.id} <= active_ids
+        assert archived_england.id not in active_ids
+        assert archived_copy.id not in active_ids
+
+        archived_ids = {
+            r.id
+            for r in archived_snapshot_rows(db, partner_id=partner.id, limit=50)
+        }
+        assert {archived_england.id, archived_copy.id} <= archived_ids
+        assert manchester.id not in archived_ids
+
     def test_collapse_keeps_same_email_different_locations(self, db: Session):
         """Stacked-copy collapse must not erase differently located update targets."""
         from app.duplicate_group_service import _collapse_directory_matches_to_representatives

@@ -285,6 +285,37 @@ def _probe_handled_rows(
     return list(by_id.values())
 
 
+def _directory_location_key(row: models.ManagerRequest) -> str:
+    return (row.person_location or "").strip().lower()
+
+
+def _is_same_directory_ledger_identity(
+    left: models.ManagerRequest,
+    right: models.ManagerRequest,
+    *,
+    is_ht: bool,
+    is_gll: bool,
+) -> bool:
+    """True when two Directory rows collapse to one Active/Archived ledger entry.
+
+    Matches the multi-Directory update-target rule: stacked same-location copies
+    collapse; same email with different non-empty locations stay separately
+    visible (and selectable) so an update to one location is not hidden behind
+    another.
+    """
+    if not same_person_for_partner(
+        left, right, is_healthtech=is_ht, is_gll=is_gll
+    ):
+        return False
+    if is_gll:
+        return True
+    loc_l = _directory_location_key(left)
+    loc_r = _directory_location_key(right)
+    if loc_l and loc_r and loc_l != loc_r:
+        return False
+    return True
+
+
 def _dedupe_current_outcome(
     rows: List[models.ManagerRequest],
     outcome: str,
@@ -303,7 +334,9 @@ def _dedupe_current_outcome(
 
     for row in sorted(rows, key=_handled_at_sort_key, reverse=True):
         if any(
-            same_person_for_partner(row, prior, is_healthtech=is_ht, is_gll=gll)
+            _is_same_directory_ledger_identity(
+                row, prior, is_ht=is_ht, is_gll=gll
+            )
             and not (
                 db
                 and are_requests_dismissed(db, row.id, prior.id, dismissed_set=dismissed_set)
@@ -423,7 +456,7 @@ def search_roster_rows(
     limit: int = 25,
     partner_id: Optional[str] = None,
 ) -> List[models.ManagerRequest]:
-    """Server-side roster search by person name, email, or location."""
+    """Manager/admin Directory search: every matching Added row (no identity collapse)."""
     pattern = f"%{query}%"
     query_obj = db.query(models.ManagerRequest).filter(
         models.ManagerRequest.status == "handled",
@@ -432,11 +465,11 @@ def search_roster_rows(
         or_(
             models.ManagerRequest.person_first_name.ilike(pattern),
             models.ManagerRequest.person_last_name.ilike(pattern),
-            # Full name "first last" style queries
-            func.concat(
-                models.ManagerRequest.person_first_name,
-                " ",
-                models.ManagerRequest.person_last_name,
+            # Full name "first last" — `+` works on SQLite and Postgres (func.concat does not on SQLite).
+            (
+                models.ManagerRequest.person_first_name
+                + " "
+                + models.ManagerRequest.person_last_name
             ).ilike(pattern),
             models.ManagerRequest.person_email.ilike(pattern),
             models.ManagerRequest.person_location.ilike(pattern),
@@ -444,12 +477,11 @@ def search_roster_rows(
     )
     if partner_id:
         query_obj = query_obj.filter(models.ManagerRequest.partner_id == partner_id)
-    rows = (
+    return (
         query_obj.order_by(models.ManagerRequest.handled_at.desc())
-        .limit(max(limit * 4, limit))
+        .limit(limit)
         .all()
     )
-    return _dedupe_latest_roster(rows)[:limit]
 
 
 def roster_snapshot_rows(
@@ -458,16 +490,8 @@ def roster_snapshot_rows(
     limit: int = 1000,
     partner_id: Optional[str] = None,
 ) -> List[models.ManagerRequest]:
-    """Current Added roster for a one-time client snapshot (background load)."""
-    query = db.query(models.ManagerRequest).filter(
-        models.ManagerRequest.status == "handled",
-        models.ManagerRequest.outcome == "Added",
-        models.ManagerRequest.archived_at.is_(None),
-    )
-    if partner_id:
-        query = query.filter(models.ManagerRequest.partner_id == partner_id)
-    rows = query.order_by(models.ManagerRequest.handled_at.desc()).limit(max(limit * 4, limit)).all()
-    return _dedupe_added_roster_limited(db, rows, partner_id=partner_id, limit=limit)
+    """Current Added Directory rows for a one-time client snapshot (no identity collapse)."""
+    return directory_ledger_rows(db, limit=limit, partner_id=partner_id)
 
 
 def _dedupe_latest_person(
@@ -477,7 +501,7 @@ def _dedupe_latest_person(
     db: Optional[Session] = None,
     dismissed_set: Optional[set] = None,
 ) -> List[models.ManagerRequest]:
-    """Keep the most recent handled row per person, regardless of Added/Removed."""
+    """Keep the most recent handled row per ledger identity (location-aware)."""
     is_ht = is_healthtech_partner(db, partner_id) if db and partner_id else False
     gll = _is_gll(db, partner_id)
     if dismissed_set is None and db is not None:
@@ -485,7 +509,9 @@ def _dedupe_latest_person(
     represented: List[models.ManagerRequest] = []
     for row in sorted(rows, key=_handled_at_sort_key, reverse=True):
         if any(
-            same_person_for_partner(row, prior, is_healthtech=is_ht, is_gll=gll)
+            _is_same_directory_ledger_identity(
+                row, prior, is_ht=is_ht, is_gll=gll
+            )
             and not (
                 db
                 and are_requests_dismissed(db, row.id, prior.id, dismissed_set=dismissed_set)
@@ -504,7 +530,12 @@ def directory_ledger_rows(
     partner_id: Optional[str] = None,
     dismissed_set: Optional[set] = None,
 ) -> List[models.ManagerRequest]:
-    """Active Directory ledger: latest non-archived Added state per person."""
+    """Active Directory list: every non-archived Added row (no identity collapse).
+
+    ``dismissed_set`` is accepted for call-site compatibility and unused — Directory
+    pages show stored rows as-is; match/conflict paths still collapse separately.
+    """
+    del dismissed_set  # unused — listing is not identity-deduped
     query = db.query(models.ManagerRequest).filter(
         models.ManagerRequest.status == "handled",
         models.ManagerRequest.outcome == "Added",
@@ -512,14 +543,7 @@ def directory_ledger_rows(
     )
     if partner_id:
         query = query.filter(models.ManagerRequest.partner_id == partner_id)
-    rows = query.order_by(models.ManagerRequest.handled_at.desc()).limit(max(limit * 4, limit)).all()
-    return _dedupe_added_roster_limited(
-        db,
-        rows,
-        partner_id=partner_id,
-        limit=limit,
-        dismissed_set=dismissed_set,
-    )
+    return query.order_by(models.ManagerRequest.handled_at.desc()).limit(limit).all()
 
 
 def removed_snapshot_rows(
@@ -528,15 +552,14 @@ def removed_snapshot_rows(
     limit: int = 1000,
     partner_id: Optional[str] = None,
 ) -> List[models.ManagerRequest]:
-    """People currently off the roster (latest handled state is Removed)."""
+    """Removed Directory rows for manager snapshots (no identity collapse)."""
     query = db.query(models.ManagerRequest).filter(
         models.ManagerRequest.status == "handled",
-        models.ManagerRequest.outcome.in_(DIRECTORY_LEDGER_OUTCOMES),
+        models.ManagerRequest.outcome == "Removed",
     )
     if partner_id:
         query = query.filter(models.ManagerRequest.partner_id == partner_id)
-    rows = query.order_by(models.ManagerRequest.handled_at.desc()).limit(max(limit * 4, limit)).all()
-    return _dedupe_current_outcome(rows, "Removed", partner_id=partner_id, db=db)[:limit]
+    return query.order_by(models.ManagerRequest.handled_at.desc()).limit(limit).all()
 
 
 def archived_snapshot_rows(
@@ -546,7 +569,11 @@ def archived_snapshot_rows(
     partner_id: Optional[str] = None,
     dismissed_set: Optional[set] = None,
 ) -> List[models.ManagerRequest]:
-    """People currently archived or removed from the directory."""
+    """Archived Directory list: every Removed/archived row (no identity collapse).
+
+    ``dismissed_set`` is accepted for call-site compatibility and unused.
+    """
+    del dismissed_set  # unused — listing is not identity-deduped
     query = db.query(models.ManagerRequest).filter(
         models.ManagerRequest.status == "handled",
         models.ManagerRequest.outcome.in_(DIRECTORY_LEDGER_OUTCOMES),
@@ -557,10 +584,14 @@ def archived_snapshot_rows(
     )
     if partner_id:
         query = query.filter(models.ManagerRequest.partner_id == partner_id)
-    rows = query.order_by(models.ManagerRequest.handled_at.desc(), models.ManagerRequest.archived_at.desc()).limit(max(limit * 4, limit)).all()
-    return _dedupe_latest_person(
-        rows, partner_id=partner_id, db=db, dismissed_set=dismissed_set
-    )[:limit]
+    return (
+        query.order_by(
+            models.ManagerRequest.handled_at.desc(),
+            models.ManagerRequest.archived_at.desc(),
+        )
+        .limit(limit)
+        .all()
+    )
 
 
 def active_roster_rows(db: Session, *, partner_id: Optional[str] = None) -> List[models.ManagerRequest]:
@@ -598,7 +629,7 @@ def roster_match_candidates(
     limit: int = 10,
     partner_id: Optional[str] = None,
 ) -> List[models.ManagerRequest]:
-    """Roster rows for manager form warnings (entity-overlap on the same row)."""
+    """Manager form overlap hits: every overlapping Added row (no identity collapse)."""
     email, first, last, location = _person_probe_fields(person)
     gll = _is_gll(db, partner_id)
     candidates = _roster_sql_candidates(
@@ -610,11 +641,12 @@ def roster_match_candidates(
         partner_id=partner_id,
         is_gll=gll,
     )
-    roster = _dedupe_latest_roster(candidates, partner_id=partner_id, db=db)
     matches = [
         row
-        for row in roster
-        if manager_form_directory_overlap_reasons(
+        for row in sorted(candidates, key=_handled_at_sort_key, reverse=True)
+        if (row.outcome or "") == "Added"
+        and getattr(row, "archived_at", None) is None
+        and manager_form_directory_overlap_reasons(
             email=email,
             first=first,
             last=last,
