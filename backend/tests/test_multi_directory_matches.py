@@ -1,7 +1,8 @@
-"""Potential-duplicate grouping must surface ALL qualifying Directory records.
+"""Directory matching collapses same-person duplicates to one representative.
 
-Previously process_request_grouping broke after the first directory hit (ordered by
-newest handled_at), hiding equally valid matches from the admin UI.
+Repeated Add User / manual-entry can leave many handled Added rows for one identity.
+Directory UI dedupes those; grouping/match discovery must do the same.
+Distinct people who still classify as matches remain separate choices.
 """
 
 from __future__ import annotations
@@ -18,11 +19,12 @@ from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.types import ARRAY
 
-from app import models
+from app import models, schemas
 from app.duplicate_group_service import (
     find_all_directory_matches_for_requests,
     process_request_grouping,
 )
+from app.manager_request_intake import create_handled_manual_request
 
 sqlite3.register_adapter(list, json.dumps)
 sqlite3.register_adapter(dict, json.dumps)
@@ -50,7 +52,7 @@ def db():
         session.close()
 
 
-def _partner(db: Session, name: str = "PureGym") -> models.Partner:
+def _partner(db: Session, name: str = "JD Gyms") -> models.Partner:
     now = datetime.now(timezone.utc)
     partner = models.Partner(
         id=f"partner-{uuid.uuid4().hex[:8]}",
@@ -90,8 +92,62 @@ def _dir_row(
 
 
 class TestMultiDirectoryMatches:
-    def test_two_directory_records_both_linked_and_returned(self, db: Session):
-        """Carl Johnson @ same email, two locations → both Directory hits for Alaska request."""
+    def test_same_person_duplicates_collapse_to_newest_representative(self, db: Session):
+        """Same email (Directory same-person) → only the newest active row is matched."""
+        now = datetime.now(timezone.utc)
+        partner = _partner(db)
+
+        older = _dir_row(
+            partner_id=partner.id,
+            first="Carl",
+            last="Max",
+            email="carlmax@gmail.com",
+            location="austin",
+            handled_at=now - timedelta(days=10),
+        )
+        mid = _dir_row(
+            partner_id=partner.id,
+            first="Carl",
+            last="Max",
+            email="carlmax@gmail.com",
+            location="austin",
+            handled_at=now - timedelta(days=5),
+        )
+        newest = _dir_row(
+            partner_id=partner.id,
+            first="Carl",
+            last="Max",
+            email="carlmax@gmail.com",
+            location="austin",
+            handled_at=now - timedelta(days=1),
+        )
+        incoming = models.ManagerRequest(
+            id=f"req-{uuid.uuid4().hex[:8]}",
+            person_first_name="Carl",
+            person_last_name="Max",
+            person_email="carlmax@gmail.com",
+            person_location="hogwarts",
+            action="Add",
+            status="new",
+            received_at=now,
+            partner_id=partner.id,
+        )
+        db.add_all([older, mid, newest, incoming])
+        db.flush()
+
+        group = process_request_grouping(db, incoming)
+        db.flush()
+
+        assert group is not None
+        assert group.directory_person_id == newest.id
+        stored_ids = (group.resolution_metadata or {}).get("matched_directory_person_ids") or []
+        assert stored_ids == [newest.id]
+
+        live = find_all_directory_matches_for_requests(db, [incoming])
+        assert [r.id for r in live] == [newest.id]
+
+    def test_same_email_different_locations_still_one_representative(self, db: Session):
+        """Email-only same_person → Directory shows one; matching follows."""
         now = datetime.now(timezone.utc)
         partner = _partner(db)
 
@@ -127,92 +183,42 @@ class TestMultiDirectoryMatches:
 
         group = process_request_grouping(db, incoming)
         db.flush()
-
         assert group is not None
-        # Primary must NOT silently prefer the newest solely by date — stable
-        # ranking prefers oldest handled when classifications are equal.
-        assert group.directory_person_id == older.id
+        assert group.directory_person_id == newer.id
+        stored = (group.resolution_metadata or {}).get("matched_directory_person_ids") or []
+        assert stored == [newer.id]
 
-        stored_ids = (group.resolution_metadata or {}).get("matched_directory_person_ids") or []
-        assert set(stored_ids) == {older.id, newer.id}
+    def test_collapse_keeps_distinct_identities(self, db: Session):
+        """Rows that are not same_person are not collapsed together."""
+        from app.duplicate_group_service import _collapse_directory_matches_to_representatives
 
-        live = find_all_directory_matches_for_requests(db, [incoming])
-        assert {r.id for r in live} == {older.id, newer.id}
-
-    def test_three_directory_records_all_returned(self, db: Session):
-        now = datetime.now(timezone.utc)
-        partner = _partner(db)
-        rows = [
-            _dir_row(
-                partner_id=partner.id,
-                first="Alex",
-                last="Rivera",
-                email="alex.r@example.com",
-                location=loc,
-                handled_at=now - timedelta(days=offset),
-            )
-            for offset, loc in ((30, "A"), (20, "B"), (10, "C"))
-        ]
-        incoming = models.ManagerRequest(
-            id=f"req-{uuid.uuid4().hex[:8]}",
-            person_first_name="Alex",
-            person_last_name="Rivera",
-            person_email="alex.r@example.com",
-            person_location="D",
-            action="Add",
-            status="new",
-            received_at=now,
-            partner_id=partner.id,
-        )
-        db.add_all([*rows, incoming])
-        db.flush()
-
-        group = process_request_grouping(db, incoming)
-        db.flush()
-        assert group is not None
-        stored = set((group.resolution_metadata or {}).get("matched_directory_person_ids") or [])
-        assert stored == {r.id for r in rows}
-        live = find_all_directory_matches_for_requests(db, [incoming])
-        assert {r.id for r in live} == {r.id for r in rows}
-
-    def test_remove_request_also_gets_all_directory_matches(self, db: Session):
         now = datetime.now(timezone.utc)
         partner = _partner(db)
         a = _dir_row(
             partner_id=partner.id,
-            first="Sam",
-            last="Lee",
-            email="sam.lee@example.com",
-            location="North",
-            handled_at=now - timedelta(days=5),
+            first="Alex",
+            last="Rivera",
+            email="alex.a@example.com",
+            location="Austin",
+            handled_at=now - timedelta(days=30),
         )
         b = _dir_row(
             partner_id=partner.id,
-            first="Sam",
-            last="Lee",
-            email="sam.lee@example.com",
-            location="South",
-            handled_at=now - timedelta(days=2),
+            first="Blake",
+            last="Ng",
+            email="blake.ng@example.com",
+            location="Dallas",
+            handled_at=now - timedelta(days=10),
         )
-        remove_req = models.ManagerRequest(
-            id=f"req-{uuid.uuid4().hex[:8]}",
-            person_first_name="Sam",
-            person_last_name="Lee",
-            person_email="sam.lee@example.com",
-            person_location="West",
-            action="Remove",
-            status="new",
-            received_at=now,
-            partner_id=partner.id,
-        )
-        db.add_all([a, b, remove_req])
+        db.add_all([a, b])
         db.flush()
 
-        group = process_request_grouping(db, remove_req)
-        db.flush()
-        assert group is not None
-        stored = set((group.resolution_metadata or {}).get("matched_directory_person_ids") or [])
-        assert stored == {a.id, b.id}
+        collapsed = _collapse_directory_matches_to_representatives(
+            [(a, "potential_duplicate"), (b, "potential_duplicate")],
+            is_ht=False,
+            is_gll=False,
+        )
+        assert {p.id for p, _ in collapsed} == {a.id, b.id}
 
     def test_other_partner_directory_never_included(self, db: Session):
         now = datetime.now(timezone.utc)
@@ -286,3 +292,48 @@ class TestMultiDirectoryMatches:
         assert group.directory_person_id == only.id
         stored = (group.resolution_metadata or {}).get("matched_directory_person_ids") or []
         assert stored == [only.id]
+
+    def test_manual_add_reuses_existing_active_directory_person(self, db: Session):
+        now = datetime.now(timezone.utc)
+        partner = _partner(db)
+        existing = _dir_row(
+            partner_id=partner.id,
+            first="Carl",
+            last="Max",
+            email="carlmax@gmail.com",
+            location="austin",
+            handled_at=now - timedelta(days=2),
+        )
+        db.add(existing)
+        db.flush()
+
+        updated = create_handled_manual_request(
+            db,
+            person=schemas.PersonInfo(
+                firstName="Carl",
+                lastName="Max",
+                email="carlmax@gmail.com",
+                location="hogwarts",
+            ),
+            action="Add",
+            partner_id=partner.id,
+            admin_id="dev-bypass",
+        )
+        db.flush()
+        db.refresh(existing)
+
+        assert updated.id == existing.id
+        assert existing.person_location == "hogwarts"
+        assert existing.outcome == "Added"
+        assert existing.archived_at is None
+        count = (
+            db.query(models.ManagerRequest)
+            .filter(
+                models.ManagerRequest.partner_id == partner.id,
+                models.ManagerRequest.status == "handled",
+                models.ManagerRequest.outcome == "Added",
+                models.ManagerRequest.person_email == "carlmax@gmail.com",
+            )
+            .count()
+        )
+        assert count == 1

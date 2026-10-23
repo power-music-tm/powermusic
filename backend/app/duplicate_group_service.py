@@ -31,8 +31,10 @@ from app import models, schemas
 from app.duplicate_matching import (
     are_requests_dismissed,
     get_all_dismissed_pairs,
+    is_gll_partner,
     is_healthtech_from_request,
     is_gll_from_request,
+    is_healthtech_partner,
     match_classification,
     match_classification_for_partner,
 )
@@ -194,6 +196,68 @@ def _directory_match_sort_key(
     return (confirmed_rank, roster_rank, outcome_rank, handled_key, person.id or "")
 
 
+def _directory_representative_rank(person: models.ManagerRequest) -> tuple:
+    """Prefer the Directory ledger representative: on-roster Added, then newest handled_at."""
+    off = 1 if _directory_is_off_roster(person) else 0
+    outcome_rank = 0 if (person.outcome or "") == "Added" else 1
+    handled = _norm_dt(person.handled_at or person.received_at)
+    # Ascending sort → smaller is better; negate timestamp so newest wins.
+    return (off, outcome_rank, -handled.timestamp(), person.id or "")
+
+
+_MATCH_CLASS_RANK = {
+    "confirmed_duplicate": 0,
+    "potential_duplicate": 1,
+}
+
+
+def _collapse_directory_matches_to_representatives(
+    matches: List[Tuple[models.ManagerRequest, str]],
+    *,
+    is_ht: bool,
+    is_gll: bool,
+) -> List[Tuple[models.ManagerRequest, str]]:
+    """One Directory match per same-person identity (Directory ledger rule).
+
+    Repeated Add User / manual-entry cycles can leave many handled Added rows for
+    the same person. Directory UI dedupes those; matching must do the same so
+    admins are not asked to pick among 15 identical records.
+    Distinct people who still classify as matches remain separate choices.
+    """
+    if len(matches) <= 1:
+        return matches
+
+    # Preferred representative first, then greedily keep if not same person as kept.
+    ranked = sorted(
+        matches,
+        key=lambda item: (
+            _directory_representative_rank(item[0]),
+            _MATCH_CLASS_RANK.get(item[1], 9),
+        ),
+    )
+    kept: List[Tuple[models.ManagerRequest, str]] = []
+    for person, cls in ranked:
+        prior_idx = next(
+            (
+                i
+                for i, (prior, _) in enumerate(kept)
+                if same_person_for_partner(
+                    person, prior, is_healthtech=is_ht, is_gll=is_gll
+                )
+            ),
+            None,
+        )
+        if prior_idx is None:
+            kept.append((person, cls))
+            continue
+        prior, prior_cls = kept[prior_idx]
+        if _MATCH_CLASS_RANK.get(cls, 9) < _MATCH_CLASS_RANK.get(prior_cls, 9):
+            kept[prior_idx] = (prior, cls)
+
+    kept.sort(key=_directory_match_sort_key)
+    return kept
+
+
 def _find_all_directory_matches(
     db: Session,
     req_person: schemas.PersonInfo,
@@ -204,7 +268,7 @@ def _find_all_directory_matches(
     is_gll: bool,
     dismissed_set: Optional[Set[Tuple[str, str]]] = None,
 ) -> List[Tuple[models.ManagerRequest, str]]:
-    """Return every directory candidate that classifies as a match (no early exit)."""
+    """Return directory matches, collapsed to one representative per same person."""
     matches: List[Tuple[models.ManagerRequest, str]] = []
     for dir_cand in dir_candidates:
         if are_requests_dismissed(db, req_id, dir_cand.id, dismissed_set=dismissed_set):
@@ -217,8 +281,9 @@ def _find_all_directory_matches(
         )
         if classification:
             matches.append((dir_cand, classification))
-    matches.sort(key=_directory_match_sort_key)
-    return matches
+    return _collapse_directory_matches_to_representatives(
+        matches, is_ht=is_ht, is_gll=is_gll
+    )
 
 
 def _classification_from_directory_matches(
@@ -340,14 +405,33 @@ def eligible_directory_person_ids_for_group(
         .filter(models.ManagerRequest.id.in_(list(ids)))
         .all()
     )
-    return {
-        row.id
+    active = [
+        row
         for row in rows
         if row.id
         and row.status == "handled"
         and (row.outcome or "") == "Added"
         and not _directory_is_off_roster(row)
-    }
+    ]
+    if not active:
+        return set()
+    # Collapse duplicate Directory identities (same rule as match discovery / ledger).
+    partner_id = group.partner_id or (active[0].partner_id if active else None)
+    is_ht = False
+    is_gll = False
+    if members:
+        sample = members[0]
+        is_ht = is_healthtech_from_request(db, sample)
+        is_gll = is_gll_from_request(db, sample)
+    elif partner_id:
+        is_ht = is_healthtech_partner(db, partner_id)
+        is_gll = is_gll_partner(db, partner_id)
+    collapsed = _collapse_directory_matches_to_representatives(
+        [(row, "potential_duplicate") for row in active],
+        is_ht=is_ht,
+        is_gll=is_gll,
+    )
+    return {person.id for person, _ in collapsed if person.id}
 
 
 def load_eligible_directory_person(

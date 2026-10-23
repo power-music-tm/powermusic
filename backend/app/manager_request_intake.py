@@ -488,6 +488,79 @@ def create_handled_manual_request(
     new_id: Optional[str] = None,
     outcome: Optional[str] = None,
 ) -> models.ManagerRequest:
+    """Admin Add/Remove User — writes a handled Directory row immediately.
+
+    If an active Directory person already exists for the same identity, update that
+    row in place instead of stacking another Added duplicate (Directory UI would
+    dedupe them anyway; matching previously listed every copy).
+    """
+    from app.directory_person_match import find_latest_directory_match
+    from app.duplicate_matching import is_gll_partner, is_healthtech_partner
+    from sqlalchemy import func, or_
+
+    now = datetime.now(timezone.utc)
+    resolved_outcome = outcome or ("Added" if action == "Add" else "Removed")
+    is_ht = is_healthtech_partner(db, partner_id) if partner_id else False
+    is_gll = is_gll_partner(db, partner_id) if partner_id else False
+
+    if action == "Add" and resolved_outcome == "Added" and partner_id:
+        email = (person.email or "").strip().lower()
+        last = (person.lastName or "").strip().lower()
+        q = db.query(models.ManagerRequest).filter(
+            models.ManagerRequest.status == "handled",
+            models.ManagerRequest.outcome == "Added",
+            models.ManagerRequest.archived_at.is_(None),
+            models.ManagerRequest.partner_id == partner_id,
+        )
+        filters = []
+        if email:
+            filters.append(func.lower(models.ManagerRequest.person_email) == email)
+        if last:
+            filters.append(func.lower(models.ManagerRequest.person_last_name) == last)
+        if filters:
+            q = q.filter(or_(*filters))
+        candidates = q.order_by(models.ManagerRequest.handled_at.desc()).limit(50).all()
+        existing = find_latest_directory_match(
+            person,
+            candidates,
+            is_healthtech=is_ht,
+            is_gll=is_gll,
+            db=db,
+        )
+        if existing:
+            existing.person_first_name = (person.firstName or "").strip()
+            existing.person_last_name = (person.lastName or "").strip()
+            existing.person_email = (person.email or "").strip()
+            existing.person_location = (person.location or "").strip()
+            if getattr(person, "role", None) is not None:
+                existing.role = (person.role or "").strip() or None
+            if getattr(person, "directorFirst", None) or getattr(person, "directorLast", None):
+                from app.intake_persons import set_director_fields
+                set_director_fields(
+                    existing,
+                    getattr(person, "directorFirst", None) or "",
+                    getattr(person, "directorLast", None) or "",
+                )
+            existing.action = "Add"
+            existing.outcome = "Added"
+            existing.handled_at = now
+            existing.archived_at = None
+            if admin_id and admin_id != "dev-bypass":
+                existing.handled_by_admin_id = admin_id
+            if manager_notes:
+                existing.manager_notes = manager_notes
+            if submitted_by is not None:
+                set_submitted_by_attribution(
+                    existing,
+                    first_name=submitted_by.firstName or "",
+                    last_name=submitted_by.lastName or "",
+                    email=submitted_by.email or "",
+                    club=submitted_by.club or "",
+                )
+            apply_person_to_row(existing, person, source="partner")
+            sync_display_person(existing)
+            return existing
+
     row = create_fresh_manager_request(
         db,
         person=person,
@@ -498,8 +571,7 @@ def create_handled_manual_request(
         new_id=new_id,
     )
     row.status = "handled"
-    row.outcome = outcome or ("Added" if action == "Add" else "Removed")
-    now = datetime.now(timezone.utc)
+    row.outcome = resolved_outcome
     row.handled_at = now
     if row.outcome == "Removed":
         row.archived_at = now

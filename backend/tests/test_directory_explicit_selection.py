@@ -211,12 +211,14 @@ class TestExplicitDirectorySelection:
         incoming = _req(db, partner_id=partner.id, first="Chris", last="Ortiz", email="c.o@jdgyms.co.uk", location="West", action="Add", received_at=now)
         group = _group(db, partner_id=partner.id, primary_id=active_a.id, match_ids=[active_a.id, active_b.id, archived.id], members=[incoming])
 
+        # Same-email actives collapse to one representative (newest); archived excluded.
         eligible = eligible_directory_person_ids_for_group(db, group)
-        assert eligible == {active_a.id, active_b.id}
+        assert eligible == {active_b.id}
 
         before_loc = archived.person_location
         before_arch = archived.archived_at
         before_hist = list(get_lifecycle_history(archived))
+        before_a_loc = active_a.person_location
 
         resolve_group_update(
             db,
@@ -232,7 +234,7 @@ class TestExplicitDirectorySelection:
         db.refresh(archived)
 
         assert active_b.person_location == "West" and active_b.archived_at is None
-        assert active_a.person_location == "North"
+        assert active_a.person_location == before_a_loc
         assert archived.person_location == before_loc
         assert archived.archived_at is not None
         assert archived.outcome == "Removed"

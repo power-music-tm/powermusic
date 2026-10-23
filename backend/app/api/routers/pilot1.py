@@ -1777,14 +1777,15 @@ def get_duplicate_group_details(
 
     dismissed_pairs = get_all_dismissed_pairs(db)
 
-    # Live re-scan: every Directory row that still matches any group member.
+    # Live re-scan: Directory matches collapsed to one representative per same person.
     matched_dir_rows = find_all_directory_matches_for_requests(
         db,
         members,
         dismissed_set=dismissed_pairs,
     )
-    # Ensure the group's primary directory_person_id is included even if a
-    # live re-scan misses it (e.g. fields edited after grouping).
+    # Ensure the group's primary directory_person_id is considered even if a
+    # live re-scan misses it (e.g. fields edited after grouping) — then collapse
+    # again so a stale primary does not reintroduce a same-person duplicate.
     if group.directory_person_id and not any(r.id == group.directory_person_id for r in matched_dir_rows):
         primary_row = (
             db.query(models.ManagerRequest)
@@ -1792,7 +1793,22 @@ def get_duplicate_group_details(
             .first()
         )
         if primary_row:
-            matched_dir_rows = [primary_row, *matched_dir_rows]
+            from app.duplicate_group_service import (
+                _collapse_directory_matches_to_representatives,
+            )
+            from app.duplicate_matching import (
+                is_gll_from_request,
+                is_healthtech_from_request,
+            )
+
+            sample = members[0] if members else primary_row
+            collapsed = _collapse_directory_matches_to_representatives(
+                [(primary_row, "potential_duplicate")]
+                + [(r, "potential_duplicate") for r in matched_dir_rows],
+                is_ht=is_healthtech_from_request(db, sample),
+                is_gll=is_gll_from_request(db, sample),
+            )
+            matched_dir_rows = [person for person, _ in collapsed]
 
     # Matching / selection list: Added/Active only. Archived/Removed matches stay
     # linked via directoryPersonId for Keep Existing, but are not update targets.
