@@ -1776,8 +1776,17 @@ def get_duplicate_group_details(
         if primary_row:
             matched_dir_rows = [primary_row, *matched_dir_rows]
 
+    # Matching / selection list: Added/Active only. Archived/Removed matches stay
+    # linked via directoryPersonId for Keep Existing, but are not update targets.
+    from app.duplicate_group_service import _directory_is_off_roster
+
+    active_dir_rows = [
+        row
+        for row in matched_dir_rows
+        if (row.outcome or "") == "Added" and not _directory_is_off_roster(row)
+    ]
     directory_persons = [
-        directory_person_to_api_dict(row, db=db) for row in matched_dir_rows
+        directory_person_to_api_dict(row, db=db) for row in active_dir_rows
     ]
     directory_person = None
     if group.directory_person_id:
@@ -1785,14 +1794,7 @@ def get_duplicate_group_details(
             (p for p in directory_persons if p.get("id") == group.directory_person_id),
             directory_persons[0] if directory_persons else None,
         )
-        if directory_person is None:
-            dir_row = (
-                db.query(models.ManagerRequest)
-                .filter(models.ManagerRequest.id == group.directory_person_id)
-                .first()
-            )
-            if dir_row:
-                directory_person = directory_person_to_api_dict(dir_row, db=db)
+        # Do not surface an archived primary as the update target person.
     elif directory_persons:
         directory_person = directory_persons[0]
 
@@ -2162,30 +2164,29 @@ def resolve_group_update_preview_api(
     """Case B dry run — returns current Directory values vs proposed finalValues.
 
     No writes. Call this before resolve-update to power the confirmation dialog.
+    Accepts any eligible multi-match Directory id (not only the stored primary).
     """
-    from app.duplicate_group_service import preview_resolve_update
+    from app.duplicate_group_service import (
+        load_eligible_directory_person,
+        preview_resolve_update,
+    )
 
     group = db.query(models.DuplicateGroup).filter(models.DuplicateGroup.id == group_id).first()
     if not group:
         raise HTTPException(status_code=404, detail="Duplicate group not found")
-    if not group.directory_person_id:
-        raise HTTPException(
-            status_code=409,
-            detail="This group has no linked Directory person. Use resolve-add for Case A groups.",
-        )
-    if group.directory_person_id != payload.directoryPersonId:
-        raise HTTPException(
-            status_code=409,
-            detail="directoryPersonId does not match the group's linked Directory person.",
-        )
+    if not group.directory_person_id and not (
+        isinstance(group.resolution_metadata, dict)
+        and group.resolution_metadata.get("matched_directory_person_ids")
+    ):
+        # Still allow preview when live matches exist via eligibility helper.
+        pass
 
-    dir_person = (
-        db.query(models.ManagerRequest)
-        .filter(models.ManagerRequest.id == payload.directoryPersonId)
-        .first()
-    )
-    if not dir_person:
-        raise HTTPException(status_code=404, detail="Directory person not found")
+    try:
+        dir_person = load_eligible_directory_person(
+            db, group, payload.directoryPersonId
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     return preview_resolve_update(dir_person, payload.finalValues)
 
@@ -2202,43 +2203,34 @@ def resolve_group_update_api(
     db: Session = Depends(get_db),
     admin=Depends(require_admin),
 ):
-    """Case B — Directory person exists, update it in-place with finalValues.
+    """Case B — update a Directory match in-place with finalValues.
 
-    Rejects the call if the group has no directory_person_id, or if the submitted
-    directoryPersonId does not match the group's linked person — never silently creates
-    a second Directory record.
+    Accepts any currently eligible multi-match Directory id (admin selection).
+    Revalidates eligibility immediately before write; never silently creates a
+    second Directory record or falls back to another match id.
     """
-    from app.duplicate_group_service import resolve_group_update
+    from app.duplicate_group_service import (
+        load_eligible_directory_person,
+        resolve_group_update,
+    )
 
     group = db.query(models.DuplicateGroup).filter(models.DuplicateGroup.id == group_id).first()
     if not group:
         raise HTTPException(status_code=404, detail="Duplicate group not found")
     if group.status != "active":
         raise HTTPException(status_code=409, detail=f"Group is already '{group.status}'. Cannot resolve again")
-    if not group.directory_person_id:
-        raise HTTPException(
-            status_code=409,
-            detail="This group has no linked Directory person. Use resolve-add for Case A groups.",
-        )
-    if group.directory_person_id != payload.directoryPersonId:
-        raise HTTPException(
-            status_code=409,
-            detail="directoryPersonId does not match the group's linked Directory person.",
-        )
-
-    dir_person = (
-        db.query(models.ManagerRequest)
-        .filter(models.ManagerRequest.id == payload.directoryPersonId)
-        .first()
-    )
-    if not dir_person:
-        raise HTTPException(status_code=404, detail="Directory person not found")
 
     admin_id = str(admin.id) if getattr(admin, "id", None) else None
     members = get_group_members(db, group.id)
     member_count = len(members)
 
     try:
+        # Revalidate eligibility immediately before commit path.
+        dir_person = load_eligible_directory_person(
+            db, group, payload.directoryPersonId, members=members
+        )
+        # Point the group at the admin-selected record for this resolve.
+        group.directory_person_id = dir_person.id
         resolve_group_update(
             db, group, dir_person,
             final_values=payload.finalValues,
@@ -2249,7 +2241,7 @@ def resolve_group_update_api(
         db.commit()
     except ValueError as exc:
         db.rollback()
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except Exception:
         db.rollback()
         raise
@@ -2323,29 +2315,46 @@ def resolve_group_delete_directory_api(
     db: Session = Depends(get_db),
     admin=Depends(require_admin),
 ):
-    from app.duplicate_group_service import resolve_group_delete_from_directory
+    """Remove request + Directory match: archive/update the selected Directory row.
+
+    Accepts any currently eligible multi-match Directory id (admin selection).
+    """
+    from app.duplicate_group_service import (
+        load_eligible_directory_person,
+        resolve_group_delete_from_directory,
+    )
 
     group = db.query(models.DuplicateGroup).filter(models.DuplicateGroup.id == group_id).first()
     if not group:
         raise HTTPException(status_code=404, detail="Duplicate group not found")
     if group.status != "active":
         raise HTTPException(status_code=409, detail=f"Group is already '{group.status}' — cannot resolve again")
-    if not group.directory_person_id:
-        raise HTTPException(status_code=400, detail="Group is not linked to a Directory record.")
-    if group.directory_person_id != payload.directoryPersonId:
-        raise HTTPException(status_code=400, detail="Mismatch on directoryPersonId.")
-
-    dir_person = db.query(models.ManagerRequest).filter(models.ManagerRequest.id == group.directory_person_id).first()
-    if not dir_person:
-        raise HTTPException(status_code=404, detail="Linked Directory record not found.")
 
     admin_id = str(admin.id) if getattr(admin, "id", None) else None
+    members = get_group_members(db, group.id)
 
-    count = resolve_group_delete_from_directory(
-        db, group, directory_person=dir_person, final_values=payload.finalValues, admin_id=admin_id, admin_note=payload.adminNote, source_request_id=payload.sourceRequestId
-    )
+    try:
+        dir_person = load_eligible_directory_person(
+            db, group, payload.directoryPersonId, members=members
+        )
+        group.directory_person_id = dir_person.id
+        count = resolve_group_delete_from_directory(
+            db,
+            group,
+            directory_person=dir_person,
+            final_values=payload.finalValues,
+            admin_id=admin_id,
+            admin_note=payload.adminNote,
+            source_request_id=payload.sourceRequestId,
+        )
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
 
-    db.commit()
     notify_admin_requests_changed("group_resolve_delete")
 
     return {

@@ -455,15 +455,22 @@ function EditPersonModal({ isOpen, onClose, user, onSave }) {
   return (
     <Modal
       isOpen={isOpen}
-      onClose={() => !submitting && onClose()}
+      onClose={() => {
+        if (submitting) return;
+        onClose();
+      }}
+      closeDisabled={submitting}
       title={`Edit ${user.firstName ? user.firstName + ' ' + (user.lastName || '') : 'Directory Record'}`}
       footer={
         <>
           <button
             type="button"
-            onClick={onClose}
+            onClick={() => {
+              if (submitting) return;
+              onClose();
+            }}
             disabled={submitting}
-            className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-semibold hover:bg-gray-50 disabled:opacity-40"
+            className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-semibold hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Cancel
           </button>
@@ -471,7 +478,7 @@ function EditPersonModal({ isOpen, onClose, user, onSave }) {
             type="button"
             onClick={handleSubmit}
             disabled={submitting}
-            className="inline-flex items-center justify-center gap-2 px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] disabled:opacity-40"
+            className="inline-flex items-center justify-center gap-2 px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] disabled:cursor-not-allowed disabled:opacity-40"
           >
             {submitting ? (
               <>
@@ -1965,7 +1972,8 @@ export default function UserLedger() {
       {archivingUser && (
         <Modal
           isOpen={Boolean(archivingUser)}
-          onClose={() => setArchivingUser(null)}
+          onClose={() => !archiveLoading && setArchivingUser(null)}
+          closeDisabled={archiveLoading}
           title="Archive Directory Record"
         >
           <div className="space-y-4">
@@ -1984,7 +1992,8 @@ export default function UserLedger() {
               <button
                 type="button"
                 onClick={() => setArchivingUser(null)}
-                className="rounded-md border border-[var(--color-border-default)] bg-white px-3 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-panel)]"
+                disabled={archiveLoading}
+                className="rounded-md border border-[var(--color-border-default)] bg-white px-3 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-panel)] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Cancel
               </button>
@@ -2011,6 +2020,7 @@ export default function UserLedger() {
         <Modal
           isOpen={Boolean(restoringUser)}
           onClose={() => !restoringUserId && setRestoringUser(null)}
+          closeDisabled={Boolean(restoringUserId)}
           title="Restore Directory Record"
         >
           <div className="space-y-4">
@@ -2135,6 +2145,7 @@ export default function UserLedger() {
       <Modal
         isOpen={confirmBulkArchive}
         onClose={() => !bulkArchiveLoading && setConfirmBulkArchive(false)}
+        closeDisabled={bulkArchiveLoading}
         confirm
         title="Confirm bulk archive"
         footer={
@@ -2142,7 +2153,7 @@ export default function UserLedger() {
             <button
               onClick={() => setConfirmBulkArchive(false)}
               disabled={bulkArchiveLoading}
-              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:opacity-50"
+              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
             >
               Cancel
             </button>
@@ -2171,6 +2182,7 @@ export default function UserLedger() {
       <Modal
         isOpen={confirmBulkRestore}
         onClose={() => !bulkRestoreLoading && setConfirmBulkRestore(false)}
+        closeDisabled={bulkRestoreLoading}
         confirm
         title="Confirm bulk restore"
         footer={
@@ -2178,7 +2190,7 @@ export default function UserLedger() {
             <button
               onClick={() => setConfirmBulkRestore(false)}
               disabled={bulkRestoreLoading}
-              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:opacity-50"
+              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
             >
               Cancel
             </button>
@@ -2207,6 +2219,7 @@ export default function UserLedger() {
       <Modal
         isOpen={confirmBulkDelete}
         onClose={() => !bulkDeleteLoading && setConfirmBulkDelete(false)}
+        closeDisabled={bulkDeleteLoading}
         confirm
         title={deletingUserId ? "Delete permanently" : "Delete records permanently"}
         footer={
@@ -2214,7 +2227,7 @@ export default function UserLedger() {
             <button
               onClick={() => setConfirmBulkDelete(false)}
               disabled={bulkDeleteLoading}
-              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:opacity-50"
+              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
             >
               Cancel
             </button>

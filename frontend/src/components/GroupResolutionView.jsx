@@ -202,6 +202,34 @@ function resolvePrimaryLabel({ hasDirectory, action, submitting = false }) {
   return isRemove ? 'Remove from Directory' : 'Add to Directory';
 }
 
+function isDirectoryPersonArchived(person) {
+  return Boolean(
+    person?.archivedAt
+    || String(person?.status || '').toLowerCase() === 'removed'
+    || String(person?.outcome || '').toLowerCase() === 'removed',
+  );
+}
+
+/** Confirm copy for Add/Remove against an eligible active Directory record. */
+function directoryResolveScenario({ action }) {
+  if (action === 'Remove') {
+    return {
+      key: 'remove_active',
+      title: 'Archive and update Directory record?',
+      body: 'The selected Directory record will be moved to archive and updated with these values. No new Directory record will be created. Archived records are not changed.',
+      confirmLabel: 'Archive and Update Record',
+      submittingLabel: 'Archiving…',
+    };
+  }
+  return {
+    key: 'add_active',
+    title: 'Update Directory record?',
+    body: 'The selected Directory record will be updated with these values and will remain active. No duplicate Directory record will be created.',
+    confirmLabel: 'Update Directory Record',
+    submittingLabel: 'Updating…',
+  };
+}
+
 /* ─── main export ────────────────────────────────────────────────────────── */
 
 function safeNewRequestsBackPath(from) {
@@ -224,8 +252,8 @@ export default function GroupResolutionView({
   const requestsCacheKey = selectedPartnerId ? `${REQUESTS_PAGE_CACHE_KEY}:${selectedPartnerId}` : REQUESTS_PAGE_CACHE_KEY;
   const repMember = group.members.find((m) => m.isRepresentative) || group.members[0];
   // Prefer backend multi-match list; fall back to single directoryPerson / local directory.
-  // Active Directory list (`directory`) omits archived rows — never rely on it alone.
-  const directoryPersons = (() => {
+  // Only Added/Active rows are update/selection targets — archived matches are excluded.
+  const allDirectoryPersons = (() => {
     if (Array.isArray(group.directoryPersons) && group.directoryPersons.length > 0) {
       return group.directoryPersons;
     }
@@ -236,16 +264,22 @@ export default function GroupResolutionView({
         : null);
     return single ? [single] : [];
   })();
+  const directoryPersons = allDirectoryPersons.filter((p) => !isDirectoryPersonArchived(p));
   const dirPerson = directoryPersons[0] || null;
-  const hasDirectory = Boolean(
-    group.directoryPersonId || dirPerson?.id || directoryPersons.length > 0,
+  // Eligible active Directory target(s) for Add/Remove and Update.
+  const hasDirectory = directoryPersons.length > 0;
+  // Any Directory link (including archived-only) — Keep Existing still applies.
+  const hasDirectoryLink = Boolean(
+    group.directoryPersonId || allDirectoryPersons.length > 0 || hasDirectory,
   );
-  const isDirectoryArchived = (person) => Boolean(
-    person?.archivedAt
-    || String(person?.status || '').toLowerCase() === 'removed'
-    || String(person?.outcome || '').toLowerCase() === 'removed',
+  const directoryIsArchived = Boolean(
+    hasDirectoryLink
+    && !hasDirectory
+    && (
+      group.classification?.startsWith('already_removed')
+      || allDirectoryPersons.some(isDirectoryPersonArchived)
+    ),
   );
-  const directoryIsArchived = directoryPersons.some(isDirectoryArchived);
 
   const { selectedPartner, partners } = usePartners();
   const rawPartnerId = group?.partnerId || group?.partner_id || repMember?.partnerId || repMember?.partner_id;
@@ -296,7 +330,7 @@ export default function GroupResolutionView({
   const [mergePageOpen, setMergePageOpen] = useState(false);
 
   // Keep confirmation + merge-page values
-  // confirmAction: 'keep' | 'merge' | 'peers_merge' | 'add_as_new' | 'keep_and_archive' | 'nickname_check' | null
+  // confirmAction: 'keep' | 'merge' | 'peers_merge' | 'add_as_new' | 'keep_and_archive' | 'nickname_check' | 'select_directory' | null
   const [confirmAction, setConfirmAction] = useState(null);
   // Which resolve action opened Request History — history Merge resumes this modal.
   // pendingConfirmAction: 'keep' | 'merge' | 'add_as_new' | 'keep_and_archive' | null
@@ -306,6 +340,8 @@ export default function GroupResolutionView({
   const [mergeEditing, setMergeEditing] = useState(false);
   const [attachLookalikeOpen, setAttachLookalikeOpen] = useState(false);
   const [attachLookalikeId, setAttachLookalikeId] = useState(null);
+  // Explicit Directory target for Add/Remove-and-Update (never auto-picked after choose).
+  const [selectedDirectoryId, setSelectedDirectoryId] = useState(null);
 
   // When parent refreshes group detail (cache → network), sync members/form so
   // pills and history don't stay stuck on the stale cached snapshot.
@@ -372,9 +408,12 @@ export default function GroupResolutionView({
   const isFormValid = form.firstName.trim() && form.lastName.trim();
 
   const closeConfirmModal = () => {
-    if (submitting) return;
+    // Block dismiss while an action is in flight or final-values Edit is open
+    // (user must Save before Cancel / X).
+    if (submitting || mergeEditing) return;
     setConfirmAction(null);
     setMergeEditing(false);
+    setSelectedDirectoryId(null);
   };
 
   const incomingMemberCount = () =>
@@ -489,7 +528,7 @@ export default function GroupResolutionView({
 
   /* ── not the same as Directory — nickname check first, then history / confirm ── */
   const openAddAsNewConfirm = () => {
-    if (submitting || !hasDirectory) return;
+    if (submitting || !hasDirectoryLink) return;
     if (currentRep?.action === 'Remove') return;
     setModalValues({ ...form });
     setDraftForm({ ...form });
@@ -498,7 +537,7 @@ export default function GroupResolutionView({
 
   /* ── Remove false positive vs Directory — archive Remove request ── */
   const openKeepAndArchiveConfirm = () => {
-    if (submitting || !hasDirectory) return;
+    if (submitting || !hasDirectoryLink) return;
     if (currentRep?.action !== 'Remove') return;
     setModalValues({ ...form });
     setDraftForm({ ...form });
@@ -521,6 +560,13 @@ export default function GroupResolutionView({
     setMergePageOpen(true);
   };
 
+  const openDirectoryConfirm = (directoryId) => {
+    const id = directoryId || null;
+    if (!id && hasDirectory) return;
+    setSelectedDirectoryId(id);
+    setConfirmAction('merge');
+  };
+
   const openMergeConfirm = () => {
     if (!isFormValid || submitting) return;
     setModalValues({ ...form });
@@ -532,20 +578,43 @@ export default function GroupResolutionView({
       return;
     }
     setPendingConfirmAction(null);
+    if (hasDirectory && directoryPersons.length > 1) {
+      // Explicit choice required — never auto-select by age/id.
+      // Only active Directory records are listed.
+      setSelectedDirectoryId(null);
+      setConfirmAction('select_directory');
+      return;
+    }
+    if (hasDirectory && directoryPersons.length === 1) {
+      openDirectoryConfirm(directoryPersons[0].id);
+      return;
+    }
+    // No eligible active Directory target — normal new Add / Remove flow.
+    // Archived matches are never selected or restored here.
+    setSelectedDirectoryId(null);
     setConfirmAction('merge');
   };
 
   const handleConfirmMerge = async () => {
     const values = isEditing ? draftForm : (modalValues || form);
-    if (currentRep?.action === 'Remove') {
-      await handleResolveRemove(values);
+    if (hasDirectory) {
+      const targetId = selectedDirectoryId;
+      if (!targetId) {
+        onResolved('error', 'Select a Directory record before continuing.');
+        return;
+      }
+      if (currentRep?.action === 'Remove') {
+        await handleResolveRemove(values, targetId);
+        return;
+      }
+      await handleConfirmUpdate(values, targetId);
       return;
     }
-    if (hasDirectory) {
-      await handleConfirmUpdate(values);
-    } else {
-      await handleResolveAdd(values);
+    if (currentRep?.action === 'Remove') {
+      await handleResolveRemove(values, null);
+      return;
     }
+    await handleResolveAdd(values);
   };
 
   const returnToCurrentRequest = () => {
@@ -706,6 +775,24 @@ export default function GroupResolutionView({
       setConfirmAction('peers_merge');
       return;
     }
+    // Peers already consolidated (or only one request) after starting Add/Remove
+    // and Update: continue to Directory selection / status-aware confirm.
+    if (pendingConfirmAction === 'merge') {
+      setMergePageOpen(false);
+      setPendingConfirmAction(null);
+      if (hasDirectory && directoryPersons.length > 1) {
+        setSelectedDirectoryId(null);
+        setConfirmAction('select_directory');
+        return;
+      }
+      if (hasDirectory && directoryPersons.length === 1) {
+        openDirectoryConfirm(directoryPersons[0].id);
+        return;
+      }
+      setSelectedDirectoryId(null);
+      setConfirmAction('merge');
+      return;
+    }
     returnToCurrentRequest();
   };
 
@@ -776,13 +863,17 @@ export default function GroupResolutionView({
   })();
 
   /* ── resolve & remove (Grouped Remove) ── */
-  const handleResolveRemove = async (values = form) => {
+  const handleResolveRemove = async (values = form, directoryTargetId = selectedDirectoryId) => {
     if (!values.firstName.trim() || !values.lastName.trim() || submitting) return;
     setSubmitting(true);
     try {
       if (hasDirectory) {
+        const targetId = directoryTargetId || selectedDirectoryId;
+        if (!targetId) {
+          throw new Error('Select a Directory record before continuing.');
+        }
         await resolveGroupDeleteFromDirectory(group.id, {
-          directoryPersonId: group.directoryPersonId,
+          directoryPersonId: targetId,
           finalValues: {
             firstName: values.firstName.trim(),
             lastName: values.lastName.trim(),
@@ -851,7 +942,7 @@ export default function GroupResolutionView({
   /* ── not same as Directory — add as new (Case A2) ── */
   const handleAddAsNew = async (values = form) => {
     if (!values.firstName.trim() || !values.lastName.trim() || submitting) return;
-    if (!hasDirectory) return;
+    if (!hasDirectoryLink) return;
     setSubmitting(true);
     try {
       await resolveGroupAddAsNew(group.id, {
@@ -880,7 +971,7 @@ export default function GroupResolutionView({
   /* ── Remove false positive — keep Directory, archive Remove request ── */
   const handleKeepAndArchive = async (values = form) => {
     if (!values.firstName.trim() || !values.lastName.trim() || submitting) return;
-    if (!hasDirectory || currentRep?.action !== 'Remove') return;
+    if (!hasDirectoryLink || currentRep?.action !== 'Remove') return;
     setSubmitting(true);
     try {
       await resolveGroupKeepExistingAndArchive(group.id, {
@@ -907,13 +998,18 @@ export default function GroupResolutionView({
   };
 
   /* ── resolve & update (Case B) ── */
-  const handleConfirmUpdate = async (values = form) => {
+  const handleConfirmUpdate = async (values = form, directoryTargetId = selectedDirectoryId) => {
     if (submitting) return;
     if (!values.firstName.trim() || !values.lastName.trim()) return;
+    const targetId = directoryTargetId || selectedDirectoryId;
+    if (!targetId) {
+      onResolved('error', 'Select a Directory record before continuing.');
+      return;
+    }
     setSubmitting(true);
     try {
       await resolveGroupUpdate(group.id, {
-        directoryPersonId: group.directoryPersonId,
+        directoryPersonId: targetId,
         finalValues: {
           firstName: values.firstName.trim(),
           lastName: values.lastName.trim(),
@@ -1062,7 +1158,7 @@ export default function GroupResolutionView({
       setSessionUnlinkedIds(nextUnlinked);
       setDeleteTarget(null);
       setDeleteImpact(null);
-      if (nextMembers.length === 0 || (nextMembers.length === 1 && !hasDirectory)) {
+      if (nextMembers.length === 0 || (nextMembers.length === 1 && !hasDirectoryLink)) {
         onResolved('member_deleted_done', personFullName(member.person));
       } else {
         onResolved('member_deleted', personFullName(member.person));
@@ -1097,7 +1193,7 @@ export default function GroupResolutionView({
         delete next[member.id];
         return next;
       });
-      if (nextMembers.length === 0 || (nextMembers.length === 1 && !hasDirectory)) {
+      if (nextMembers.length === 0 || (nextMembers.length === 1 && !hasDirectoryLink)) {
         onResolved('unlinked_handled_done', personFullName(member.person));
       } else {
         onResolved('unlinked_handled', personFullName(member.person));
@@ -1252,14 +1348,14 @@ export default function GroupResolutionView({
               ));
             }
             // Solo peer history: do not fall back to stale Duplicate / Potential labels.
-            if (peerCount <= 1 && !hasDirectory) return null;
-            if (peerCount <= 1 && hasDirectory) {
-              // Prefer explicit group classification; archived Directory → Already Removed.
+            if (peerCount <= 1 && !hasDirectoryLink) return null;
+            if (peerCount <= 1 && hasDirectoryLink) {
+              // Prefer explicit group classification; archived-only link → Already Removed.
               // Keep Potential Duplicate visible when that is the live classification.
               if (group.classification === 'potential_duplicate') {
                 const pills = [
                   classificationTag('potential_duplicate'),
-                  classificationTag(directoryIsArchived ? 'already_removed' : 'already_exists'),
+                  classificationTag(directoryIsArchived || !hasDirectory ? 'already_removed' : 'already_exists'),
                 ];
                 return pills.map((pill) => (
                   <Tag key={pill.label} variant={pill.variant} label={pill.label} />
@@ -1267,6 +1363,7 @@ export default function GroupResolutionView({
               }
               const dirClass = group.classification?.startsWith('already_removed')
                 || directoryIsArchived
+                || !hasDirectory
                 ? (group.classification?.startsWith('already_removed')
                   ? group.classification
                   : 'already_removed')
@@ -1570,7 +1667,7 @@ export default function GroupResolutionView({
           {canStillMerge ? (
             <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
               {/* Keep Existing only after peers are detached down to one new request */}
-              {hasDirectory && incomingMemberCount() === 1 ? (
+              {hasDirectoryLink && incomingMemberCount() === 1 ? (
                 <button
                   type="button"
                   disabled={submitting}
@@ -1580,7 +1677,7 @@ export default function GroupResolutionView({
                   Keep Existing and Delete New Request
                 </button>
               ) : null}
-              {hasDirectory && incomingMemberCount() === 1 && currentRep?.action !== 'Remove' ? (
+              {hasDirectoryLink && incomingMemberCount() === 1 && currentRep?.action !== 'Remove' ? (
                 <button
                   type="button"
                   disabled={!isFormValid || submitting || isEditing}
@@ -1590,7 +1687,7 @@ export default function GroupResolutionView({
                   Keep Existing and Add New
                 </button>
               ) : null}
-              {hasDirectory && incomingMemberCount() === 1 && currentRep?.action === 'Remove' ? (
+              {hasDirectoryLink && incomingMemberCount() === 1 && currentRep?.action === 'Remove' ? (
                 <button
                   type="button"
                   disabled={!isFormValid || submitting || isEditing}
@@ -1620,7 +1717,7 @@ export default function GroupResolutionView({
         </SectionCard>
       ) : (
         <>
-      {/* ── Section A: Current Directory Record(s) ── */}
+      {/* ── Section A: Current Directory Record(s) — active matches only ── */}
       {hasDirectory && (
         <div
           className={
@@ -1629,32 +1726,16 @@ export default function GroupResolutionView({
               : undefined
           }
         >
-          {directoryPersons.length > 0 ? (
-            directoryPersons.map((person, index) => {
-              const archived = isDirectoryArchived(person);
-              const recordTitle = directoryPersons.length > 1
-                ? (archived
-                  ? `Archived Directory Record ${index + 1}`
-                  : `Current Directory Record ${index + 1}`)
-                : (archived ? 'Archived Directory Record' : 'Current Directory Record');
-              return (
+          {directoryPersons.map((person, index) => (
               <SectionCard
                 key={person.id || `dir-${index}`}
                 icon={Database}
-                title={recordTitle}
+                title={
+                  directoryPersons.length > 1
+                    ? `Current Directory Record ${index + 1}`
+                    : 'Current Directory Record'
+                }
               >
-                <div className="mb-3 flex flex-wrap items-center gap-2">
-                  <Tag
-                    variant={archived ? 'already-removed' : 'already-exists'}
-                    label={archived ? 'Archived' : 'Active'}
-                  />
-                  {person.status ? (
-                    <Tag
-                      variant={String(person.status).toLowerCase() === 'removed' ? 'remove-action' : 'add-action'}
-                      label={person.status}
-                    />
-                  ) : null}
-                </div>
                 <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-x-8">
                   <MetaItem label="First Name" value={person.firstName} />
                   <MetaItem label="Last Name" value={person.lastName} />
@@ -1686,8 +1767,8 @@ export default function GroupResolutionView({
                   <p className="mt-4 text-xs leading-relaxed text-[var(--color-text-muted)]">
                     {directoryPersons.length > 1 ? (
                       <>
-                        These are existing Directory records that also match this request.
-                        Review each record before resolving.
+                        These are existing active Directory records that also match this request.
+                        Choose which record to update when resolving. Archived matches are not listed.
                       </>
                     ) : currentRep?.action === 'Remove' ? (
                       <>
@@ -1698,16 +1779,6 @@ export default function GroupResolutionView({
                         {' '}archives the Remove request without changing Directory.{' '}
                         <span className="font-semibold text-[var(--color-text-secondary)]">Remove and Update</span>
                         {' '}marks this Directory person as removed.
-                      </>
-                    ) : archived ? (
-                      <>
-                        This person is in the archived Directory.{' '}
-                        <span className="font-semibold text-[var(--color-text-secondary)]">Keep Existing and Delete</span>
-                        {' '}removes the new request and leaves the archive unchanged.{' '}
-                        <span className="font-semibold text-[var(--color-text-secondary)]">Keep Existing and Add New</span>
-                        {' '}creates a separate active Directory person.{' '}
-                        <span className="font-semibold text-[var(--color-text-secondary)]">Add and Update</span>
-                        {' '}restores this record to the active Directory and updates it.
                       </>
                     ) : (
                       <>
@@ -1723,18 +1794,7 @@ export default function GroupResolutionView({
                   </p>
                 ) : null}
               </SectionCard>
-              );
-            })
-          ) : (
-            <SectionCard
-              icon={Database}
-              title={directoryIsArchived ? 'Archived Directory Record' : 'Current Directory Record'}
-            >
-              <p className="text-sm text-[var(--color-text-muted)] italic">
-                Directory record details not available locally. Values shown in the confirmation step.
-              </p>
-            </SectionCard>
-          )}
+          ))}
         </div>
       )}
 
@@ -1795,7 +1855,7 @@ export default function GroupResolutionView({
 
             {canStillMerge ? (
               <div className="flex flex-wrap items-center justify-end gap-3 ml-auto">
-                {hasDirectory && (
+                {hasDirectoryLink && (
                   <button
                     type="button"
                     disabled={submitting}
@@ -1805,7 +1865,7 @@ export default function GroupResolutionView({
                     Keep Existing and Delete New Request{members.length > 1 ? 's' : ''}
                   </button>
                 )}
-                {hasDirectory && currentRep?.action !== 'Remove' ? (
+                {hasDirectoryLink && currentRep?.action !== 'Remove' ? (
                   <button
                     type="button"
                     disabled={!isFormValid || submitting || isEditing}
@@ -1815,7 +1875,7 @@ export default function GroupResolutionView({
                     Keep Existing and Add New
                   </button>
                 ) : null}
-                {hasDirectory && currentRep?.action === 'Remove' ? (
+                {hasDirectoryLink && currentRep?.action === 'Remove' ? (
                   <button
                     type="button"
                     disabled={!isFormValid || submitting || isEditing}
@@ -1915,16 +1975,12 @@ export default function GroupResolutionView({
         </>
       )}
 
-      {/* ── Directory resolve OR peer consolidate confirmation ── */}
+      {/* ── Multi-match Directory selection (explicit; no default) ── */}
       <Modal
-        isOpen={confirmAction === 'merge' || confirmAction === 'peers_merge'}
+        isOpen={confirmAction === 'select_directory'}
         onClose={closeConfirmModal}
         closeDisabled={submitting}
-        title={
-          confirmAction === 'peers_merge'
-            ? 'Merge requests?'
-            : `${resolvePrimaryLabel({ hasDirectory, action: currentRep?.action })}?`
-        }
+        title="Choose which Directory record to update"
         footer={
           <>
             <button
@@ -1937,22 +1993,102 @@ export default function GroupResolutionView({
             </button>
             <button
               type="button"
+              disabled={submitting || !selectedDirectoryId}
+              onClick={() => openDirectoryConfirm(selectedDirectoryId)}
+              className="px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              Continue
+            </button>
+          </>
+        }
+      >
+        <p className="text-sm text-[var(--color-text-secondary)]">
+          More than one active Directory record matches this request. Select exactly one record to
+          {' '}{currentRep?.action === 'Remove' ? 'archive and update' : 'update'}
+          . Archived Directory records and historical requests are not listed here.
+        </p>
+        <fieldset className="mt-4 space-y-2">
+          <legend className="sr-only">Matching active Directory records</legend>
+          {directoryPersons.map((person) => {
+            const id = person.id;
+            const checked = selectedDirectoryId === id;
+            const name = [person.firstName, person.lastName].filter(Boolean).join(' ').trim() || 'Unknown';
+            return (
+              <label
+                key={id || name}
+                className={`flex cursor-pointer items-start gap-3 rounded-lg border px-3.5 py-3 transition-colors ${
+                  checked
+                    ? 'border-[var(--color-brand-primary)] bg-[var(--color-surface-highlight)]'
+                    : 'border-[var(--color-border-default)] bg-white hover:bg-[var(--color-surface-bg)]'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="directory-target"
+                  className="mt-1"
+                  checked={checked}
+                  disabled={submitting || !id}
+                  onChange={() => id && setSelectedDirectoryId(id)}
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="text-sm font-semibold text-[var(--color-text-primary)]">{name}</span>
+                  <span className="mt-1 block text-xs text-[var(--color-text-secondary)]">
+                    {(person.email || 'No email')}
+                    {' · '}
+                    {((person.location || '').trim() || 'No location')}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
+        </fieldset>
+      </Modal>
+
+      {/* ── Directory resolve OR peer consolidate confirmation ── */}
+      {(() => {
+        const selectedDirPerson =
+          directoryPersons.find((p) => p.id === selectedDirectoryId)
+          || (selectedDirectoryId ? dirPerson : null);
+        const dirScenario = hasDirectory && confirmAction === 'merge'
+          ? directoryResolveScenario({ action: currentRep?.action })
+          : null;
+        return (
+      <Modal
+        isOpen={confirmAction === 'merge' || confirmAction === 'peers_merge'}
+        onClose={closeConfirmModal}
+        closeDisabled={submitting || mergeEditing}
+        title={
+          confirmAction === 'peers_merge'
+            ? 'Merge requests?'
+            : (dirScenario?.title || `${resolvePrimaryLabel({ hasDirectory, action: currentRep?.action })}?`)
+        }
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={closeConfirmModal}
+              disabled={submitting || mergeEditing}
+              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
               disabled={
                 submitting
                 || !(mergeEditing ? draftForm : form).firstName.trim()
                 || !(mergeEditing ? draftForm : form).lastName.trim()
                 || mergeEditing
+                || (hasDirectory && confirmAction === 'merge' && !selectedDirectoryId)
               }
               onClick={confirmAction === 'peers_merge' ? handleConfirmPeersMerge : handleConfirmMerge}
               className="px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
             >
               {confirmAction === 'peers_merge'
                 ? (submitting ? 'Merging…' : 'Merge')
-                : resolvePrimaryLabel({
-                    hasDirectory,
-                    action: currentRep?.action,
-                    submitting,
-                  })}
+                : (submitting
+                  ? (dirScenario?.submittingLabel || resolvePrimaryLabel({ hasDirectory, action: currentRep?.action, submitting: true }))
+                  : (dirScenario?.confirmLabel || resolvePrimaryLabel({ hasDirectory, action: currentRep?.action })))}
             </button>
           </>
         }
@@ -1960,18 +2096,20 @@ export default function GroupResolutionView({
         <p className="text-sm text-[var(--color-text-secondary)]">
           {confirmAction === 'peers_merge'
             ? `These ${incomingMemberCount()} new requests will be merged into the person below, and the older versions will be removed. Directory stays unchanged for now. After this, choose Keep Existing or ${resolvePrimaryLabel({ hasDirectory, action: currentRep?.action })} on the current request.`
-            : currentRep?.action === 'Remove'
-            ? (hasDirectory
-                ? 'The final resolved values will be applied, and this Directory record will be moved to archive. The requests in this group will be closed.'
-                : 'The final resolved values will be used, and the person will be marked as removed in the Directory. The requests in this group will be closed.')
             : hasDirectory
-            ? (
-                (dirPerson?.archivedAt || String(dirPerson?.status || '').toLowerCase() === 'removed')
-                  ? 'The final resolved values will overwrite this archived Directory record and restore it to the active Directory. The requests in this group will be closed.'
-                  : 'The final resolved values will overwrite the existing Directory record, and the requests in this group will be closed.'
-              )
+            ? (dirScenario?.body || 'The selected Directory record will be updated, and the requests in this group will be closed.')
+            : currentRep?.action === 'Remove'
+            ? 'The final resolved values will be used, and the person will be marked as removed in the Directory. The requests in this group will be closed.'
             : 'A new Directory record will be created from the final resolved values, and the requests in this group will be closed.'}
         </p>
+        {hasDirectory && selectedDirPerson && confirmAction === 'merge' ? (
+          <div className="mt-3 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-surface-bg)]/60 px-3.5 py-2.5 text-xs text-[var(--color-text-secondary)]">
+            <span className="font-semibold text-[var(--color-text-primary)]">Selected record: </span>
+            {[selectedDirPerson.firstName, selectedDirPerson.lastName].filter(Boolean).join(' ') || 'Unknown'}
+            {' · '}
+            {selectedDirPerson.email || 'No email'}
+          </div>
+        ) : null}
 
         <div className="mt-4 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-surface-bg)]/60 p-3.5">
           <div className="mb-3 flex items-center justify-between gap-3">
@@ -2113,11 +2251,14 @@ export default function GroupResolutionView({
           />
         </label>
       </Modal>
+        );
+      })()}
 
       {/* ── First-name check (before Keep / Add New when names differ) ── */}
       <Modal
         isOpen={confirmAction === 'nickname_check'}
         onClose={closeConfirmModal}
+        closeDisabled={submitting}
         title={
           nicknameCheckPair()?.isNickname
             ? 'Is this the right nickname?'
@@ -2128,14 +2269,16 @@ export default function GroupResolutionView({
             <button
               type="button"
               onClick={continueAfterNicknameNo}
-              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer"
+              disabled={submitting}
+              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
             >
               No, different people
             </button>
             <button
               type="button"
               onClick={continueAfterNicknameYes}
-              className="px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer"
+              disabled={submitting}
+              className="px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer disabled:opacity-60"
             >
               Yes, same person
             </button>
@@ -2182,13 +2325,15 @@ export default function GroupResolutionView({
       <Modal
         isOpen={confirmAction === 'keep'}
         onClose={closeConfirmModal}
+        closeDisabled={submitting}
         title={incomingMemberCount() > 1 ? "Keep existing and delete new requests?" : "Keep existing and delete new request?"}
         footer={
           <>
             <button
               type="button"
               onClick={closeConfirmModal}
-              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer"
+              disabled={submitting}
+              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
             >
               Cancel
             </button>
@@ -2204,7 +2349,7 @@ export default function GroupResolutionView({
         }
       >
         <p className="text-sm text-[var(--color-text-secondary)]">
-          {hasDirectory
+          {hasDirectoryLink
             ? (incomingMemberCount() > 1
                 ? `The existing Directory record will remain unchanged. All ${incomingMemberCount()} incoming requests in this group will be deleted, and no Directory changes will be made.`
                 : 'The Directory record will stay unchanged. The incoming request will be closed without writing new values.')
@@ -2216,13 +2361,15 @@ export default function GroupResolutionView({
       <Modal
         isOpen={confirmAction === 'add_as_new'}
         onClose={closeConfirmModal}
+        closeDisabled={submitting}
         title="Keep existing and add new?"
         footer={
           <>
             <button
               type="button"
               onClick={closeConfirmModal}
-              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer"
+              disabled={submitting}
+              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
             >
               Cancel
             </button>
@@ -2269,13 +2416,15 @@ export default function GroupResolutionView({
       <Modal
         isOpen={confirmAction === 'keep_and_archive'}
         onClose={closeConfirmModal}
+        closeDisabled={submitting || mergeEditing}
         title="Keep existing and archive?"
         footer={
           <>
             <button
               type="button"
               onClick={closeConfirmModal}
-              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer"
+              disabled={submitting || mergeEditing}
+              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
             >
               Cancel
             </button>
@@ -2307,7 +2456,8 @@ export default function GroupResolutionView({
               <button
                 type="button"
                 onClick={startMergeEdit}
-                className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-white px-2.5 py-1 text-xs font-semibold text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-panel)] hover:text-[var(--color-brand-primary)] cursor-pointer"
+                disabled={submitting}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-white px-2.5 py-1 text-xs font-semibold text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-panel)] hover:text-[var(--color-brand-primary)] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
                 Edit
@@ -2316,7 +2466,7 @@ export default function GroupResolutionView({
               <button
                 type="button"
                 onClick={saveMergeEdit}
-                disabled={!draftForm.firstName.trim() || !draftForm.lastName.trim()}
+                disabled={submitting || !draftForm.firstName.trim() || !draftForm.lastName.trim()}
                 className="inline-flex items-center gap-1.5 rounded-md bg-[var(--color-brand-primary)] px-2.5 py-1 text-xs font-semibold text-white transition-colors hover:bg-[var(--color-surface-sidebar-hover)] disabled:opacity-60 cursor-pointer"
               >
                 <Check className="h-3.5 w-3.5" aria-hidden="true" />
@@ -2509,12 +2659,12 @@ export default function GroupResolutionView({
       <Modal
         isOpen={!!unlinkTargetId}
         onClose={() => {
-          if (submitting) return;
+          if (submitting || unlinkEditing) return;
           setUnlinkTargetId(null);
           setUnlinkStep(null);
           setUnlinkActionType(null);
         }}
-        closeDisabled={submitting}
+        closeDisabled={submitting || unlinkEditing}
         confirm
         title={unlinkStep === 'review' ? "Separate Request" : "Confirm Action"}
         footer={
@@ -2555,7 +2705,7 @@ export default function GroupResolutionView({
                 type="button"
                 disabled={submitting}
                 onClick={() => setUnlinkStep('review')}
-                className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:opacity-60"
+                className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Back
               </button>
@@ -2599,11 +2749,13 @@ export default function GroupResolutionView({
                     {!unlinkEditing ? (
                       <button
                         type="button"
+                        disabled={submitting}
                         onClick={() => {
+                          if (submitting) return;
                           setUnlinkDraft(unlinkForm);
                           setUnlinkEditing(true);
                         }}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-white px-2.5 py-1 text-xs font-semibold text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-panel)] hover:text-[var(--color-brand-primary)] cursor-pointer"
+                        className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-white px-2.5 py-1 text-xs font-semibold text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-panel)] hover:text-[var(--color-brand-primary)] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
                         Edit
@@ -2612,12 +2764,13 @@ export default function GroupResolutionView({
                       <button
                         type="button"
                         onClick={() => {
+                          if (submitting) return;
                           if (!unlinkDraft.firstName.trim() || !unlinkDraft.lastName.trim()) return;
                           setUnlinkForm(unlinkDraft);
                           setUnlinkEditing(false);
                         }}
-                        disabled={!unlinkDraft.firstName.trim() || !unlinkDraft.lastName.trim()}
-                        className="inline-flex items-center gap-1.5 rounded-md bg-[var(--color-brand-primary)] px-2.5 py-1 text-xs font-semibold text-white transition-colors hover:bg-[var(--color-surface-sidebar-hover)] disabled:opacity-60 cursor-pointer"
+                        disabled={submitting || !unlinkDraft.firstName.trim() || !unlinkDraft.lastName.trim()}
+                        className="inline-flex items-center gap-1.5 rounded-md bg-[var(--color-brand-primary)] px-2.5 py-1 text-xs font-semibold text-white transition-colors hover:bg-[var(--color-surface-sidebar-hover)] disabled:cursor-not-allowed disabled:opacity-60 cursor-pointer"
                       >
                         <Check className="h-3.5 w-3.5" aria-hidden="true" />
                         Save
@@ -2744,19 +2897,23 @@ export default function GroupResolutionView({
       <Modal
         isOpen={!!deleteTarget}
         onClose={() => {
+          if (submitting) return;
           setDeleteTarget(null);
           setDeleteImpact(null);
         }}
+        closeDisabled={submitting}
         title="Delete request"
         footer={
           <>
             <button
               type="button"
+              disabled={submitting}
               onClick={() => {
+                if (submitting) return;
                 setDeleteTarget(null);
                 setDeleteImpact(null);
               }}
-              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer"
+              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
             >
               Cancel
             </button>
@@ -2789,15 +2946,23 @@ export default function GroupResolutionView({
       {/* ── Mark unlinked request handled ── */}
       <Modal
         isOpen={!!markUnlinkedTarget}
-        onClose={() => setMarkUnlinkedTarget(null)}
+        onClose={() => {
+          if (submitting) return;
+          setMarkUnlinkedTarget(null);
+        }}
+        closeDisabled={submitting}
         confirm
         title="Confirm action"
         footer={
           <>
             <button
               type="button"
-              onClick={() => setMarkUnlinkedTarget(null)}
-              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer"
+              disabled={submitting}
+              onClick={() => {
+                if (submitting) return;
+                setMarkUnlinkedTarget(null);
+              }}
+              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
             >
               Cancel
             </button>

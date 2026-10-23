@@ -2,7 +2,7 @@
 
 Covers:
 1. Remove request + active Directory → archive + update (via delete-from-directory UI path).
-2. Add request + archived/Removed Directory → restore to active + update (resolve-update).
+2. Add request + archived/Removed Directory → new active Directory record; archive unchanged.
 """
 
 from __future__ import annotations
@@ -25,8 +25,10 @@ from app.duplicate_group_service import (
     _new_group_id,
     _sync_group_representative_and_tags,
     compute_group_classification_summary,
+    eligible_directory_person_ids_for_group,
     find_all_directory_matches_for_requests,
     process_request_grouping,
+    resolve_group_add,
     resolve_group_delete_from_directory,
     resolve_group_update,
 )
@@ -243,8 +245,8 @@ class TestJdGymsDirectoryStatusTransitions:
         assert any(r.id == active.id for r in archived)
         assert db.query(models.ManagerRequest).filter_by(id=remove_req.id).first() is None
 
-    def test_add_request_restores_archived_directory_and_updates_fields(self, db: Session):
-        """Add + archived/Removed Directory → restore to active + field update."""
+    def test_add_request_against_archived_creates_new_active_record(self, db: Session):
+        """Add + archived/Removed Directory → new active record; archive unchanged."""
         now = datetime.now(timezone.utc)
         partner = _jd_partner(db)
         assert partner.name == "JD Gyms"
@@ -280,13 +282,30 @@ class TestJdGymsDirectoryStatusTransitions:
             classification="already_removed",
         )
 
+        assert eligible_directory_person_ids_for_group(db, group) == set()
         before_ledger = directory_ledger_rows(db, partner_id=partner.id, limit=50)
         assert not any(r.id == archived.id for r in before_ledger)
+        before_loc = archived.person_location
+        before_hist = list(get_lifecycle_history(archived))
 
-        updated = resolve_group_update(
+        with pytest.raises(ValueError, match="Archived"):
+            resolve_group_update(
+                db,
+                group,
+                archived,
+                final_values=schemas.PersonInfo(
+                    firstName="Casey",
+                    lastName="Nguyen",
+                    email="casey.nguyen@jdgyms.co.uk",
+                    location="Sheffield",
+                ),
+                admin_id="dev-bypass",
+                source_request_id=add_req.id,
+            )
+
+        created = resolve_group_add(
             db,
             group,
-            archived,
             final_values=schemas.PersonInfo(
                 firstName="Casey",
                 lastName="Nguyen",
@@ -299,24 +318,22 @@ class TestJdGymsDirectoryStatusTransitions:
         db.flush()
         db.refresh(archived)
 
-        assert updated.id == archived.id
-        assert archived.person_location == "Sheffield"
-        assert archived.outcome == "Added"
-        assert archived.action == "Add"
-        assert archived.archived_at is None
+        assert created.id != archived.id
+        assert created.outcome == "Added"
+        assert created.archived_at is None
+        assert created.person_location == "Sheffield"
+        assert archived.person_location == before_loc
+        assert archived.outcome == "Removed"
+        assert archived.archived_at is not None
+        assert get_lifecycle_history(archived) == before_hist
         assert group.status == "resolved"
 
         after_ledger = directory_ledger_rows(db, partner_id=partner.id, limit=50)
-        assert any(r.id == archived.id for r in after_ledger)
-        history = get_lifecycle_history(archived)
-        assert any(
-            e.get("title") == "Restored to active" and e.get("outcome") == "Added"
-            for e in history
-        )
-        assert db.query(models.ManagerRequest).filter_by(id=add_req.id).first() is None
+        assert any(r.id == created.id for r in after_ledger)
+        assert not any(r.id == archived.id for r in after_ledger)
 
-    def test_add_request_restores_manually_archived_added_row(self, db: Session):
-        """Add against a row that was only archived_at (outcome still Added) restores it."""
+    def test_add_request_against_manually_archived_creates_new_active_record(self, db: Session):
+        """Add against archived_at-only row (outcome still Added) creates a new active record."""
         now = datetime.now(timezone.utc)
         partner = _jd_partner(db)
 
@@ -349,10 +366,12 @@ class TestJdGymsDirectoryStatusTransitions:
             members=[add_req],
         )
 
-        resolve_group_update(
+        assert eligible_directory_person_ids_for_group(db, group) == set()
+        before_arch = archived.archived_at
+
+        created = resolve_group_add(
             db,
             group,
-            archived,
             final_values=schemas.PersonInfo(
                 firstName="Riley",
                 lastName="Owen",
@@ -365,10 +384,14 @@ class TestJdGymsDirectoryStatusTransitions:
         db.flush()
         db.refresh(archived)
 
-        assert archived.archived_at is None
-        assert archived.outcome == "Added"
-        assert archived.person_location == "Manchester"
-        assert any(r.id == archived.id for r in directory_ledger_rows(db, partner_id=partner.id, limit=50))
+        assert created.id != archived.id
+        assert created.person_location == "Manchester"
+        assert created.archived_at is None
+        assert archived.archived_at is not None
+        assert archived.archived_at.replace(tzinfo=None) == before_arch.replace(tzinfo=None)
+        assert archived.person_location == "Liverpool"
+        assert any(r.id == created.id for r in directory_ledger_rows(db, partner_id=partner.id, limit=50))
+        assert not any(r.id == archived.id for r in directory_ledger_rows(db, partner_id=partner.id, limit=50))
 
     def test_add_against_active_directory_stays_active(self, db: Session):
         """Add + active Directory still updates in place without status churn."""

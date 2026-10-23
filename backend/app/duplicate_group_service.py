@@ -301,6 +301,94 @@ def find_all_directory_matches_for_requests(
     )
 
 
+def eligible_directory_person_ids_for_group(
+    db: Session,
+    group: models.DuplicateGroup,
+    *,
+    members: Optional[List[models.ManagerRequest]] = None,
+    dismissed_set: Optional[Set[Tuple[str, str]]] = None,
+) -> Set[str]:
+    """IDs an admin may explicitly select for Add/Remove-and-Update on this group.
+
+    Only Added/Active (on-roster) Directory rows are eligible. Archived/Removed
+    matches are never selectable — an incoming Add against archived must use the
+    normal new-Add path instead of updating/restoring the archive.
+
+    Candidates come from the stored primary, persisted multi-match ids, and a live
+    re-scan of Directory matches for current open members.
+    """
+    ids: Set[str] = set()
+    if group.directory_person_id:
+        ids.add(group.directory_person_id)
+    meta = group.resolution_metadata if isinstance(group.resolution_metadata, dict) else {}
+    for mid in meta.get("matched_directory_person_ids") or []:
+        if mid:
+            ids.add(str(mid))
+    if members is None:
+        members = get_group_members(db, group.id)
+    if dismissed_set is None:
+        dismissed_set = get_all_dismissed_pairs(db)
+    for row in find_all_directory_matches_for_requests(
+        db, members, dismissed_set=dismissed_set
+    ):
+        if row.id:
+            ids.add(row.id)
+    if not ids:
+        return set()
+    rows = (
+        db.query(models.ManagerRequest)
+        .filter(models.ManagerRequest.id.in_(list(ids)))
+        .all()
+    )
+    return {
+        row.id
+        for row in rows
+        if row.id
+        and row.status == "handled"
+        and (row.outcome or "") == "Added"
+        and not _directory_is_off_roster(row)
+    }
+
+
+def load_eligible_directory_person(
+    db: Session,
+    group: models.DuplicateGroup,
+    directory_person_id: str,
+    *,
+    members: Optional[List[models.ManagerRequest]] = None,
+) -> models.ManagerRequest:
+    """Load *directory_person_id* if it is still an eligible active Directory match.
+
+    Raises ValueError with a stable message when the id is missing, archived/
+    Removed, or no longer eligible for this group's members.
+    """
+    if not directory_person_id:
+        raise ValueError("directoryPersonId is required.")
+    eligible = eligible_directory_person_ids_for_group(db, group, members=members)
+    if directory_person_id not in eligible:
+        raise ValueError(
+            "That Directory record is no longer eligible for this request. "
+            "Archived or removed records cannot be selected. "
+            "Refresh the page and choose again."
+        )
+    dir_person = (
+        db.query(models.ManagerRequest)
+        .filter(models.ManagerRequest.id == directory_person_id)
+        .first()
+    )
+    if not dir_person or dir_person.status != "handled":
+        raise ValueError(
+            "That Directory record is no longer available. "
+            "Refresh the page and choose again."
+        )
+    if _directory_is_off_roster(dir_person) or (dir_person.outcome or "") != "Added":
+        raise ValueError(
+            "Archived or removed Directory records cannot be updated or restored "
+            "by an incoming request. Use Add to Directory to create a new active record."
+        )
+    return dir_person
+
+
 def is_request_dismissed_from_group(db: Session, request_id: str, group_id: str) -> bool:
     """True if request_id has been explicitly dismissed from group_id."""
     if not request_id or not group_id:
@@ -2465,15 +2553,18 @@ def resolve_group_update(
     admin_note: Optional[str] = None,
     source_request_id: Optional[str] = None,
 ) -> models.ManagerRequest:
-    """Update the existing Directory record in-place with final_values; resolve group and permanently delete incoming requests.
+    """Update an eligible active Directory record in-place; resolve group and delete incoming requests.
 
     Status transitions (alongside the field update):
     - Incoming Remove → archive the Directory row (active → archive).
-    - Incoming Add against an archived/Removed Directory → restore to active.
+    - Incoming Add → update fields; remain active.
+
+    Archived/Removed Directory rows are never updated or restored here — callers
+    must use resolve_group_add (normal new Add) when only archived matches exist.
 
     Invariants:
-    - group.directory_person_id must equal directory_person.id (caller verifies).
-    - Updates directory_person in-place.
+    - Caller must pass an eligible active Directory match (see load_eligible_directory_person).
+    - Updates directory_person in-place (selected id, not a silent primary fallback).
     - Permanently deletes all incoming member requests in the group.
     - Does NOT call db.commit() — router commits.
 
@@ -2481,6 +2572,12 @@ def resolve_group_update(
     """
     _validate_final_values(final_values)
     now = datetime.now(timezone.utc)
+
+    if _directory_is_off_roster(directory_person) or (directory_person.outcome or "") != "Added":
+        raise ValueError(
+            "Archived or removed Directory records cannot be updated or restored "
+            "by an incoming request. Use Add to Directory to create a new active record."
+        )
     
     members = get_group_members(db, group.id)
     from app.user_display import hydrate_request_users
@@ -2497,12 +2594,6 @@ def resolve_group_update(
         role=getattr(directory_person, "role", None),
         directorFirst=prev_dir.get("firstName") or None,
         directorLast=prev_dir.get("lastName") or None,
-    )
-
-    # Capture roster state before mutating fields / status.
-    was_archived = (
-        directory_person.archived_at is not None
-        or (directory_person.outcome or "") == "Removed"
     )
 
     # Update the Directory row in-place.
@@ -2535,10 +2626,9 @@ def resolve_group_update(
     )
     source_action = (manager_source.action if manager_source else None) or "Add"
 
-    # Status-aware Directory transition alongside the field update:
-    # - Remove request + active Directory → archive (active → archive)
-    # - Add request + archived/Removed Directory → restore (archive → active)
-    # - Add + active / Remove + already archived → update fields; keep status
+    # Active Directory only:
+    # - Remove request → archive + update fields
+    # - Add request → update fields; stay active
     history_title = "Directory record updated"
     if source_action == "Remove":
         directory_person.action = "Remove"
@@ -2548,16 +2638,7 @@ def resolve_group_update(
         if TAG_REMOVED not in (directory_person.tags or []):
             directory_person.tags = list(directory_person.tags or []) + [TAG_REMOVED]
             flag_modified(directory_person, "tags")
-        history_title = "Moved to archive" if not was_archived else "Directory record updated"
-    elif was_archived:
-        directory_person.action = "Add"
-        directory_person.outcome = "Added"
-        directory_person.handled_at = now
-        directory_person.archived_at = None
-        if TAG_REMOVED in (directory_person.tags or []):
-            directory_person.tags = [t for t in (directory_person.tags or []) if t != TAG_REMOVED]
-            flag_modified(directory_person, "tags")
-        history_title = "Restored to active"
+        history_title = "Moved to archive"
 
     snapshot_events = _snapshot_discarded_manager_requests(directory_person, members, existing_stored_ids)
     
@@ -2680,12 +2761,15 @@ def resolve_group_delete_from_directory(
     admin_note: Optional[str] = None,
     source_request_id: Optional[str] = None,
 ) -> int:
-    """Resolve group by marking Directory person as Removed and permanently deleting incoming requests.
+    """Resolve group by archiving an active Directory person and deleting incoming requests.
+
+    Only Added/Active Directory rows may be targeted. Archived/Removed rows are
+    left unchanged (callers should not offer them as selectable targets).
 
     Invariants:
     - Preserves the Add lifecycle events into intake_persons["history"] BEFORE mutating.
     - Updates the directory_person with final_values.
-    - Sets outcome="Removed", action="Remove", handled_at=now, archived_at=None.
+    - Sets outcome="Removed", action="Remove", handled_at=now, archived_at=now.
     - Permanently deletes all incoming member requests.
     - Does NOT call db.commit() — router commits.
 
@@ -2695,6 +2779,12 @@ def resolve_group_delete_from_directory(
     from app.user_display import resolve_handled_by_name, resolve_manager_name
     from app.request_display import parse_request_display_number
     from app.manager_request_tags import TAG_PARTNER_REQUEST, TAG_VERIFIED, has_tag as _has_tag
+
+    if _directory_is_off_roster(directory_person) or (directory_person.outcome or "") != "Added":
+        raise ValueError(
+            "Archived or removed Directory records cannot be selected for Remove "
+            "and Update. Choose an active Directory record, or use Keep Existing."
+        )
 
     now = datetime.now(timezone.utc)
     

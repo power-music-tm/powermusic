@@ -140,13 +140,14 @@ export const mergeGroupPeers = (groupId, { finalValues, sourceRequestId }) =>
  * POST /api/duplicate-groups/{groupId}/resolve-delete-directory
  * Case D — Remove request with existing Directory match. Permanently deletes Directory record.
  */
-export const resolveGroupDeleteFromDirectory = (groupId, { directoryPersonId, finalValues, adminNote }) =>
+export const resolveGroupDeleteFromDirectory = (groupId, { directoryPersonId, finalValues, adminNote, sourceRequestId }) =>
   groupRequest(`/api/duplicate-groups/${groupId}/resolve-delete-directory`, {
     method: 'POST',
     body: JSON.stringify({
       directoryPersonId,
       finalValues,
       adminNote: adminNote || null,
+      sourceRequestId: sourceRequestId || null,
     }),
   });
 

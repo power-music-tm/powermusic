@@ -785,10 +785,12 @@ class ResolveKeepExistingAndArchiveIn(BaseModel):
 class ResolveAndUpdateIn(BaseModel):
     """POST /api/duplicate-groups/{id}/resolve-update (Case B — Directory person exists).
 
-    directoryPersonId must match group.directory_person_id. The endpoint rejects the
-    request if the group has no linked Directory person rather than silently creating one.
+    directoryPersonId must be an eligible Directory match for this group (stored
+    primary, persisted multi-match ids, or live re-scan). The endpoint rejects
+    ineligible ids rather than silently creating a second Directory record or
+    falling back to another match.
 
-    sourceRequestId is the current request the admin clicked Merge on — its manager
+    sourceRequestId is the current request the admin confirmed on — its manager
     attribution is copied onto the Directory record.
     """
 
@@ -802,7 +804,7 @@ class ResolveAndUpdatePreviewIn(BaseModel):
     """POST /api/duplicate-groups/{id}/resolve-update/preview (dry run — no writes).
 
     Returns current Directory values alongside the proposed final values so the frontend
-    can render a side-by-side confirmation dialog.
+    can render a side-by-side confirmation dialog. directoryPersonId must be eligible.
     """
 
     directoryPersonId: str
@@ -820,8 +822,9 @@ class ResolveKeepExistingIn(BaseModel):
 
 class ResolveDeleteIn(BaseModel):
     """POST /api/duplicate-groups/{id}/resolve-delete-directory (Case D).
-    
-    directoryPersonId must match group.directory_person_id.
+
+    directoryPersonId must be an eligible Directory match for this group
+    (admin-selected when multiple matches exist).
     """
 
     directoryPersonId: str

@@ -1772,6 +1772,7 @@ export default function Requests() {
           setShowAddManualModal(false);
           resetManualForm();
         }}
+        closeDisabled={manualSubmitting}
         title="Add Request Manually"
         wide
         headerExtra={
@@ -1780,8 +1781,9 @@ export default function Requests() {
               <button
                 key={val}
                 type="button"
+                disabled={manualSubmitting}
                 onClick={() => setAction(val)}
-                className={`px-3 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                className={`px-3 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 ${
                   action === val
                     ? val === 'Add'
                       ? 'bg-[var(--color-tag-add-action-bg)] text-[var(--color-tag-add-action-text)] shadow-sm'
@@ -1800,7 +1802,7 @@ export default function Requests() {
               type="button"
               disabled={manualSubmitting}
               onClick={() => { setShowAddManualModal(false); resetManualForm(); }}
-              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Cancel
             </button>

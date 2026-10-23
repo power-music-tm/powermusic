@@ -134,7 +134,10 @@ export default function Modal({
           <HoverTip label={closeDisabled ? 'Please wait' : 'Close'} placement="right">
             <button
               type="button"
-              onClick={onClose}
+              onClick={() => {
+                if (closeDisabled) return;
+                onClose();
+              }}
               disabled={closeDisabled}
               className={`absolute top-3 right-3 z-10 ${closeButtonClass} disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-[var(--color-text-secondary)]`}
               aria-label="Close"
@@ -200,7 +203,10 @@ export default function Modal({
             <HoverTip label={closeDisabled ? 'Please wait' : 'Close'} placement="right">
               <button
                 type="button"
-                onClick={onClose}
+                onClick={() => {
+                  if (closeDisabled) return;
+                  onClose();
+                }}
                 disabled={closeDisabled}
                 className={
                   brandChrome
