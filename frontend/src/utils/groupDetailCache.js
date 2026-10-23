@@ -345,17 +345,28 @@ export function applyListSeed(groupId, cached, seed) {
       || preview?.directoryPerson
       || cached?.directoryPerson
       || null,
-    directoryPersons:
-      (Array.isArray(seed.groupDirectoryPersons) && seed.groupDirectoryPersons.length
+    directoryPersons: (() => {
+      const fromSeed = Array.isArray(seed.groupDirectoryPersons) && seed.groupDirectoryPersons.length
         ? seed.groupDirectoryPersons
-        : null)
-      || (Array.isArray(preview?.directoryPersons) && preview.directoryPersons.length
+        : null;
+      const fromPreview = Array.isArray(preview?.directoryPersons) && preview.directoryPersons.length
         ? preview.directoryPersons
-        : null)
-      || (Array.isArray(cached?.directoryPersons) && cached.directoryPersons.length
+        : null;
+      const fromCached = Array.isArray(cached?.directoryPersons) && cached.directoryPersons.length
         ? cached.directoryPersons
-        : null)
-      || null,
+        : null;
+      if (fromSeed) return fromSeed;
+      if (fromPreview) return fromPreview;
+      if (fromCached) return fromCached;
+      // List rows only ship a single groupDirectoryPerson — promote it so the
+      // group page can render Archived/Active Directory cards before detail loads.
+      const single =
+        seed.groupDirectoryPerson
+        || preview?.directoryPerson
+        || cached?.directoryPerson
+        || null;
+      return single ? [single] : null;
+    })(),
     representativeRequestId: cached?.representativeRequestId || repId || null,
     members,
     droppedMemberIds: Array.isArray(cached?.droppedMemberIds) ? cached.droppedMemberIds : [],
@@ -395,6 +406,15 @@ export function warmGroupCachesFromRequests(requests = []) {
       groupMembers: members,
       groupDirectoryPersonId: row.groupDirectoryPersonId || preview?.directoryPersonId || null,
       groupDirectoryPerson: row.groupDirectoryPerson || preview?.directoryPerson || null,
+      groupDirectoryPersons: (
+        Array.isArray(preview?.directoryPersons) && preview.directoryPersons.length
+          ? preview.directoryPersons
+          : null
+      ) || (
+        (row.groupDirectoryPerson || preview?.directoryPerson)
+          ? [row.groupDirectoryPerson || preview.directoryPerson]
+          : null
+      ),
       groupPreview: preview || null,
     });
     if (seeded) writeCache(groupDetailCacheKey(gid), seeded);

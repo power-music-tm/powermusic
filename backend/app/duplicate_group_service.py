@@ -163,20 +163,35 @@ def _directory_candidates(
     return q.order_by(models.ManagerRequest.id.asc()).limit(limit).all()
 
 
+def _directory_is_off_roster(person: Optional[models.ManagerRequest]) -> bool:
+    """True when the Directory row is archived or Removed (not on the active roster).
+
+    Manual Directory archive only sets archived_at and may leave outcome="Added".
+    Resolve-remove sets outcome="Removed" (usually with archived_at). Both are
+    off-roster for UI + classification purposes.
+    """
+    if person is None:
+        return False
+    if getattr(person, "archived_at", None) is not None:
+        return True
+    return (person.outcome or "") == "Removed"
+
+
 def _directory_match_sort_key(
     item: Tuple[models.ManagerRequest, str],
 ) -> tuple:
     """Stable ranking for multi-match directory hits.
 
-    Prefer confirmed over potential, Added over Removed, then oldest handled_at,
-    then id — never “latest wins”.
+    Prefer confirmed over potential, on-roster over archived/Removed, Added over
+    Removed, then oldest handled_at, then id — never “latest wins”.
     """
     person, classification = item
     confirmed_rank = 0 if classification == "confirmed_duplicate" else 1
+    roster_rank = 1 if _directory_is_off_roster(person) else 0
     outcome_rank = 0 if person.outcome == "Added" else 1
     handled = person.handled_at or person.received_at
     handled_key = _norm_dt(handled) if handled else datetime.min.replace(tzinfo=timezone.utc)
-    return (confirmed_rank, outcome_rank, handled_key, person.id or "")
+    return (confirmed_rank, roster_rank, outcome_rank, handled_key, person.id or "")
 
 
 def _find_all_directory_matches(
@@ -215,27 +230,32 @@ def _classification_from_directory_matches(
     if not matches:
         return None
 
-    has_confirmed_added = any(
-        cls == "confirmed_duplicate" and person.outcome == "Added"
+    has_confirmed_active = any(
+        cls == "confirmed_duplicate"
+        and person.outcome == "Added"
+        and not _directory_is_off_roster(person)
         for person, cls in matches
     )
-    has_confirmed_removed = any(
-        cls == "confirmed_duplicate" and person.outcome == "Removed"
+    has_confirmed_off_roster = any(
+        cls == "confirmed_duplicate" and _directory_is_off_roster(person)
         for person, cls in matches
     )
-    has_added = any(person.outcome == "Added" for person, _ in matches)
-    has_removed = any(person.outcome == "Removed" for person, _ in matches)
+    has_active = any(
+        person.outcome == "Added" and not _directory_is_off_roster(person)
+        for person, _ in matches
+    )
+    has_off_roster = any(_directory_is_off_roster(person) for person, _ in matches)
 
     if has_peer_match:
-        if has_added or has_confirmed_added:
+        if has_active or has_confirmed_active:
             return "already_exists_conflict"
-        if has_removed or has_confirmed_removed:
+        if has_off_roster or has_confirmed_off_roster:
             return "already_removed_conflict"
         return "already_exists_conflict"
 
-    if has_confirmed_added:
+    if has_confirmed_active:
         return "already_exists"
-    if has_confirmed_removed and not has_added:
+    if has_confirmed_off_roster and not has_active:
         return "already_removed"
     # Potential (or mixed potential) against Directory
     return "potential_duplicate"
@@ -974,12 +994,14 @@ def _sync_group_representative_and_tags(
             if isinstance(result, tuple):
                 dir_classification, _ = result
 
-            if dir_person.outcome == "Removed":
+            if _directory_is_off_roster(dir_person):
+                # Archived / Removed Directory — never label as active "Exists in Directory".
                 if dir_classification == "confirmed_duplicate":
                     tags_to_add.append(TAG_ALREADY_REMOVED)
                 elif dir_classification == "potential_duplicate":
-                    if TAG_POTENTIAL_DUPLICATE not in tags_to_add:
-                        tags_to_add.append(TAG_POTENTIAL_DUPLICATE)
+                    # Keep potential visible AND signal the archived Directory link.
+                    tags_to_add.append(TAG_POTENTIAL_DUPLICATE)
+                    tags_to_add.append(TAG_ALREADY_REMOVED)
             else:
                 if dir_classification == "confirmed_duplicate":
                     tags_to_add.append(TAG_ALREADY_EXISTS)
@@ -1369,13 +1391,13 @@ def finalize_group_after_selective_dismiss(
     if dir_match and peer_match_class:
         new_class = (
             "already_removed_conflict"
-            if (dir_person and dir_person.outcome == "Removed")
+            if (dir_person and _directory_is_off_roster(dir_person))
             else "already_exists_conflict"
         )
     elif dir_match:
         new_class = (
             "already_removed"
-            if (dir_person and dir_person.outcome == "Removed")
+            if (dir_person and _directory_is_off_roster(dir_person))
             else "already_exists"
         )
     elif peer_match_class:
@@ -1489,9 +1511,9 @@ def _compute_group_classification_summary_impl(
     dir_person = None
     if group.directory_person_id:
         dir_person = db.query(models.ManagerRequest).filter_by(id=group.directory_person_id).first()
-        if dir_person and dir_person.outcome == "Removed":
+        if dir_person and _directory_is_off_roster(dir_person):
             already_removed = True
-        else:
+        elif dir_person:
             already_exists = True
 
     if len(active_members) >= 2:
@@ -1865,7 +1887,7 @@ def merge_group_peers(
             .filter(models.ManagerRequest.id == group.directory_person_id)
             .first()
         )
-        if dir_person and dir_person.outcome == "Removed":
+        if dir_person and _directory_is_off_roster(dir_person):
             if group.classification not in (
                 "already_removed",
                 "already_removed_conflict",

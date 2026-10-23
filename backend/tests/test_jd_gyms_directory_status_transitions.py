@@ -23,11 +23,29 @@ from app import models, schemas
 from app.directory_person_match import archived_snapshot_rows, directory_ledger_rows
 from app.duplicate_group_service import (
     _new_group_id,
+    _sync_group_representative_and_tags,
+    compute_group_classification_summary,
+    find_all_directory_matches_for_requests,
+    process_request_grouping,
     resolve_group_delete_from_directory,
     resolve_group_update,
 )
 from app.intake_persons import get_lifecycle_history
-from app.manager_request_tags import TAG_REMOVED
+from app.manager_request_serialize import directory_person_to_api_dict
+from app.manager_request_tags import TAG_ALREADY_REMOVED, TAG_REMOVED
+
+
+def _tags_blob(req: models.ManagerRequest) -> str:
+    """SQLite JSON adapters can flatten list tags; compare via a normalized blob."""
+    raw = req.tags
+    if raw is None:
+        return ""
+    if isinstance(raw, list):
+        # Character-list artifact after double JSON encode on SQLite.
+        if raw and all(isinstance(t, str) and len(t) <= 1 for t in raw):
+            return "".join(raw).lower()
+        return " ".join(str(t) for t in raw).lower()
+    return str(raw).lower()
 
 sqlite3.register_adapter(list, json.dumps)
 sqlite3.register_adapter(dict, json.dumps)
@@ -398,3 +416,99 @@ class TestJdGymsDirectoryStatusTransitions:
         assert active.person_location == "Derby"
         history = get_lifecycle_history(active)
         assert any(e.get("title") == "Directory record updated" for e in history)
+
+    def test_add_against_archived_links_directory_and_tags_already_removed(self, db: Session):
+        """Add vs archived Directory must link the archived row and surface Already Removed (+ potential)."""
+        now = datetime.now(timezone.utc)
+        partner = _jd_partner(db)
+
+        archived = _dir_row(
+            db,
+            partner_id=partner.id,
+            first="Taylor",
+            last="Brooks",
+            email="taylor.brooks@jdgyms.co.uk",
+            location="Bristol",
+            handled_at=now - timedelta(days=40),
+            action="Remove",
+            outcome="Removed",
+            archived_at=now - timedelta(days=10),
+            tags=[TAG_REMOVED],
+        )
+        # Potential-style mismatch on location so classification can be potential_duplicate.
+        add_req = _open_request(
+            db,
+            partner_id=partner.id,
+            first="Taylor",
+            last="Brooks",
+            email="taylor.brooks@jdgyms.co.uk",
+            location="Bath",
+            action="Add",
+            received_at=now,
+        )
+        db.flush()
+
+        group = process_request_grouping(db, add_req)
+        db.flush()
+        assert group is not None
+        assert group.directory_person_id == archived.id
+
+        live = find_all_directory_matches_for_requests(db, [add_req])
+        assert any(r.id == archived.id for r in live)
+
+        _sync_group_representative_and_tags(db, group, member_requests=[add_req])
+        db.flush()
+        db.refresh(add_req)
+        blob = _tags_blob(add_req)
+        assert TAG_ALREADY_REMOVED in blob
+
+        summary = compute_group_classification_summary(db, group, members=[add_req])
+        assert summary["alreadyRemoved"] is True
+        assert summary["alreadyExists"] is False
+
+        api_person = directory_person_to_api_dict(archived, db=db)
+        assert api_person.get("archivedAt") is not None
+        assert api_person.get("status") == "Removed"
+
+    def test_add_against_manually_archived_added_row_treated_as_off_roster(self, db: Session):
+        """Manual archive (archived_at set, outcome still Added) must not look like active Exists."""
+        now = datetime.now(timezone.utc)
+        partner = _jd_partner(db)
+
+        archived = _dir_row(
+            db,
+            partner_id=partner.id,
+            first="Morgan",
+            last="Reed",
+            email="morgan.reed@jdgyms.co.uk",
+            location="Hull",
+            handled_at=now - timedelta(days=12),
+            action="Add",
+            outcome="Added",
+            archived_at=now - timedelta(days=2),
+        )
+        add_req = _open_request(
+            db,
+            partner_id=partner.id,
+            first="Morgan",
+            last="Reed",
+            email="morgan.reed@jdgyms.co.uk",
+            location="Hull",
+            action="Add",
+            received_at=now,
+        )
+        db.flush()
+
+        group = process_request_grouping(db, add_req)
+        db.flush()
+        assert group is not None
+        assert group.directory_person_id == archived.id
+        # Confirmed match against off-roster → already_removed, not already_exists.
+        assert group.classification in ("already_removed", "potential_duplicate")
+
+        _sync_group_representative_and_tags(db, group, member_requests=[add_req])
+        db.flush()
+        db.refresh(add_req)
+        assert TAG_ALREADY_REMOVED in _tags_blob(add_req)
+        summary = compute_group_classification_summary(db, group, members=[add_req])
+        assert summary["alreadyRemoved"] is True

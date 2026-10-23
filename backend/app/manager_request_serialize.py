@@ -684,6 +684,9 @@ def requests_to_api_dicts(db: Session, requests: List[models.ManagerRequest]) ->
                 "resolvedAt": group_obj.resolved_at,
                 "directoryPersonId": group_obj.directory_person_id,
                 "directoryPerson": dir_person,
+                # Always include as a list so clients can render archived matches
+                # the same way as multi-match Directory cards (active list omits them).
+                "directoryPersons": [dir_person] if dir_person else [],
                 "representativeRequestId": group_obj.representative_request_id,
                 "members": stubs or [],
                 "classificationSummary": summary,

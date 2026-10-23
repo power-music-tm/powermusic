@@ -223,26 +223,29 @@ export default function GroupResolutionView({
   const { selectedPartnerId } = usePartners();
   const requestsCacheKey = selectedPartnerId ? `${REQUESTS_PAGE_CACHE_KEY}:${selectedPartnerId}` : REQUESTS_PAGE_CACHE_KEY;
   const repMember = group.members.find((m) => m.isRepresentative) || group.members[0];
-  const hasDirectory = Boolean(group.directoryPersonId);
-
   // Prefer backend multi-match list; fall back to single directoryPerson / local directory.
+  // Active Directory list (`directory`) omits archived rows — never rely on it alone.
   const directoryPersons = (() => {
     if (Array.isArray(group.directoryPersons) && group.directoryPersons.length > 0) {
       return group.directoryPersons;
     }
     const single =
       group.directoryPerson ||
-      (hasDirectory
-        ? directory.find((d) => d.id === group.directoryPersonId) ||
-          directory.find(
-            (d) =>
-              (d.email || '').toLowerCase() ===
-              (repMember?.person?.email || '').toLowerCase(),
-          )
+      (group.directoryPersonId
+        ? directory.find((d) => d.id === group.directoryPersonId) || null
         : null);
     return single ? [single] : [];
   })();
   const dirPerson = directoryPersons[0] || null;
+  const hasDirectory = Boolean(
+    group.directoryPersonId || dirPerson?.id || directoryPersons.length > 0,
+  );
+  const isDirectoryArchived = (person) => Boolean(
+    person?.archivedAt
+    || String(person?.status || '').toLowerCase() === 'removed'
+    || String(person?.outcome || '').toLowerCase() === 'removed',
+  );
+  const directoryIsArchived = directoryPersons.some(isDirectoryArchived);
 
   const { selectedPartner, partners } = usePartners();
   const rawPartnerId = group?.partnerId || group?.partner_id || repMember?.partnerId || repMember?.partner_id;
@@ -1251,13 +1254,26 @@ export default function GroupResolutionView({
             // Solo peer history: do not fall back to stale Duplicate / Potential labels.
             if (peerCount <= 1 && !hasDirectory) return null;
             if (peerCount <= 1 && hasDirectory) {
-              const dirTag = classificationTag(
-                group.classification?.startsWith('already_removed')
+              // Prefer explicit group classification; archived Directory → Already Removed.
+              // Keep Potential Duplicate visible when that is the live classification.
+              if (group.classification === 'potential_duplicate') {
+                const pills = [
+                  classificationTag('potential_duplicate'),
+                  classificationTag(directoryIsArchived ? 'already_removed' : 'already_exists'),
+                ];
+                return pills.map((pill) => (
+                  <Tag key={pill.label} variant={pill.variant} label={pill.label} />
+                ));
+              }
+              const dirClass = group.classification?.startsWith('already_removed')
+                || directoryIsArchived
+                ? (group.classification?.startsWith('already_removed')
                   ? group.classification
-                  : (group.classification?.startsWith('already_exists')
-                    ? group.classification
-                    : 'already_exists'),
-              );
+                  : 'already_removed')
+                : (group.classification?.startsWith('already_exists')
+                  ? group.classification
+                  : 'already_exists');
+              const dirTag = classificationTag(dirClass);
               return <Tag variant={dirTag.variant} label={dirTag.label} />;
             }
             return <Tag variant={tag.variant} label={tag.label} />;
@@ -1614,16 +1630,31 @@ export default function GroupResolutionView({
           }
         >
           {directoryPersons.length > 0 ? (
-            directoryPersons.map((person, index) => (
+            directoryPersons.map((person, index) => {
+              const archived = isDirectoryArchived(person);
+              const recordTitle = directoryPersons.length > 1
+                ? (archived
+                  ? `Archived Directory Record ${index + 1}`
+                  : `Current Directory Record ${index + 1}`)
+                : (archived ? 'Archived Directory Record' : 'Current Directory Record');
+              return (
               <SectionCard
                 key={person.id || `dir-${index}`}
                 icon={Database}
-                title={
-                  directoryPersons.length > 1
-                    ? `Current Directory Record ${index + 1}`
-                    : 'Current Directory Record'
-                }
+                title={recordTitle}
               >
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <Tag
+                    variant={archived ? 'already-removed' : 'already-exists'}
+                    label={archived ? 'Archived' : 'Active'}
+                  />
+                  {person.status ? (
+                    <Tag
+                      variant={String(person.status).toLowerCase() === 'removed' ? 'remove-action' : 'add-action'}
+                      label={person.status}
+                    />
+                  ) : null}
+                </div>
                 <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-x-8">
                   <MetaItem label="First Name" value={person.firstName} />
                   <MetaItem label="Last Name" value={person.lastName} />
@@ -1650,7 +1681,6 @@ export default function GroupResolutionView({
                       value={(person.role || person.person?.role || '').trim() || 'No role'}
                     />
                   )}
-                  {person.status && <MetaItem label="Status" value={person.status} />}
                 </dl>
                 {index === directoryPersons.length - 1 ? (
                   <p className="mt-4 text-xs leading-relaxed text-[var(--color-text-muted)]">
@@ -1669,6 +1699,16 @@ export default function GroupResolutionView({
                         <span className="font-semibold text-[var(--color-text-secondary)]">Remove and Update</span>
                         {' '}marks this Directory person as removed.
                       </>
+                    ) : archived ? (
+                      <>
+                        This person is in the archived Directory.{' '}
+                        <span className="font-semibold text-[var(--color-text-secondary)]">Keep Existing and Delete</span>
+                        {' '}removes the new request and leaves the archive unchanged.{' '}
+                        <span className="font-semibold text-[var(--color-text-secondary)]">Keep Existing and Add New</span>
+                        {' '}creates a separate active Directory person.{' '}
+                        <span className="font-semibold text-[var(--color-text-secondary)]">Add and Update</span>
+                        {' '}restores this record to the active Directory and updates it.
+                      </>
                     ) : (
                       <>
                         This is the existing Directory record.{' '}
@@ -1683,9 +1723,13 @@ export default function GroupResolutionView({
                   </p>
                 ) : null}
               </SectionCard>
-            ))
+              );
+            })
           ) : (
-            <SectionCard icon={Database} title="Current Directory Record">
+            <SectionCard
+              icon={Database}
+              title={directoryIsArchived ? 'Archived Directory Record' : 'Current Directory Record'}
+            >
               <p className="text-sm text-[var(--color-text-muted)] italic">
                 Directory record details not available locally. Values shown in the confirmation step.
               </p>
