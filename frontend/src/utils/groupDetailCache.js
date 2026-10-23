@@ -12,11 +12,23 @@ export function groupDetailCacheKey(groupId) {
 export function writeMergedGroupCache(groupId, previousGroup, {
   survivor,
   deletedIds = [],
+  members: membersOverride = null,
   classification = null,
 } = {}) {
   if (!groupId || !survivor?.id || !previousGroup) return null;
   const deleted = new Set((deletedIds || []).filter(Boolean));
-  const members = [survivor].filter((m) => m?.id && !deleted.has(m.id));
+  // Prefer explicit remaining members (survivor + late arrivals not in the merge snapshot).
+  let members;
+  if (Array.isArray(membersOverride) && membersOverride.length > 0) {
+    members = membersOverride.filter((m) => m?.id && !deleted.has(m.id));
+    if (!members.some((m) => m.id === survivor.id)) {
+      members = [survivor, ...members];
+    } else {
+      members = members.map((m) => (m.id === survivor.id ? survivor : m));
+    }
+  } else {
+    members = [survivor].filter((m) => m?.id && !deleted.has(m.id));
+  }
   const hasDirectory = Boolean(
     previousGroup.directoryPersonId || previousGroup.directoryPerson,
   );

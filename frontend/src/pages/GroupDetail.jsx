@@ -260,23 +260,28 @@ export default function GroupDetail() {
     // Seed by request id only — avoid re-running on new state object identity.
   }, [groupId, groupCacheKey, listSeed?.id, applyGroupDetail]);
 
-  // Live updates while standing on this group — realtime + focus + poll.
+  // Live updates: Realtime nudge + visible-tab poll + focus/visible refetch.
   useEffect(() => {
     if (!groupId) return undefined;
-    const refresh = () => {
+    const refreshIfVisible = () => {
       if (document.hidden || !liveReadyRef.current) return;
       refreshGroupDetail({ alertNewMembers: true });
     };
-    window.addEventListener('focus', refresh);
-    const poll = window.setInterval(refresh, GROUP_DETAIL_POLL_MS);
+    window.addEventListener('focus', refreshIfVisible);
+    const onVisibility = () => {
+      if (!document.hidden) refreshIfVisible();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    const poll = window.setInterval(refreshIfVisible, GROUP_DETAIL_POLL_MS);
     return () => {
-      window.removeEventListener('focus', refresh);
+      window.removeEventListener('focus', refreshIfVisible);
+      document.removeEventListener('visibilitychange', onVisibility);
       window.clearInterval(poll);
     };
   }, [groupId, refreshGroupDetail]);
 
   useRealtimeBroadcast('requests-changed', () => {
-    if (!liveReadyRef.current) return;
+    if (!liveReadyRef.current || document.hidden) return;
     refreshGroupDetail({ alertNewMembers: true });
   }, { enabled: Boolean(groupId) });
 

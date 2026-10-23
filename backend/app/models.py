@@ -139,6 +139,23 @@ class RejectedNicknamePair(Base):
     created_at = Column(DateTime(timezone=True), nullable=False)
 
 
+class ConfirmedNicknamePair(Base):
+    """Admin-learned: two nickname-linked first names are the same person.
+
+    Stored as normalized ordered pair (name_a <= name_b). Does not change matching
+    (graph already links them); skips the nickname confirmation modal next time.
+    """
+
+    __tablename__ = "confirmed_nickname_pairs"
+
+    id = Column(String, primary_key=True)
+    name_a = Column(String, nullable=False, index=True)
+    name_b = Column(String, nullable=False, index=True)
+    confirmed_by_admin_id = Column(UUID(as_uuid=True), ForeignKey("powermusic_users.id"), nullable=True)
+    source_group_id = Column(String, ForeignKey("duplicate_groups.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+
+
 class ManagerRequestView(Base):
     """When a manager last viewed a handled request (unread until seen_at >= handled_at)."""
 

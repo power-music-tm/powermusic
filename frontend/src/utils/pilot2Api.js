@@ -431,6 +431,12 @@ export function applyNewRequestsSuppressions(requests) {
   return filtered;
 }
 
+/** Lightweight pending-queue + directory counts for nav badges / Overview. */
+export const getKpis = (partnerId = '') => {
+  const query = partnerId ? `?partner_id=${encodeURIComponent(partnerId)}` : '';
+  return request(`/api/kpis${query}`);
+};
+
 // Combined page payloads (one round trip per view)
 export const getDashboard = (partnerId, startDate, endDate) => {
   const params = new URLSearchParams();
@@ -456,9 +462,24 @@ export const getNewRequestsPage = (partnerId = '') => {
   return request(`/api/admin/requests/page${query}`);
 };
 export const getPilot2Workspace = () => request('/api/pilot2/workspace');
-export const dismissRequest = (id) => request(`/api/admin/requests/${id}/dismiss`, { method: 'POST' });
+export const dismissRequest = (id, { alsoDeleteIds } = {}) =>
+  request(`/api/admin/requests/${id}/dismiss`, {
+    method: 'POST',
+    body: JSON.stringify({
+      // Freeze confirmed siblings at Delete-confirm open — late arrivals stay.
+      alsoDeleteIds: Array.isArray(alsoDeleteIds) ? alsoDeleteIds.filter(Boolean) : null,
+    }),
+  });
 export const getDismissImpact = (id) => request(`/api/admin/requests/${id}/dismiss-impact`);
-export const bulkDismissRequests = (ids) => request('/api/admin/requests/bulk-dismiss', { method: 'POST', body: JSON.stringify({ ids }) });
+export const bulkDismissRequests = (ids, { alsoDeleteIds } = {}) =>
+  request('/api/admin/requests/bulk-dismiss', {
+    method: 'POST',
+    body: JSON.stringify({
+      ids,
+      // Freeze confirmed siblings at Confirm bulk delete open — late arrivals stay.
+      alsoDeleteIds: Array.isArray(alsoDeleteIds) ? alsoDeleteIds.filter(Boolean) : null,
+    }),
+  });
 
 // Directory persons
 export const updatePerson = (id, data, partnerId = '') => {

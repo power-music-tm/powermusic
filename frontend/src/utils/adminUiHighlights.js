@@ -9,6 +9,11 @@ const ADMIN_NEW_REQUESTS_KNOWN_IDS_KEY = 'pm_admin_new_requests_known_ids';
 const ADMIN_NEW_REQUESTS_SYNC_BOOTSTRAPPED_KEY = 'pm_admin_new_requests_sync_bootstrapped';
 const ADMIN_NEW_REQUESTS_DEPARTED_AT_KEY = 'pm_admin_new_requests_departed_at';
 const ADMIN_SESSION_STARTED_AT_KEY = 'pm_admin_session_started_at';
+/** Queue ids for the sidebar unopened badge (session). */
+const PENDING_REQUEST_IDS_BADGE_KEY = 'pm_admin_pending_request_ids_badge_v2';
+/** Opened this session — badge drops immediately; not cleared on page re-visit. */
+const OPENED_REQUEST_IDS_BADGE_KEY = 'pm_admin_opened_request_ids_badge_v2';
+export const ADMIN_NEW_REQUESTS_BADGE_EVENT = 'pm-admin-new-requests-badge';
 
 const MANAGER_HANDLED_UNSEEN_KEY = 'pm_manager_handled_unseen_request_ids';
 const MANAGER_HANDLED_VIEWED_KEY = 'pm_manager_handled_viewed_request_ids';
@@ -118,6 +123,56 @@ function countHighlightUnseen(scope) {
   return readSet(scope.unseenKey).size;
 }
 
+function notifyNewRequestsBadgeChanged() {
+  if (typeof window === 'undefined') return;
+  try {
+    window.dispatchEvent(new CustomEvent(ADMIN_NEW_REQUESTS_BADGE_EVENT));
+  } catch {
+    // ignore
+  }
+}
+
+function pruneOpenedBadgeIds(pendingIds) {
+  const pending = new Set(pendingIds);
+  const opened = readSet(OPENED_REQUEST_IDS_BADGE_KEY);
+  let changed = false;
+  for (const id of [...opened]) {
+    if (!pending.has(id)) {
+      opened.delete(id);
+      changed = true;
+    }
+  }
+  if (changed) writeSet(OPENED_REQUEST_IDS_BADGE_KEY, opened);
+  return changed;
+}
+
+/** Keep sidebar badge pending-ids in sync with the live New Requests queue. */
+export function syncPendingRequestIdsForBadge(requestIds) {
+  const ids = [
+    ...new Set(
+      (requestIds || [])
+        .map((id) => normalizeHighlightId(id))
+        .filter(Boolean),
+    ),
+  ];
+  writeJson(PENDING_REQUEST_IDS_BADGE_KEY, ids);
+  pruneOpenedBadgeIds(ids);
+  notifyNewRequestsBadgeChanged();
+  return ids;
+}
+
+/** Unopened = still in the queue and not opened this session. */
+export function countUnopenedNewRequests() {
+  const pending = readJson(PENDING_REQUEST_IDS_BADGE_KEY, []);
+  if (!Array.isArray(pending) || pending.length === 0) return 0;
+  const opened = readSet(OPENED_REQUEST_IDS_BADGE_KEY);
+  let n = 0;
+  for (const id of pending) {
+    if (id && !opened.has(id)) n += 1;
+  }
+  return n;
+}
+
 /**
  * Call once per real navigation to a page (pass a stable dedupe key, e.g. location.key).
  * Items the user already viewed are unhighlighted on the next visit.
@@ -180,7 +235,11 @@ export function syncAdminNewRequestHighlights(
   requests,
   { isManualEntry = () => false } = {},
 ) {
-  const eligible = (requests || []).filter((req) => !isManualEntry(req.submittedBy));
+  const list = requests || [];
+  // Sidebar badge tracks the full visible queue (including manual entries).
+  syncPendingRequestIdsForBadge(list.map((req) => req.id));
+
+  const eligible = list.filter((req) => !isManualEntry(req.submittedBy));
   const currentIds = eligible
     .map((req) => normalizeHighlightId(req.id))
     .filter(Boolean);
@@ -221,6 +280,7 @@ export function syncAdminNewRequestHighlights(
 
 export function markRequestUnseen(requestId) {
   markHighlightUnseen(SCOPES.adminNewRequests, requestId);
+  notifyNewRequestsBadgeChanged();
 }
 
 export function isRequestUnseen(requestId) {
@@ -229,6 +289,15 @@ export function isRequestUnseen(requestId) {
 
 export function markRequestViewed(requestId) {
   markHighlightViewed(SCOPES.adminNewRequests, requestId);
+  const id = normalizeHighlightId(requestId);
+  if (!id) return;
+  // Badge: count as opened immediately (row highlight may stay until next visit).
+  const opened = readSet(OPENED_REQUEST_IDS_BADGE_KEY);
+  if (!opened.has(id)) {
+    opened.add(id);
+    writeSet(OPENED_REQUEST_IDS_BADGE_KEY, opened);
+    notifyNewRequestsBadgeChanged();
+  }
 }
 
 /** @deprecated Use markRequestViewed — kept for gradual migration */
@@ -244,6 +313,18 @@ export function removeRequestHighlight(requestId) {
   if (known.delete(id)) {
     writeSet(ADMIN_NEW_REQUESTS_KNOWN_IDS_KEY, known);
   }
+  const opened = readSet(OPENED_REQUEST_IDS_BADGE_KEY);
+  if (opened.delete(id)) {
+    writeSet(OPENED_REQUEST_IDS_BADGE_KEY, opened);
+  }
+  const pending = readJson(PENDING_REQUEST_IDS_BADGE_KEY, []);
+  if (Array.isArray(pending) && pending.includes(id)) {
+    writeJson(
+      PENDING_REQUEST_IDS_BADGE_KEY,
+      pending.filter((pendingId) => pendingId !== id),
+    );
+  }
+  notifyNewRequestsBadgeChanged();
 }
 
 export function countUnseenRequests() {

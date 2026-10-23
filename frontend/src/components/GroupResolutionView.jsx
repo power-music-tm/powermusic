@@ -14,6 +14,7 @@ import { fetchJson } from '../utils/api';
 import { dismissRequest, getDismissImpact, suppressNewRequests, removeRequestsFromCache, REQUESTS_PAGE_CACHE_KEY } from '../utils/pilot2Api';
 import {
   fetchGroupDetail,
+  learnNicknamePair,
   resolveGroupAdd,
   resolveGroupAddAsNew,
   resolveGroupUpdate,
@@ -34,6 +35,7 @@ import {
   isNicknameOnlyFirstMatch,
   matchClassification,
   normalizeFirstName,
+  orderedNicknamePairKey,
 } from '../utils/duplicateMatch';
 import {
   alignClassificationSummaryWithMembers,
@@ -342,6 +344,13 @@ export default function GroupResolutionView({
   const [attachLookalikeId, setAttachLookalikeId] = useState(null);
   // Explicit Directory target for Add/Remove-and-Update (never auto-picked after choose).
   const [selectedDirectoryId, setSelectedDirectoryId] = useState(null);
+  // Peer IDs frozen when peers_merge / Add-to-Directory confirm opens —
+  // late arrivals stay out of that action.
+  const [peersMergeMemberIds, setPeersMergeMemberIds] = useState(null);
+  // Nickname pairs answered this visit (Yes/No) — skip modal immediately.
+  const [localAnsweredNicknameKeys, setLocalAnsweredNicknameKeys] = useState(() => new Set());
+  // Freeze the pair shown in the nickname modal so content does not flip mid-click.
+  const [nicknameModalPair, setNicknameModalPair] = useState(null);
 
   // When parent refreshes group detail (cache → network), sync members/form so
   // pills and history don't stay stuck on the stale cached snapshot.
@@ -414,6 +423,8 @@ export default function GroupResolutionView({
     setConfirmAction(null);
     setMergeEditing(false);
     setSelectedDirectoryId(null);
+    setPeersMergeMemberIds(null);
+    setNicknameModalPair(null);
   };
 
   const incomingMemberCount = () =>
@@ -421,9 +432,35 @@ export default function GroupResolutionView({
       (m) => !sessionUnlinkedIds.includes(m.id) && m.id !== group.directoryPersonId,
     ).length;
 
+  const answeredNicknameKeys = (() => {
+    const keys = new Set(localAnsweredNicknameKeys);
+    const fromGroup = Array.isArray(group.answeredNicknamePairs)
+      ? group.answeredNicknamePairs
+      : [];
+    for (const row of fromGroup) {
+      const key = orderedNicknamePairKey(row?.nameA, row?.nameB);
+      if (key) keys.add(key);
+    }
+    return keys;
+  })();
+
+  const rejectedNicknameKeys = (() => {
+    const keys = new Set();
+    const fromGroup = Array.isArray(group.answeredNicknamePairs)
+      ? group.answeredNicknamePairs
+      : [];
+    for (const row of fromGroup) {
+      if (row?.decision !== 'different') continue;
+      const key = orderedNicknamePairKey(row?.nameA, row?.nameB);
+      if (key) keys.add(key);
+    }
+    return keys;
+  })();
+
   /**
    * First-name check vs Directory for Keep / Add New.
    * Prefer nickname-linked pairs (learning applies); otherwise any different first names.
+   * Skip pairs already answered Yes or No (persisted or this visit).
    */
   const nicknameCheckPair = () => {
     if (!hasDirectory) return null;
@@ -450,15 +487,51 @@ export default function GroupResolutionView({
       const reqNorm = normalizeFirstName(requestFirst);
       const dirNorm = normalizeFirstName(directoryFirst);
       if (!reqNorm || !dirNorm || reqNorm === dirNorm) continue;
+
+      const answerKey = orderedNicknamePairKey(requestFirst, directoryFirst);
+      // Already decided for this nickname pair — never ask again.
+      if (answerKey && answeredNicknameKeys.has(answerKey)) continue;
+
+      const isNickname = isNicknameOnlyFirstMatch(requestFirst, directoryFirst, {
+        rejectedPairs: rejectedNicknameKeys,
+      });
       const pair = {
         requestFirst: displayFirstName(requestFirst),
         directoryFirst: displayFirstName(directoryFirst),
-        isNickname: isNicknameOnlyFirstMatch(requestFirst, directoryFirst),
+        isNickname,
       };
       if (pair.isNickname) return pair;
       if (!differentPair) differentPair = pair;
     }
     return differentPair;
+  };
+
+  const rememberNicknameAnswer = (pair, decision) => {
+    if (!pair?.isNickname) return;
+    const key = orderedNicknamePairKey(pair.requestFirst, pair.directoryFirst);
+    if (key) {
+      setLocalAnsweredNicknameKeys((prev) => {
+        const next = new Set(prev);
+        next.add(key);
+        return next;
+      });
+    }
+    // Fire-and-forget — do not await (avoids modal title flipping while open).
+    learnNicknamePair({
+      firstNameA: pair.requestFirst,
+      firstNameB: pair.directoryFirst,
+      decision,
+      sourceGroupId: group.id,
+    }).catch(() => {
+      // Local skip still applies this visit; DB write can retry next time.
+    });
+  };
+
+  const snapshotPeersForMerge = () => {
+    const linked = members.filter(
+      (m) => !sessionUnlinkedIds.includes(m.id) && m.id !== group.directoryPersonId,
+    );
+    return linked.map((m) => m.id).filter(Boolean);
   };
 
   /** After nickname answer (or when no nickname pair): history if siblings, else confirm. */
@@ -469,12 +542,18 @@ export default function GroupResolutionView({
       return;
     }
     setPendingConfirmAction(null);
+    // Freeze peers now — late arrivals must not be swept into Keep / Add New.
+    if (action === 'keep' || action === 'add_as_new') {
+      setPeersMergeMemberIds(snapshotPeersForMerge());
+    }
     setConfirmAction(action);
   };
 
   const openConfirmOrNicknameCheck = (nextAction) => {
     // Nickname modal first — including before Request History when peers exist.
-    if (nicknameCheckPair()) {
+    const pair = nicknameCheckPair();
+    if (pair) {
+      setNicknameModalPair(pair);
       setConfirmAction('nickname_check');
       return;
     }
@@ -482,13 +561,21 @@ export default function GroupResolutionView({
   };
 
   const continueAfterNicknameYes = () => {
-    // Same person → Keep Existing (Directory unchanged).
+    const pair = nicknameModalPair || nicknameCheckPair();
+    setNicknameModalPair(null);
+    // Record once — skip this nickname modal next time.
+    rememberNicknameAnswer(pair, 'same');
+    // Existing next step: Keep Existing confirm (not a new modal).
     proceedKeepOrAddAsNew('keep');
   };
 
   const continueAfterNicknameNo = () => {
-    // Different people → Add New (learns rejection on confirm).
+    const pair = nicknameModalPair || nicknameCheckPair();
+    setNicknameModalPair(null);
+    // Record once — skip this nickname modal next time (and stop nickname match).
+    rememberNicknameAnswer(pair, 'different');
     setModalValues((prev) => prev || { ...form });
+    // Existing next step: Add New confirm (not a new modal).
     proceedKeepOrAddAsNew('add_as_new');
   };
 
@@ -548,6 +635,8 @@ export default function GroupResolutionView({
       return;
     }
     setPendingConfirmAction(null);
+    // Freeze now — late arrivals stay out of Keep Existing and Archive.
+    setPeersMergeMemberIds(snapshotPeersForMerge());
     setConfirmAction('keep_and_archive');
   };
 
@@ -578,6 +667,8 @@ export default function GroupResolutionView({
       return;
     }
     setPendingConfirmAction(null);
+    // Freeze now — late arrivals after Add/Update confirm stay out of this resolve.
+    setPeersMergeMemberIds(snapshotPeersForMerge());
     if (hasDirectory && directoryPersons.length > 1) {
       // Explicit choice required — never auto-select by age/id.
       // Only active Directory records are listed.
@@ -648,6 +739,15 @@ export default function GroupResolutionView({
     group.directoryPersonId,
   ]);
 
+  const openPeersMergeConfirm = () => {
+    const ids = snapshotPeersForMerge();
+    if (ids.length < 2) return false;
+    // Freeze now — live arrivals after this stay in the group, not this merge.
+    setPeersMergeMemberIds(ids);
+    setConfirmAction('peers_merge');
+    return true;
+  };
+
   /* Collapse Request History to one request; group stays active — no Directory write. */
   const consolidatePeersToCurrent = async (values = form) => {
     if (submitting) return;
@@ -662,14 +762,19 @@ export default function GroupResolutionView({
     };
     if (!nextValues.firstName || !nextValues.lastName) return;
 
+    // Prefer confirm-open snapshot so late arrivals are not merged/deleted.
+    const snapshotIds = Array.isArray(peersMergeMemberIds) && peersMergeMemberIds.length >= 2
+      ? peersMergeMemberIds
+      : snapshotPeersForMerge();
+    const snapshotSet = new Set(snapshotIds);
     const active = members.filter(
-      (m) => !sessionUnlinkedIds.includes(m.id) && m.id !== group.directoryPersonId,
+      (m) => snapshotSet.has(m.id) && m.id !== group.directoryPersonId,
     );
     const sortedActive = [...active].sort(
       (a, b) => new Date(b.receivedAt || 0) - new Date(a.receivedAt || 0),
     );
     const sourceRequestId = sortedActive[0]?.id || group.representativeRequestId || null;
-    if (active.length <= 1) {
+    if (snapshotIds.length <= 1) {
       setForm(nextValues);
       setModalValues(nextValues);
       closeConfirmModal();
@@ -692,6 +797,7 @@ export default function GroupResolutionView({
           directorLast: nextValues.directorLast || null,
         },
         sourceRequestId,
+        memberIds: snapshotIds,
       });
       const deletedIds = Array.isArray(result?.deletedIds) ? result.deletedIds : [];
       const survivorId = result?.survivorRequestId || sourceRequestId;
@@ -721,26 +827,47 @@ export default function GroupResolutionView({
           }
         : null;
 
+      // Keep peers that arrived after the merge modal opened (not in snapshot).
+      const lateArrivals = members.filter(
+        (m) =>
+          m?.id
+          && !snapshotSet.has(m.id)
+          && m.id !== group.directoryPersonId
+          && !deletedIds.includes(m.id),
+      );
+      const remaining = survivorMember
+        ? [
+            survivorMember,
+            ...lateArrivals.filter((m) => m.id !== survivorMember.id),
+          ]
+        : lateArrivals;
+
       if (deletedIds.length > 0) {
         suppressNewRequests({ requestIds: deletedIds });
         removeRequestsFromCache(requestsCacheKey, { requestIds: deletedIds });
       }
-      if (survivorMember) {
-        setMembers([survivorMember]);
-        setSessionUnlinkedIds((ids) => ids.filter((id) => id === survivorMember.id));
+      if (remaining.length > 0) {
+        setMembers(remaining);
+        setSessionUnlinkedIds((ids) =>
+          ids.filter((id) => remaining.some((m) => m.id === id)),
+        );
       }
       const optimisticGroup = writeMergedGroupCache(group.id, group, {
         survivor: survivorMember,
         deletedIds,
+        members: remaining,
       });
       patchRequestsCacheAfterPeerMerge(requestsCacheKey, group.id, {
         survivorId,
         deletedIds,
-        members: survivorMember ? [survivorMember] : [],
+        members: remaining,
         classificationSummary: optimisticGroup?.classificationSummary || null,
       });
       closeConfirmModal();
-      returnToCurrentRequest();
+      // Stay on history/detail when late arrivals remain so admin can still review them.
+      if (lateArrivals.length === 0) {
+        returnToCurrentRequest();
+      }
       onResolved('peers_merged', optimisticGroup || null);
     } catch (err) {
       onResolved('error', err.message || 'Failed to merge requests.');
@@ -765,14 +892,14 @@ export default function GroupResolutionView({
       || pendingConfirmAction === 'keep_and_archive'
     ) {
       if (incomingMemberCount() > 1) {
-        setConfirmAction('peers_merge');
+        openPeersMergeConfirm();
         return;
       }
       returnToCurrentRequest();
       return;
     }
     if (incomingMemberCount() > 1) {
-      setConfirmAction('peers_merge');
+      openPeersMergeConfirm();
       return;
     }
     // Peers already consolidated (or only one request) after starting Add/Remove
@@ -780,6 +907,7 @@ export default function GroupResolutionView({
     if (pendingConfirmAction === 'merge') {
       setMergePageOpen(false);
       setPendingConfirmAction(null);
+      setPeersMergeMemberIds(snapshotPeersForMerge());
       if (hasDirectory && directoryPersons.length > 1) {
         setSelectedDirectoryId(null);
         setConfirmAction('select_directory');
@@ -865,6 +993,9 @@ export default function GroupResolutionView({
   /* ── resolve & remove (Grouped Remove) ── */
   const handleResolveRemove = async (values = form, directoryTargetId = selectedDirectoryId) => {
     if (!values.firstName.trim() || !values.lastName.trim() || submitting) return;
+    const snapshotIds = Array.isArray(peersMergeMemberIds) && peersMergeMemberIds.length > 0
+      ? peersMergeMemberIds
+      : snapshotPeersForMerge();
     setSubmitting(true);
     try {
       if (hasDirectory) {
@@ -885,6 +1016,7 @@ export default function GroupResolutionView({
           },
           adminNote: adminNote.trim() || null,
           sourceRequestId: currentSourceRequestId,
+          memberIds: snapshotIds,
         });
       } else {
         await resolveGroupMarkRemoved(group.id, {
@@ -899,6 +1031,7 @@ export default function GroupResolutionView({
           },
           adminNote: adminNote.trim() || null,
           sourceRequestId: currentSourceRequestId,
+          memberIds: snapshotIds,
         });
       }
       closeConfirmModal();
@@ -914,6 +1047,9 @@ export default function GroupResolutionView({
   /* ── resolve & add (Case A) ── */
   const handleResolveAdd = async (values = form) => {
     if (!values.firstName.trim() || !values.lastName.trim() || submitting) return;
+    const snapshotIds = Array.isArray(peersMergeMemberIds) && peersMergeMemberIds.length > 0
+      ? peersMergeMemberIds
+      : snapshotPeersForMerge();
     setSubmitting(true);
     try {
       await resolveGroupAdd(group.id, {
@@ -928,6 +1064,7 @@ export default function GroupResolutionView({
         },
         adminNote: adminNote.trim() || null,
         sourceRequestId: currentSourceRequestId,
+        memberIds: snapshotIds,
       });
       closeConfirmModal();
       closeMergePage();
@@ -943,6 +1080,9 @@ export default function GroupResolutionView({
   const handleAddAsNew = async (values = form) => {
     if (!values.firstName.trim() || !values.lastName.trim() || submitting) return;
     if (!hasDirectoryLink) return;
+    const snapshotIds = Array.isArray(peersMergeMemberIds) && peersMergeMemberIds.length > 0
+      ? peersMergeMemberIds
+      : snapshotPeersForMerge();
     setSubmitting(true);
     try {
       await resolveGroupAddAsNew(group.id, {
@@ -957,6 +1097,7 @@ export default function GroupResolutionView({
         },
         adminNote: adminNote.trim() || null,
         sourceRequestId: currentSourceRequestId,
+        memberIds: snapshotIds,
       });
       closeConfirmModal();
       closeMergePage();
@@ -972,6 +1113,9 @@ export default function GroupResolutionView({
   const handleKeepAndArchive = async (values = form) => {
     if (!values.firstName.trim() || !values.lastName.trim() || submitting) return;
     if (!hasDirectoryLink || currentRep?.action !== 'Remove') return;
+    const snapshotIds = Array.isArray(peersMergeMemberIds) && peersMergeMemberIds.length > 0
+      ? peersMergeMemberIds
+      : snapshotPeersForMerge();
     setSubmitting(true);
     try {
       await resolveGroupKeepExistingAndArchive(group.id, {
@@ -986,6 +1130,7 @@ export default function GroupResolutionView({
         },
         adminNote: adminNote.trim() || null,
         sourceRequestId: currentSourceRequestId,
+        memberIds: snapshotIds,
       });
       closeConfirmModal();
       closeMergePage();
@@ -1006,6 +1151,9 @@ export default function GroupResolutionView({
       onResolved('error', 'Select a Directory record before continuing.');
       return;
     }
+    const snapshotIds = Array.isArray(peersMergeMemberIds) && peersMergeMemberIds.length > 0
+      ? peersMergeMemberIds
+      : snapshotPeersForMerge();
     setSubmitting(true);
     try {
       await resolveGroupUpdate(group.id, {
@@ -1021,6 +1169,7 @@ export default function GroupResolutionView({
         },
         adminNote: adminNote.trim() || null,
         sourceRequestId: currentSourceRequestId,
+        memberIds: snapshotIds,
       });
       closeConfirmModal();
       closeMergePage();
@@ -1035,10 +1184,14 @@ export default function GroupResolutionView({
   /* ── resolve — keep existing (Case C) ── */
   const handleKeepExisting = async () => {
     if (submitting) return;
+    const snapshotIds = Array.isArray(peersMergeMemberIds) && peersMergeMemberIds.length > 0
+      ? peersMergeMemberIds
+      : snapshotPeersForMerge();
     setSubmitting(true);
     try {
       await resolveGroupKeepExisting(group.id, {
         adminNote: adminNote.trim() || null,
+        memberIds: snapshotIds,
       });
       closeConfirmModal();
       onResolved('keep', null);
@@ -1142,17 +1295,21 @@ export default function GroupResolutionView({
     const member = deleteTarget;
     if (!member || submitting) return;
     setSubmitting(true);
-    const alsoIds = new Set(deleteImpact?.confirmedSiblingIds || []);
+    // Freeze cascade from confirm-open impact — late arrivals stay in the group.
+    const alsoIds = Array.isArray(deleteImpact?.confirmedSiblingIds)
+      ? deleteImpact.confirmedSiblingIds.filter(Boolean)
+      : [];
+    const alsoSet = new Set(alsoIds);
     try {
-      await dismissRequest(member.id);
+      await dismissRequest(member.id, { alsoDeleteIds: alsoIds });
       const removeIds = [member.id, ...alsoIds];
       suppressNewRequests({ requestIds: removeIds });
       removeRequestsFromCache(requestsCacheKey, { requestIds: removeIds });
       const nextMembers = members.filter(
-        (m) => m.id !== member.id && !alsoIds.has(m.id),
+        (m) => m.id !== member.id && !alsoSet.has(m.id),
       );
       const nextUnlinked = sessionUnlinkedIds.filter(
-        (id) => id !== member.id && !alsoIds.has(id),
+        (id) => id !== member.id && !alsoSet.has(id),
       );
       setMembers(nextMembers);
       setSessionUnlinkedIds(nextUnlinked);
@@ -2260,7 +2417,7 @@ export default function GroupResolutionView({
         onClose={closeConfirmModal}
         closeDisabled={submitting}
         title={
-          nicknameCheckPair()?.isNickname
+          (nicknameModalPair || nicknameCheckPair())?.isNickname
             ? 'Is this the right nickname?'
             : 'Different first names'
         }
@@ -2286,7 +2443,7 @@ export default function GroupResolutionView({
         }
       >
         {(() => {
-          const pair = nicknameCheckPair();
+          const pair = nicknameModalPair || nicknameCheckPair();
           const requestName = pair?.requestFirst || '—';
           const directoryName = pair?.directoryFirst || '—';
           const isNickname = Boolean(pair?.isNickname);
