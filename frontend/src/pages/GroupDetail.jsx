@@ -389,7 +389,7 @@ export default function GroupDetail() {
           includeHard: false,
         });
         // Brief shell hide only — destination is upserted below / on navigate.
-        suppressNewRequests({ groupIds: [groupId] });
+        suppressNewRequests({ groupIds: [groupId], requestIds: movedIds });
         if (payload?.detail) {
           patchRequestsCacheAfterReattach(requestsCacheKey, {
             previousGroupId: groupId,

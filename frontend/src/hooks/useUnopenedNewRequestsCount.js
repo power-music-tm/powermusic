@@ -7,7 +7,8 @@ import {
 } from '../utils/adminUiHighlights';
 import { useRealtimeBroadcast } from './useRealtimeBroadcast';
 
-const POLL_MS = 60_000;
+/** Backup when realtime is quiet — local suppress/open already update instantly. */
+const POLL_MS = 15_000;
 
 /**
  * Sidebar badge: queue rows not opened this session.

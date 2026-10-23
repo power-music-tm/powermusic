@@ -32,6 +32,7 @@ import { resolveAdminDisplayName } from '../../utils/adminDisplayName';
 import PasswordInput from '../auth/PasswordInput';
 import PasswordRequirements, { PasswordMatchHint } from '../auth/PasswordRequirements';
 import { useUnopenedNewRequestsCount } from '../../hooks/useUnopenedNewRequestsCount';
+import { useUnopenedDirectoryCount } from '../../hooks/useUnopenedDirectoryCount';
 
 function formatNavCount(count) {
   if (!count || count < 1) return null;
@@ -260,6 +261,7 @@ export default function Sidebar({
   const { clearToasts, showToast } = useToast();
   const navigate = useNavigate();
   const unopenedNewRequestsCount = useUnopenedNewRequestsCount(selectedPartnerId);
+  const unopenedDirectoryCount = useUnopenedDirectoryCount();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -671,13 +673,47 @@ export default function Sidebar({
               </NavLink>
             </HoverTip>
             <HoverTip
-              label={showExpanded ? '' : 'Directory'}
+              label={
+                showExpanded
+                  ? ''
+                  : unopenedDirectoryCount > 0
+                    ? `Directory (${formatNavCount(unopenedDirectoryCount)} unopened)`
+                    : 'Directory'
+              }
               placement="right"
               className={showExpanded ? 'w-full' : ''}
             >
-              <NavLink to="/directory" className={navItemClass} onClick={handleNavClick} aria-label="Directory">
-                <Users className="h-4 w-4 shrink-0" />
-                {showExpanded ? <span>Directory</span> : null}
+              <NavLink
+                to="/directory"
+                className={navItemClass}
+                onClick={handleNavClick}
+                aria-label={
+                  unopenedDirectoryCount > 0
+                    ? `Directory, ${unopenedDirectoryCount} unopened`
+                    : 'Directory'
+                }
+              >
+                {({ isActive }) => (
+                  <>
+                    <span className={`relative shrink-0 ${showExpanded ? '' : 'mx-auto'}`}>
+                      <Users className="h-4 w-4" />
+                      {!showExpanded ? (
+                        <NewRequestsCountBadge
+                          count={unopenedDirectoryCount}
+                          active={isActive}
+                          collapsed
+                        />
+                      ) : null}
+                    </span>
+                    {showExpanded ? <span className="min-w-0 truncate">Directory</span> : null}
+                    {showExpanded ? (
+                      <NewRequestsCountBadge
+                        count={unopenedDirectoryCount}
+                        active={isActive}
+                      />
+                    ) : null}
+                  </>
+                )}
               </NavLink>
             </HoverTip>
             <HoverTip

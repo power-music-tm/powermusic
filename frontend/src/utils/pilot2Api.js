@@ -1,6 +1,7 @@
 // Pilot 2 API client — same base URL convention as the Pilot 1 pages
 // (see utils/api.js: localhost in dev, same-origin in production).
 import { fetchJson, authFetch } from './api.js';
+import { removePendingRequestIdsFromBadge } from './adminUiHighlights.js';
 
 const ADMIN_TIMEOUT_MS = 45000;
 
@@ -387,6 +388,11 @@ export function suppressNewRequests({ requestIds = [], groupIds = [], hard = fal
     if (id) state.groupIds[id] = until;
   }
   writeNewRequestsSuppressions(state);
+  // Sidebar badge must drop in the same tick as the list (merge / Directory /
+  // delete) — do not wait for the next /page poll.
+  if (requestIds.length) {
+    removePendingRequestIdsFromBadge(requestIds);
+  }
 }
 
 /**
