@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.manager_request_tags import TAG_ALREADY_EXISTS, TAG_AUTO_MAIL
+from app.request_visibility import admin_visible_filter
 from app.user_display import hydrate_request_users, resolve_manager_name
 
 
@@ -85,6 +86,7 @@ def list_partner_activity(db: Session, *, limit: int = 10, partner_id: Optional[
     scan_limit = max(limit * 4, 20)
     query = (
         db.query(models.ManagerRequest)
+        .filter(admin_visible_filter())
         .order_by(
             func.coalesce(
                 models.ManagerRequest.handled_at,

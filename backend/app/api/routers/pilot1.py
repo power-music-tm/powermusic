@@ -46,6 +46,14 @@ from app.manager_request_stats import (
     decrement_manager_pending_stat,
     increment_manager_request_stats,
 )
+from app.request_visibility import (
+    STATUS_HANDLED,
+    STATUS_NEW,
+    admin_visible_filter,
+    is_admin_visible,
+    manager_status_expr,
+    manager_visible_status,
+)
 from app.partner_requests_realtime import notify_admin_requests_changed
 from app.dashboard_insights import build_dashboard_insights
 from app.partner_allowlists import (
@@ -91,8 +99,8 @@ from app.duplicate_group_service import (
     finalize_group_after_selective_dismiss,
     get_active_groups,
     get_dismiss_impact,
+    admin_delete_requests,
     get_group_members,
-    permanently_delete_requests,
 )
 from app.partner_logo_storage import (
     delete_partner_logo,
@@ -319,6 +327,7 @@ def _manager_partner_id(
 def get_requests(db: Session = Depends(get_db), _admin=Depends(require_admin)):
     db_requests = (
         db.query(models.ManagerRequest)
+        .filter(admin_visible_filter())
         .order_by(request_id_numeric_desc())
         .all()
     )
@@ -345,7 +354,11 @@ def update_person(
     db: Session = Depends(get_db),
     _admin=Depends(require_admin),
 ):
-    req = db.query(models.ManagerRequest).filter(models.ManagerRequest.id == person_id).first()
+    req = (
+        db.query(models.ManagerRequest)
+        .filter(models.ManagerRequest.id == person_id, admin_visible_filter())
+        .first()
+    )
     if not req:
         raise HTTPException(status_code=404, detail="Directory record not found")
 
@@ -437,7 +450,11 @@ def archive_person(
     db: Session = Depends(get_db),
     _admin=Depends(require_admin),
 ):
-    req = db.query(models.ManagerRequest).filter(models.ManagerRequest.id == person_id).first()
+    req = (
+        db.query(models.ManagerRequest)
+        .filter(models.ManagerRequest.id == person_id, admin_visible_filter())
+        .first()
+    )
     if not req:
         raise HTTPException(status_code=404, detail="Directory record not found")
 
@@ -484,7 +501,11 @@ def bulk_archive_persons(
     if partner_id:
         get_partner_or_404(db, partner_id)
 
-    reqs = db.query(models.ManagerRequest).filter(models.ManagerRequest.id.in_(payload.ids)).all()
+    reqs = (
+        db.query(models.ManagerRequest)
+        .filter(models.ManagerRequest.id.in_(payload.ids), admin_visible_filter())
+        .all()
+    )
     
     if partner_id:
         reqs = [r for r in reqs if not r.partner_id or r.partner_id == partner_id]
@@ -545,7 +566,11 @@ def restore_person(
     db: Session = Depends(get_db),
     _admin=Depends(require_admin),
 ):
-    req = db.query(models.ManagerRequest).filter(models.ManagerRequest.id == person_id).first()
+    req = (
+        db.query(models.ManagerRequest)
+        .filter(models.ManagerRequest.id == person_id, admin_visible_filter())
+        .first()
+    )
     if not req:
         raise HTTPException(status_code=404, detail="Directory record not found")
 
@@ -592,7 +617,11 @@ def bulk_restore_persons(
     if not payload.ids:
         return []
 
-    reqs = db.query(models.ManagerRequest).filter(models.ManagerRequest.id.in_(payload.ids)).all()
+    reqs = (
+        db.query(models.ManagerRequest)
+        .filter(models.ManagerRequest.id.in_(payload.ids), admin_visible_filter())
+        .all()
+    )
     
     now = datetime.now(timezone.utc)
 
@@ -632,7 +661,7 @@ def bulk_delete_persons(
     db: Session = Depends(get_db),
     _admin=Depends(require_admin),
 ):
-    from app.duplicate_group_service import permanently_delete_requests
+    from app.duplicate_group_service import admin_delete_requests
 
     if partner_id:
         get_partner_or_404(db, partner_id)
@@ -640,7 +669,11 @@ def bulk_delete_persons(
     if not payload.ids:
         return {"success": True, "deleted_count": 0}
 
-    reqs = db.query(models.ManagerRequest).filter(models.ManagerRequest.id.in_(payload.ids)).all()
+    reqs = (
+        db.query(models.ManagerRequest)
+        .filter(models.ManagerRequest.id.in_(payload.ids), admin_visible_filter())
+        .all()
+    )
 
     if partner_id:
         reqs = [r for r in reqs if not r.partner_id or r.partner_id == partner_id]
@@ -649,7 +682,8 @@ def bulk_delete_persons(
     if not valid_ids:
         return {"success": True, "deleted_count": 0}
 
-    deleted_count = permanently_delete_requests(db, valid_ids)
+    # Manager portal rows stay in the manager's history (hidden from admin).
+    deleted_count = admin_delete_requests(db, valid_ids)
     db.commit()
 
     return {"success": True, "deleted_count": deleted_count}
@@ -958,7 +992,7 @@ def get_admin_requests(
 ):
     if partner_id:
         get_partner_or_404(db, partner_id)
-    query = db.query(models.ManagerRequest)
+    query = db.query(models.ManagerRequest).filter(admin_visible_filter())
     if partner_id:
         query = query.filter(models.ManagerRequest.partner_id == partner_id)
     if status:
@@ -999,7 +1033,7 @@ def get_admin_request(
 ):
     """Load one request by id — used by Request Detail (not the collapsed list page)."""
     req = db.query(models.ManagerRequest).filter(models.ManagerRequest.id == request_id).first()
-    if not req:
+    if not is_admin_visible(req):
         raise HTTPException(status_code=404, detail="Request not found")
     hydrate_request_display([req])
     hydrate_request_users(db, [req])
@@ -1014,7 +1048,7 @@ def mark_request_handled(
     admin: AuthenticatedUser = Depends(require_admin),
 ):
     req = db.query(models.ManagerRequest).filter(models.ManagerRequest.id == request_id).first()
-    if not req:
+    if not is_admin_visible(req):
         raise HTTPException(status_code=404, detail="Request not found")
         
     if req.status == "handled":
@@ -1057,9 +1091,14 @@ def mark_request_handled(
 
     # Peers that joined while the Add/Remove User confirm was open stay as new
     # requests and re-group against this Directory person — not swept away.
-    from app.duplicate_group_service import release_group_peers_after_mark_handled
+    from app.duplicate_group_service import (
+        release_group_peers_after_mark_handled,
+        sync_requests_merged_into,
+    )
     admin_id = str(admin.id) if getattr(admin, "id", None) else None
     release_group_peers_after_mark_handled(db, req, admin_id=admin_id)
+    # Duplicates merged into this request earlier now show Handled to their managers.
+    sync_requests_merged_into(db, req)
 
     db.commit()
     db.refresh(req)
@@ -1082,7 +1121,7 @@ def request_dismiss_impact(
 ):
     """Preview cascade: confirmed duplicate siblings are deleted with the request; potentials stay."""
     req = db.query(models.ManagerRequest).filter(models.ManagerRequest.id == request_id).first()
-    if not req:
+    if not is_admin_visible(req):
         raise HTTPException(status_code=404, detail="Request not found")
     return get_dismiss_impact(db, request_id)
 
@@ -1095,7 +1134,7 @@ def dismiss_request(
     admin: AuthenticatedUser = Depends(require_admin),
 ):
     req = db.query(models.ManagerRequest).filter(models.ManagerRequest.id == request_id).first()
-    if not req:
+    if not is_admin_visible(req):
         raise HTTPException(status_code=404, detail="Request not found")
 
     hydrate_request_display([req])
@@ -1112,7 +1151,8 @@ def dismiss_request(
     )
 
     dismiss_ids = [r.id for r in requests_to_dismiss]
-    permanently_delete_requests(db, dismiss_ids)
+    # Manager portal rows stay in the manager's history (hidden from admin).
+    admin_delete_requests(db, dismiss_ids)
 
     if group_id:
         group = (
@@ -1143,7 +1183,11 @@ def bulk_dismiss_requests(
     if not payload.ids:
         return []
 
-    reqs = db.query(models.ManagerRequest).filter(models.ManagerRequest.id.in_(payload.ids)).all()
+    reqs = (
+        db.query(models.ManagerRequest)
+        .filter(models.ManagerRequest.id.in_(payload.ids), admin_visible_filter())
+        .all()
+    )
     if not reqs:
         return []
 
@@ -1183,7 +1227,7 @@ def bulk_dismiss_requests(
                     admin.id,
                 )
 
-    permanently_delete_requests(db, list(all_dismiss_ids))
+    admin_delete_requests(db, list(all_dismiss_ids))
     db.commit()
     if any_was_new:
         notify_admin_requests_changed("dismiss_request_bulk")
@@ -1330,7 +1374,7 @@ def manager_requests_summary(
     base = _manager_requests_query(db, manager)
     total, pending_count = base.with_entities(
         func.count(),
-        func.sum(case((models.ManagerRequest.status == "new", 1), else_=0)),
+        func.sum(case((manager_status_expr() == STATUS_NEW, 1), else_=0)),
     ).one()
     payload = {
         "total": int(total or 0),
@@ -1360,20 +1404,22 @@ def list_manager_requests(
     safe_limit = min(max(limit, 1), 50)
     offset = (safe_page - 1) * safe_limit
 
+    # Admin-deleted / merged rows keep their pre-delete Pending / Handled look here.
+    manager_status = manager_status_expr()
     query = _manager_requests_query(db, manager)
     if status:
-        query = query.filter(models.ManagerRequest.status == status)
+        query = query.filter(manager_status == status)
 
     base = _manager_requests_query(db, manager)
     if status:
         total = query.count()
         pending_count = (
-            total if status == "new" else base.filter(models.ManagerRequest.status == "new").count()
+            total if status == STATUS_NEW else base.filter(manager_status == STATUS_NEW).count()
         )
     else:
         total, pending_count = base.with_entities(
             func.count(),
-            func.sum(case((models.ManagerRequest.status == "new", 1), else_=0)),
+            func.sum(case((manager_status == STATUS_NEW, 1), else_=0)),
         ).one()
         total = int(total or 0)
         pending_count = int(pending_count or 0)
@@ -1413,7 +1459,7 @@ def mark_manager_request_seen(
     )
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")
-    if req.status != "handled":
+    if manager_visible_status(req) != STATUS_HANDLED:
         return {"ok": True, "marked": 0}
 
     mark_request_seen(db, manager_id=manager.id, request_id=request_id)

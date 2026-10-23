@@ -21,6 +21,7 @@ from app.manager_request_tags import (
     TAG_UNVERIFIED,
     TAG_VERIFIED,
 )
+from app.request_visibility import admin_visible_filter
 
 
 def _day_start(dt: datetime) -> datetime:
@@ -120,8 +121,8 @@ def build_dashboard_insights(
             filter_end = now
     else:
         # "All Time": find earliest received_at or handled_at in DB
-        min_recv_q = db.query(func.min(models.ManagerRequest.received_at))
-        min_hand_q = db.query(func.min(models.ManagerRequest.handled_at))
+        min_recv_q = db.query(func.min(models.ManagerRequest.received_at)).filter(admin_visible_filter())
+        min_hand_q = db.query(func.min(models.ManagerRequest.handled_at)).filter(admin_visible_filter())
         if partner_id:
             min_recv_q = min_recv_q.filter(models.ManagerRequest.partner_id == partner_id)
             min_hand_q = min_hand_q.filter(models.ManagerRequest.partner_id == partner_id)
@@ -139,6 +140,7 @@ def build_dashboard_insights(
 
     # Timestamps only — counts come from len(); avoids 2 extra ~300ms round-trips.
     received_rows_query = db.query(models.ManagerRequest.received_at).filter(
+        admin_visible_filter(),
         models.ManagerRequest.received_at >= filter_start,
         models.ManagerRequest.received_at <= filter_end,
     )

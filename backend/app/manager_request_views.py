@@ -10,6 +10,7 @@ from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app import models
+from app.request_visibility import STATUS_HANDLED, manager_status_expr, manager_visible_status
 
 
 def _manager_uuid(manager_id: str) -> Optional[uuid.UUID]:
@@ -22,7 +23,7 @@ def _manager_uuid(manager_id: str) -> Optional[uuid.UUID]:
 
 
 def is_request_unread(req: models.ManagerRequest, seen_at: Optional[datetime]) -> bool:
-    if req.status != "handled" or not req.handled_at:
+    if manager_visible_status(req) != STATUS_HANDLED or not req.handled_at:
         return False
     if seen_at is None:
         return True
@@ -62,7 +63,7 @@ def count_unread_handled(
 
     return (
         base_query.filter(
-            models.ManagerRequest.status == "handled",
+            manager_status_expr() == STATUS_HANDLED,
             models.ManagerRequest.handled_at.isnot(None),
         )
         .outerjoin(
@@ -125,7 +126,7 @@ def mark_all_handled_seen(
 
     unread_rows = (
         base_query.filter(
-            models.ManagerRequest.status == "handled",
+            manager_status_expr() == STATUS_HANDLED,
             models.ManagerRequest.handled_at.isnot(None),
         )
         .outerjoin(

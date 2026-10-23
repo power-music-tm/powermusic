@@ -350,14 +350,16 @@ const NEW_REQUESTS_SUPPRESS_TTL_MS = 10 * 60 * 1000;
 function readNewRequestsSuppressions() {
   try {
     const raw = sessionStorage.getItem(NEW_REQUESTS_SUPPRESS_KEY);
-    if (!raw) return { requestIds: {}, groupIds: {} };
+    if (!raw) return { requestIds: {}, groupIds: {}, hardRequestIds: {} };
     const parsed = JSON.parse(raw);
+    const asMap = (value) => (value && typeof value === 'object' ? value : {});
     return {
-      requestIds: parsed?.requestIds && typeof parsed.requestIds === 'object' ? parsed.requestIds : {},
-      groupIds: parsed?.groupIds && typeof parsed.groupIds === 'object' ? parsed.groupIds : {},
+      requestIds: asMap(parsed?.requestIds),
+      groupIds: asMap(parsed?.groupIds),
+      hardRequestIds: asMap(parsed?.hardRequestIds),
     };
   } catch {
-    return { requestIds: {}, groupIds: {} };
+    return { requestIds: {}, groupIds: {}, hardRequestIds: {} };
   }
 }
 
@@ -367,12 +369,19 @@ function writeNewRequestsSuppressions(state) {
   } catch { /* quota */ }
 }
 
-/** Hide resolved/dismissed requests from New Requests until the server catches up. */
-export function suppressNewRequests({ requestIds = [], groupIds = [] } = {}) {
+/**
+ * Hide resolved/dismissed requests from New Requests until the server catches up.
+ *
+ * `hard: true` is for ids the server will never list as open again (deleted or
+ * marked handled). A list GET that started before the mutation committed can
+ * still return them — hard tombstones are not cleared by those responses.
+ */
+export function suppressNewRequests({ requestIds = [], groupIds = [], hard = false } = {}) {
   const state = readNewRequestsSuppressions();
   const until = Date.now() + NEW_REQUESTS_SUPPRESS_TTL_MS;
+  const requestBucket = hard ? state.hardRequestIds : state.requestIds;
   for (const id of requestIds) {
-    if (id) state.requestIds[id] = until;
+    if (id) requestBucket[id] = until;
   }
   for (const id of groupIds) {
     if (id) state.groupIds[id] = until;
@@ -380,16 +389,32 @@ export function suppressNewRequests({ requestIds = [], groupIds = [] } = {}) {
   writeNewRequestsSuppressions(state);
 }
 
-/** Remove suppression tombstones (e.g. after a failed mutation rollback). */
-export function clearNewRequestsSuppressions({ requestIds = [], groupIds = [] } = {}) {
+/**
+ * Remove suppression tombstones. Rollbacks (failed mutation) clear hard ones too;
+ * server-reconcile callers pass `includeHard: false`.
+ */
+export function clearNewRequestsSuppressions({ requestIds = [], groupIds = [], includeHard = true } = {}) {
   const state = readNewRequestsSuppressions();
   for (const id of requestIds) {
-    if (id) delete state.requestIds[id];
+    if (!id) continue;
+    delete state.requestIds[id];
+    if (includeHard) delete state.hardRequestIds[id];
   }
   for (const id of groupIds) {
     if (id) delete state.groupIds[id];
   }
   writeNewRequestsSuppressions(state);
+}
+
+/** Request ids deleted / handled this session (still within tombstone TTL). */
+export function hardSuppressedRequestIds() {
+  const state = readNewRequestsSuppressions();
+  const now = Date.now();
+  const ids = new Set();
+  for (const [id, until] of Object.entries(state.hardRequestIds)) {
+    if (until > now) ids.add(id);
+  }
+  return ids;
 }
 
 /** Filter suppressed rows while preserving tombstones for their full TTL. */
@@ -400,35 +425,33 @@ export function applyNewRequestsSuppressions(requests) {
   const activeRequestIds = new Set();
   const activeGroupIds = new Set();
 
-  for (const [id, until] of Object.entries(state.requestIds)) {
-    if (until > now) activeRequestIds.add(id);
-  }
-  for (const [id, until] of Object.entries(state.groupIds)) {
-    if (until > now) activeGroupIds.add(id);
-  }
+  const live = (map) => {
+    const next = {};
+    for (const [id, until] of Object.entries(map)) {
+      if (until > now) next[id] = until;
+    }
+    return next;
+  };
+  const nextRequestIds = live(state.requestIds);
+  const nextHardRequestIds = live(state.hardRequestIds);
+  const nextGroupIds = live(state.groupIds);
+  Object.keys(nextRequestIds).forEach((id) => activeRequestIds.add(id));
+  Object.keys(nextHardRequestIds).forEach((id) => activeRequestIds.add(id));
+  Object.keys(nextGroupIds).forEach((id) => activeGroupIds.add(id));
+
+  writeNewRequestsSuppressions({
+    requestIds: nextRequestIds,
+    groupIds: nextGroupIds,
+    hardRequestIds: nextHardRequestIds,
+  });
 
   if (activeRequestIds.size === 0 && activeGroupIds.size === 0) {
-    if (Object.keys(state.requestIds).length || Object.keys(state.groupIds).length) {
-      writeNewRequestsSuppressions({ requestIds: {}, groupIds: {} });
-    }
     return requests;
   }
 
-  const filtered = requests.filter(
+  return requests.filter(
     (row) => !activeRequestIds.has(row.id) && !activeGroupIds.has(row.duplicateGroupId),
   );
-
-  const nextRequestIds = {};
-  const nextGroupIds = {};
-  for (const [id, until] of Object.entries(state.requestIds)) {
-    if (until > now) nextRequestIds[id] = until;
-  }
-  for (const [id, until] of Object.entries(state.groupIds)) {
-    if (until > now) nextGroupIds[id] = until;
-  }
-  writeNewRequestsSuppressions({ requestIds: nextRequestIds, groupIds: nextGroupIds });
-
-  return filtered;
 }
 
 /** Lightweight pending-queue + directory counts for nav badges / Overview. */
@@ -457,9 +480,14 @@ export const getDashboardPeriod = (partnerId, startDate, endDate) => {
   return request(`/api/dashboard/period${qs ? `?${qs}` : ''}`);
 };
 export const getPilot2Overview = () => request('/api/pilot2/overview');
-export const getNewRequestsPage = (partnerId = '') => {
+/** `fetchedAt` = GET start time, so consumers can drop responses older than one already applied. */
+export const getNewRequestsPage = async (partnerId = '') => {
   const query = partnerId ? `?partner_id=${encodeURIComponent(partnerId)}` : '';
-  return request(`/api/admin/requests/page${query}`);
+  const fetchedAt = Date.now();
+  const data = await request(`/api/admin/requests/page${query}`);
+  return data && typeof data === 'object' && !Array.isArray(data) && !isApiErrorPayload(data)
+    ? { ...data, fetchedAt }
+    : data;
 };
 /** Single request by id — Request Detail must not rely only on the collapsed list page. */
 export const getAdminRequest = (id) =>

@@ -71,8 +71,10 @@ function seedFromRequest(match, groupDetail = null) {
 /**
  * When a solo request gains a duplicate group, hand off to Group Detail with a
  * warm cache + list seed so the 2nd member paints like later arrivals (no load flash).
+ * `arrival`: the duplicate landed while this page was open — Group Detail shows
+ * the same "New request arrived" alert it shows for 3rd+ arrivals.
  */
-async function promoteToGroupDetail(match, navigate) {
+async function promoteToGroupDetail(match, navigate, { arrival = false } = {}) {
   const groupId = match?.duplicateGroupId;
   if (!groupId || match.status !== 'new') return false;
 
@@ -88,7 +90,10 @@ async function promoteToGroupDetail(match, navigate) {
 
   navigate(`/new-requests/group/${encodeURIComponent(groupId)}`, {
     replace: true,
-    state: { seedFromList: seedFromRequest(match, detail) },
+    state: {
+      seedFromList: seedFromRequest(match, detail),
+      arrivalFromRequestId: arrival ? match.id : null,
+    },
   });
   return true;
 }
@@ -121,7 +126,7 @@ export default function RequestDetail() {
     navigate(backTo);
   }, [navigate, backTo]);
 
-  const applyMatch = useCallback(async (match, { allowPromote = true } = {}) => {
+  const applyMatch = useCallback(async (match, { allowPromote = true, arrival = false } = {}) => {
     if (!match || match.id !== requestId) {
       setRequest(null);
       setNotFound(true);
@@ -141,7 +146,7 @@ export default function RequestDetail() {
       if (promoteInFlightRef.current) return;
       promoteInFlightRef.current = true;
       try {
-        await promoteToGroupDetail(match, navigate);
+        await promoteToGroupDetail(match, navigate, { arrival });
       } finally {
         promoteInFlightRef.current = false;
       }
@@ -158,7 +163,8 @@ export default function RequestDetail() {
     if (!requestId) return;
     try {
       const match = await getAdminRequest(requestId);
-      await applyMatch(match);
+      // Live refresh only runs once the solo request is on screen — a group now means a new arrival.
+      await applyMatch(match, { arrival: true });
     } catch (err) {
       if (silent && requestRef.current) return;
       console.error(err);
@@ -298,7 +304,7 @@ export default function RequestDetail() {
         body: JSON.stringify({ adminNote: adminNote || null }),
       });
 
-      suppressNewRequests({ requestIds: [handledId] });
+      suppressNewRequests({ requestIds: [handledId], hard: true });
       removeRequestsFromCache(requestsCacheKey, { requestIds: [handledId] });
       patchCache(requestsCacheKey, { requests: nextRequests, persons: nextDirectory });
       bumpCacheEpoch(requestsCacheKey);

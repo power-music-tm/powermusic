@@ -11,6 +11,8 @@ const ADMIN_NEW_REQUESTS_DEPARTED_AT_KEY = 'pm_admin_new_requests_departed_at';
 const ADMIN_SESSION_STARTED_AT_KEY = 'pm_admin_session_started_at';
 /** Queue ids for the sidebar unopened badge (session). */
 const PENDING_REQUEST_IDS_BADGE_KEY = 'pm_admin_pending_request_ids_badge_v2';
+/** Start time of the list GET that last wrote pending ids — older responses are ignored. */
+const PENDING_REQUEST_IDS_FETCHED_AT_KEY = 'pm_admin_pending_request_ids_fetched_at_v2';
 /** Opened this session — badge drops immediately; not cleared on page re-visit. */
 const OPENED_REQUEST_IDS_BADGE_KEY = 'pm_admin_opened_request_ids_badge_v2';
 export const ADMIN_NEW_REQUESTS_BADGE_EVENT = 'pm-admin-new-requests-badge';
@@ -132,22 +134,16 @@ function notifyNewRequestsBadgeChanged() {
   }
 }
 
-function pruneOpenedBadgeIds(pendingIds) {
-  const pending = new Set(pendingIds);
-  const opened = readSet(OPENED_REQUEST_IDS_BADGE_KEY);
-  let changed = false;
-  for (const id of [...opened]) {
-    if (!pending.has(id)) {
-      opened.delete(id);
-      changed = true;
-    }
-  }
-  if (changed) writeSet(OPENED_REQUEST_IDS_BADGE_KEY, opened);
-  return changed;
-}
+/**
+ * Keep sidebar badge pending-ids in sync with the live New Requests queue.
+ * Pass `fetchedAt` (GET start time) so a slower, older response cannot
+ * overwrite a newer one — the sidebar and New Requests both fetch the list.
+ */
+export function syncPendingRequestIdsForBadge(requestIds, { fetchedAt } = {}) {
+  const at = Number(fetchedAt) || Date.now();
+  const lastAt = Number(readJson(PENDING_REQUEST_IDS_FETCHED_AT_KEY, 0)) || 0;
+  if (at < lastAt) return null;
 
-/** Keep sidebar badge pending-ids in sync with the live New Requests queue. */
-export function syncPendingRequestIdsForBadge(requestIds) {
   const ids = [
     ...new Set(
       (requestIds || [])
@@ -155,9 +151,15 @@ export function syncPendingRequestIdsForBadge(requestIds) {
         .filter(Boolean),
     ),
   ];
-  writeJson(PENDING_REQUEST_IDS_BADGE_KEY, ids);
-  pruneOpenedBadgeIds(ids);
-  notifyNewRequestsBadgeChanged();
+  writeJson(PENDING_REQUEST_IDS_FETCHED_AT_KEY, at);
+  const prev = readJson(PENDING_REQUEST_IDS_BADGE_KEY, []);
+  const same = Array.isArray(prev)
+    && prev.length === ids.length
+    && prev.every((id, i) => id === ids[i]);
+  if (!same) {
+    writeJson(PENDING_REQUEST_IDS_BADGE_KEY, ids);
+    notifyNewRequestsBadgeChanged();
+  }
   return ids;
 }
 
@@ -233,11 +235,11 @@ export function recordNewRequestsPageDeparted() {
  */
 export function syncAdminNewRequestHighlights(
   requests,
-  { isManualEntry = () => false } = {},
+  { isManualEntry = () => false, fetchedAt } = {},
 ) {
   const list = requests || [];
   // Sidebar badge tracks the full visible queue (including manual entries).
-  syncPendingRequestIdsForBadge(list.map((req) => req.id));
+  syncPendingRequestIdsForBadge(list.map((req) => req.id), { fetchedAt });
 
   const eligible = list.filter((req) => !isManualEntry(req.submittedBy));
   const currentIds = eligible
@@ -288,13 +290,25 @@ export function isRequestUnseen(requestId) {
 }
 
 export function markRequestViewed(requestId) {
-  markHighlightViewed(SCOPES.adminNewRequests, requestId);
-  const id = normalizeHighlightId(requestId);
-  if (!id) return;
-  // Badge: count as opened immediately (row highlight may stay until next visit).
+  markRequestsViewed([requestId]);
+}
+
+/**
+ * Batch open (e.g. every member of a group). Badge counts them as opened
+ * immediately; row highlight may stay until the next page visit.
+ */
+export function markRequestsViewed(requestIds) {
   const opened = readSet(OPENED_REQUEST_IDS_BADGE_KEY);
-  if (!opened.has(id)) {
-    opened.add(id);
+  let changed = false;
+  for (const rawId of requestIds || []) {
+    markHighlightViewed(SCOPES.adminNewRequests, rawId);
+    const id = normalizeHighlightId(rawId);
+    if (id && !opened.has(id)) {
+      opened.add(id);
+      changed = true;
+    }
+  }
+  if (changed) {
     writeSet(OPENED_REQUEST_IDS_BADGE_KEY, opened);
     notifyNewRequestsBadgeChanged();
   }

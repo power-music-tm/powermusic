@@ -14,11 +14,13 @@ import {
   writeCache,
   suppressNewRequests,
   clearNewRequestsSuppressions,
+  hardSuppressedRequestIds,
   removeRequestsFromCache,
   detachRequestFromGroupInCache,
   REQUESTS_PAGE_CACHE_KEY,
 } from '../utils/pilot2Api';
 import { fetchGroupDetail } from '../utils/duplicateGroupApi';
+import { markRequestsViewed } from '../utils/adminUiHighlights';
 import {
   applyListSeed,
   groupDetailCacheKey,
@@ -38,6 +40,27 @@ function personLabel(member) {
   const last = member?.person?.lastName || member?.lastName || '';
   const name = [first, last].filter(Boolean).join(' ').trim();
   return name || 'A new request';
+}
+
+function arrivalMessage(groupData, addedMembers) {
+  const members = Array.isArray(groupData?.members) ? groupData.members : [];
+  const label = addedMembers.length === 1
+    ? personLabel(addedMembers[0])
+    : `${addedMembers.length} new requests`;
+  const representative = members.find((m) => m.isRepresentative);
+  const hero = [
+    groupData?.directoryPerson?.firstName || groupData?.directoryPerson?.person?.firstName,
+    groupData?.directoryPerson?.lastName || groupData?.directoryPerson?.person?.lastName,
+  ].filter(Boolean).join(' ').trim()
+    || [
+      representative?.person?.firstName,
+      representative?.person?.lastName,
+    ].filter(Boolean).join(' ').trim()
+    || 'this group';
+
+  return addedMembers.length === 1
+    ? `New request for ${hero}: ${label} joined this group.`
+    : `New requests for ${hero}: ${label} joined this group.`;
 }
 
 export default function GroupDetail() {
@@ -81,11 +104,39 @@ export default function GroupDetail() {
 
   const goBack = useCallback(() => navigate('/new-requests'), [navigate]);
 
-  const applyGroupDetail = useCallback((data, { alertNewMembers = false } = {}) => {
+  // Set when Request Detail hands off because a 2nd duplicate arrived while it was open.
+  const handoffArrivalFromRef = useRef(null);
+  const handoffArrivalKeyRef = useRef(null);
+  const alertGroupIdRef = useRef(null);
+
+  const showArrivalAlert = useCallback((groupData, addedMembers) => {
+    if (!addedMembers.length) return;
+    const message = arrivalMessage(groupData, addedMembers);
+    setArrivalAlert({ message, count: addedMembers.length, at: Date.now() });
+    showToastRef.current(message, 'warning');
+  }, []);
+
+  /** Alert for members other than the request the admin was viewing (once data has them). */
+  const consumeHandoffArrival = useCallback((groupData) => {
+    const fromId = handoffArrivalFromRef.current;
+    if (!fromId) return false;
+    const arrived = (Array.isArray(groupData?.members) ? groupData.members : [])
+      .filter((m) => m?.id && m.id !== fromId);
+    if (!arrived.length) return false;
+    handoffArrivalFromRef.current = null;
+    showArrivalAlert(groupData, arrived);
+    return true;
+  }, [showArrivalAlert]);
+
+  const applyGroupDetail = useCallback((data, { alertNewMembers = false, quietDissolved = false } = {}) => {
     if (!data || data.status === 'resolved' || data.status === 'dismissed') {
-      setNotFound(true);
-      setGroup(null);
-      return;
+      // After Delete, caller navigates away — keep current paint (avoid !group
+      // flashing "Group not found" before replace navigation).
+      if (!quietDissolved) {
+        setNotFound(true);
+        setGroup(null);
+      }
+      return { dissolved: true };
     }
 
     // refreshCache writes the API payload first and would wipe merge tombstones —
@@ -106,8 +157,8 @@ export default function GroupDetail() {
     ].filter(Boolean)));
     droppedMemberIdsRef.current = droppedMemberIds;
 
-    // Drop merged-away peers that a stale in-flight poll may still return.
-    const droppedSet = new Set(droppedMemberIds);
+    // Drop merged-away / deleted peers that a stale in-flight poll may still return.
+    const droppedSet = new Set([...droppedMemberIds, ...hardSuppressedRequestIds()]);
     const liveMembers = (Array.isArray(data.members) ? data.members : [])
       .filter((m) => m?.id && !droppedSet.has(m.id));
     const filtered = {
@@ -122,7 +173,7 @@ export default function GroupDetail() {
     // Active members must stay list-visible. Clear stale request-id tombstones
     // (e.g. a prior attach that wrongly suppressed survivors).
     if (nextIds.length) {
-      clearNewRequestsSuppressions({ requestIds: nextIds });
+      clearNewRequestsSuppressions({ requestIds: nextIds, includeHard: false });
     }
 
     // Only treat as arrivals when we already had a baseline — empty→full after
@@ -133,44 +184,24 @@ export default function GroupDetail() {
     setNotFound(false);
     memberIdsRef.current = new Set(nextIds);
 
+    if (consumeHandoffArrival(filtered)) return { dissolved: false };
+
     if (
       alertNewMembers
       && liveReadyRef.current
       && prevIds.size > 0
       && added.length > 0
     ) {
-      const addedMembers = liveMembers.filter((m) => added.includes(m.id));
-      const label = addedMembers.length === 1
-        ? personLabel(addedMembers[0])
-        : `${added.length} new requests`;
-      const hero = [
-        filtered.directoryPerson?.firstName || filtered.directoryPerson?.person?.firstName,
-        filtered.directoryPerson?.lastName || filtered.directoryPerson?.person?.lastName,
-      ].filter(Boolean).join(' ').trim()
-        || [
-          liveMembers.find((m) => m.isRepresentative)?.person?.firstName,
-          liveMembers.find((m) => m.isRepresentative)?.person?.lastName,
-        ].filter(Boolean).join(' ').trim()
-        || 'this group';
-
-      const message = added.length === 1
-        ? `New request for ${hero}: ${label} joined this group.`
-        : `New requests for ${hero}: ${label} joined this group.`;
-
-      setArrivalAlert({
-        message,
-        count: added.length,
-        at: Date.now(),
-      });
-      showToastRef.current(message, 'warning');
+      showArrivalAlert(filtered, liveMembers.filter((m) => added.includes(m.id)));
     }
-  }, [groupId]);
+    return { dissolved: false };
+  }, [groupId, consumeHandoffArrival, showArrivalAlert]);
 
-  const refreshGroupDetail = useCallback(({ alertNewMembers = true, bustCache = false } = {}) => {
-    if (!groupId) return Promise.resolve();
+  const refreshGroupDetail = useCallback(({ alertNewMembers = true, bustCache = false, quietDissolved = false } = {}) => {
+    if (!groupId) return Promise.resolve(null);
     // Allow post-merge / post-attach busts to preempt a poll that would otherwise
     // apply a stale multi-member payload after Request History Merge.
-    if (refreshInFlightRef.current && !bustCache) return Promise.resolve();
+    if (refreshInFlightRef.current && !bustCache) return Promise.resolve(null);
     refreshInFlightRef.current = true;
     // Do NOT bump epoch on live polls — that races in-flight GETs and drops apply().
     if (bustCache) bumpCacheEpoch(groupCacheKey);
@@ -178,16 +209,23 @@ export default function GroupDetail() {
       groupCacheKey,
       () => fetchGroupDetail(groupId),
       (data) => {
-        applyGroupDetail(data, { alertNewMembers });
+        applyGroupDetail(data, { alertNewMembers, quietDissolved });
         liveReadyRef.current = true;
         setLoading(false);
       },
     )
-      .catch(() => {})
+      .catch(() => null)
       .finally(() => {
         refreshInFlightRef.current = false;
       });
   }, [applyGroupDetail, groupCacheKey, groupId]);
+
+  // Viewing the group opens every member — keeps the sidebar badge from
+  // re-counting the group when its representative changes.
+  const viewedMemberKey = memberIdsFromGroup(group).join(',');
+  useEffect(() => {
+    if (viewedMemberKey) markRequestsViewed(viewedMemberKey.split(','));
+  }, [viewedMemberKey]);
 
   // Directory is optional context — do not block the group UI on it.
   useEffect(() => {
@@ -204,7 +242,10 @@ export default function GroupDetail() {
   useEffect(() => {
     let cancelled = false;
     setNotFound(false);
-    setArrivalAlert(null);
+    if (alertGroupIdRef.current !== groupId) {
+      alertGroupIdRef.current = groupId;
+      setArrivalAlert(null);
+    }
     liveReadyRef.current = false;
     refreshInFlightRef.current = false;
 
@@ -220,10 +261,22 @@ export default function GroupDetail() {
       && cached.members.length < seeded.members.length
     ) ? cached : seeded;
     memberIdsRef.current = new Set(memberIdsFromGroup(paint));
+    const handoffFromId = location.state?.arrivalFromRequestId || null;
+    handoffArrivalFromRef.current = null;
+    if (handoffFromId && handoffArrivalKeyRef.current !== location.key) {
+      handoffArrivalKeyRef.current = location.key;
+      handoffArrivalFromRef.current = handoffFromId;
+      // One-shot: a reload or Back/Forward to this entry must not re-alert.
+      navigate(`${location.pathname}${location.search}`, {
+        replace: true,
+        state: { ...location.state, arrivalFromRequestId: null },
+      });
+    }
     if (paint) {
       setGroup(paint);
       setLoading(false);
       writeCache(groupCacheKey, paint);
+      consumeHandoffArrival(paint);
     } else {
       setGroup(null);
       setLoading(true);
@@ -258,7 +311,8 @@ export default function GroupDetail() {
       cancelled = true;
     };
     // Seed by request id only — avoid re-running on new state object identity.
-  }, [groupId, groupCacheKey, listSeed?.id, applyGroupDetail]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupId, groupCacheKey, listSeed?.id, applyGroupDetail, consumeHandoffArrival]);
 
   // Live updates: Realtime nudge + visible-tab poll + focus/visible refetch.
   useEffect(() => {
@@ -332,6 +386,7 @@ export default function GroupDetail() {
         clearNewRequestsSuppressions({
           requestIds: movedIds,
           groupIds: [groupId, newGroupId].filter(Boolean),
+          includeHard: false,
         });
         // Brief shell hide only — destination is upserted below / on navigate.
         suppressNewRequests({ groupIds: [groupId] });
@@ -411,11 +466,15 @@ export default function GroupDetail() {
             : 'Request marked as handled.';
           break;
         case 'member_deleted':
-          toastMsg = name ? `Deleted request for ${name}.` : 'Request deleted.';
+        case 'member_deleted_done': {
+          const deletedLabel = typeof name === 'object' && name
+            ? (name.name || null)
+            : name;
+          toastMsg = deletedLabel
+            ? `Deleted request for ${deletedLabel}.`
+            : 'Request deleted.';
           break;
-        case 'member_deleted_done':
-          toastMsg = name ? `Deleted request for ${name}.` : 'Request deleted.';
-          break;
+        }
         case 'peers_merged':
           toastMsg = 'Combined into one request. Choose Keep Existing or continue on the current request.';
           if (name && typeof name === 'object' && Array.isArray(name.members)) {
@@ -445,11 +504,50 @@ export default function GroupDetail() {
       if (
         type === 'unlinked'
         || type === 'unlinked_handled'
-        || type === 'member_deleted'
         || type === 'peers_merged'
       ) {
         // Member set changed — refresh so live baseline matches this visit.
-        refreshGroupDetail({ alertNewMembers: false, bustCache: true });
+        // After a merge the baseline is survivor + known late arrivals, so any
+        // other member is a request that landed while the merge was saving.
+        refreshGroupDetail({ alertNewMembers: type === 'peers_merged', bustCache: true });
+        return;
+      }
+
+      // Partial delete: refresh in place. If the group was dissolved (cascade or
+      // last peer), leave — never flash "Group not found" on this URL.
+      if (type === 'member_deleted') {
+        refreshGroupDetail({
+          alertNewMembers: false,
+          bustCache: true,
+          quietDissolved: true,
+        }).then((fresh) => {
+          if (!fresh || fresh.status === 'resolved' || fresh.status === 'dismissed') {
+            clearCache(groupCacheKey);
+            navigate('/new-requests', { replace: true });
+          }
+        });
+        return;
+      }
+
+      // Group finished after delete: open the surviving request, or the list.
+      if (type === 'member_deleted_done') {
+        const payload = typeof name === 'object' && name ? name : {};
+        const survivorId = payload.survivorId || null;
+        const survivor = payload.survivor || null;
+        clearCache(groupCacheKey);
+        if (survivorId) {
+          navigate(`/new-requests/${encodeURIComponent(survivorId)}`, {
+            replace: true,
+            state: {
+              seedRequest: survivor
+                ? { ...survivor, duplicateGroupId: null }
+                : { id: survivorId, status: 'new' },
+              from: '/new-requests',
+            },
+          });
+        } else {
+          navigate('/new-requests', { replace: true });
+        }
         return;
       }
 
@@ -497,6 +595,7 @@ export default function GroupDetail() {
         clearNewRequestsSuppressions({
           requestIds: [unlinkedRequestId].filter(Boolean),
           groupIds: [groupId],
+          includeHard: false,
         });
         navigate('/new-requests', { replace: true });
         return;

@@ -14,6 +14,7 @@ export function writeMergedGroupCache(groupId, previousGroup, {
   deletedIds = [],
   members: membersOverride = null,
   classification = null,
+  representativeId = null,
 } = {}) {
   if (!groupId || !survivor?.id || !previousGroup) return null;
   const deleted = new Set((deletedIds || []).filter(Boolean));
@@ -67,7 +68,7 @@ export function writeMergedGroupCache(groupId, previousGroup, {
     id: groupId,
     status: 'active',
     classification: nextClassification,
-    representativeRequestId: survivor.id,
+    representativeRequestId: representativeId || survivor.id,
     members,
     droppedMemberIds: dropped,
     peersMergedAt: Date.now(),
@@ -80,6 +81,7 @@ export function writeMergedGroupCache(groupId, previousGroup, {
 /** Keep New Requests list previews in sync so warm/seed cannot resurrect deleted peers. */
 export function patchRequestsCacheAfterPeerMerge(requestsCacheKey, groupId, {
   survivorId,
+  representativeId = null,
   deletedIds = [],
   members = [],
   classificationSummary = null,
@@ -99,7 +101,7 @@ export function patchRequestsCacheAfterPeerMerge(requestsCacheKey, groupId, {
           ? { ...r.groupPreview }
           : {};
         preview.members = members;
-        preview.representativeRequestId = survivorId;
+        preview.representativeRequestId = representativeId || survivorId;
         if (classificationSummary) {
           preview.classificationSummary = classificationSummary;
         }

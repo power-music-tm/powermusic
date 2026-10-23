@@ -20,8 +20,12 @@ def _manager_uuid(manager_id: str | None) -> Optional[uuid.UUID]:
         return None
 
 
-def _is_manager_portal_request(row: models.ManagerRequest) -> bool:
+def is_manager_portal_request(row: models.ManagerRequest) -> bool:
+    """Visible in some manager's request history (see _manager_requests_query)."""
     return row.manager_id is not None and has_tag(row.tags or [], TAG_VERIFIED)
+
+
+_is_manager_portal_request = is_manager_portal_request
 
 
 def get_stored_manager_request_stats(db: Session, manager_id: str) -> Optional[dict[str, int]]:
