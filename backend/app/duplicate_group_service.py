@@ -2445,6 +2445,10 @@ def resolve_group_update(
 ) -> models.ManagerRequest:
     """Update the existing Directory record in-place with final_values; resolve group and permanently delete incoming requests.
 
+    Status transitions (alongside the field update):
+    - Incoming Remove → archive the Directory row (active → archive).
+    - Incoming Add against an archived/Removed Directory → restore to active.
+
     Invariants:
     - group.directory_person_id must equal directory_person.id (caller verifies).
     - Updates directory_person in-place.
@@ -2473,6 +2477,12 @@ def resolve_group_update(
         directorLast=prev_dir.get("lastName") or None,
     )
 
+    # Capture roster state before mutating fields / status.
+    was_archived = (
+        directory_person.archived_at is not None
+        or (directory_person.outcome or "") == "Removed"
+    )
+
     # Update the Directory row in-place.
     directory_person.person_first_name = (final_values.firstName or "").strip()
     directory_person.person_last_name = (final_values.lastName or "").strip()
@@ -2489,6 +2499,7 @@ def resolve_group_update(
         )
 
     from app.intake_persons import append_lifecycle_history, get_lifecycle_history
+    from app.manager_request_tags import TAG_REMOVED
     
     existing_stored = get_lifecycle_history(directory_person)
     existing_stored_ids = {e.get("id") for e in existing_stored}
@@ -2500,14 +2511,31 @@ def resolve_group_update(
         source_request_id=source_request_id,
         representative_request_id=group.representative_request_id,
     )
-    if manager_source and manager_source.action == "Remove":
+    source_action = (manager_source.action if manager_source else None) or "Add"
+
+    # Status-aware Directory transition alongside the field update:
+    # - Remove request + active Directory → archive (active → archive)
+    # - Add request + archived/Removed Directory → restore (archive → active)
+    # - Add + active / Remove + already archived → update fields; keep status
+    history_title = "Directory record updated"
+    if source_action == "Remove":
         directory_person.action = "Remove"
         directory_person.outcome = "Removed"
         directory_person.handled_at = now
         directory_person.archived_at = now
-        from app.manager_request_tags import TAG_REMOVED
         if TAG_REMOVED not in (directory_person.tags or []):
-            directory_person.tags = (directory_person.tags or []) + [TAG_REMOVED]
+            directory_person.tags = list(directory_person.tags or []) + [TAG_REMOVED]
+            flag_modified(directory_person, "tags")
+        history_title = "Moved to archive" if not was_archived else "Directory record updated"
+    elif was_archived:
+        directory_person.action = "Add"
+        directory_person.outcome = "Added"
+        directory_person.handled_at = now
+        directory_person.archived_at = None
+        if TAG_REMOVED in (directory_person.tags or []):
+            directory_person.tags = [t for t in (directory_person.tags or []) if t != TAG_REMOVED]
+            flag_modified(directory_person, "tags")
+        history_title = "Restored to active"
 
     snapshot_events = _snapshot_discarded_manager_requests(directory_person, members, existing_stored_ids)
     
@@ -2525,7 +2553,7 @@ def resolve_group_update(
         "requestId": directory_person.id,
         "displayId": dir_display_id,
         "action": directory_person.action,
-        "title": "Directory record updated",
+        "title": history_title,
         "detail": f"By {POWER_MUSIC_ADMIN_DISPLAY_NAME}",
         "handledBy": POWER_MUSIC_ADMIN_DISPLAY_NAME,
         "outcome": directory_person.outcome,

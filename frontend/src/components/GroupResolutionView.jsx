@@ -1918,10 +1918,14 @@ export default function GroupResolutionView({
             ? `These ${incomingMemberCount()} new requests will be merged into the person below, and the older versions will be removed. Directory stays unchanged for now. After this, choose Keep Existing or ${resolvePrimaryLabel({ hasDirectory, action: currentRep?.action })} on the current request.`
             : currentRep?.action === 'Remove'
             ? (hasDirectory
-                ? 'The final resolved values will be used, and the person will be marked as removed in the Directory. The requests in this group will be closed.'
+                ? 'The final resolved values will be applied, and this Directory record will be moved to archive. The requests in this group will be closed.'
                 : 'The final resolved values will be used, and the person will be marked as removed in the Directory. The requests in this group will be closed.')
             : hasDirectory
-            ? 'The final resolved values will overwrite the existing Directory record, and the requests in this group will be closed.'
+            ? (
+                (dirPerson?.archivedAt || String(dirPerson?.status || '').toLowerCase() === 'removed')
+                  ? 'The final resolved values will overwrite this archived Directory record and restore it to the active Directory. The requests in this group will be closed.'
+                  : 'The final resolved values will overwrite the existing Directory record, and the requests in this group will be closed.'
+              )
             : 'A new Directory record will be created from the final resolved values, and the requests in this group will be closed.'}
         </p>
 
