@@ -170,6 +170,36 @@ def get_all_rejected_nickname_pairs(db: Session) -> Set[Tuple[str, str]]:
         return set()
 
 
+def get_all_confirmed_nickname_pairs(db: Session) -> Set[Tuple[str, str]]:
+    """Ordered (name_a, name_b) pairs admin confirmed as the same person."""
+    try:
+        with db.begin_nested():
+            rows = db.query(models.ConfirmedNicknamePair).all()
+            return {(r.name_a, r.name_b) for r in rows if r.name_a and r.name_b}
+    except Exception:
+        return set()
+
+
+def get_answered_nickname_pair_keys(db: Session) -> Set[str]:
+    """Normalized ``a|b`` keys for pairs already answered (Yes or No)."""
+    keys: Set[str] = set()
+    for a, b in get_all_rejected_nickname_pairs(db):
+        keys.add(f"{a}|{b}")
+    for a, b in get_all_confirmed_nickname_pairs(db):
+        keys.add(f"{a}|{b}")
+    return keys
+
+
+def _admin_uuid(admin_id: Optional[str]):
+    if not admin_id or admin_id == "dev-bypass":
+        return None
+    try:
+        from uuid import UUID
+        return UUID(admin_id)
+    except ValueError:
+        return None
+
+
 def record_rejected_nickname_pair(
     db: Session,
     left: Optional[str],
@@ -181,6 +211,7 @@ def record_rejected_nickname_pair(
     """Persist that two nickname-linked first names are different people.
 
     No-op when names are empty, exact after normalize, or already stored.
+    Clears a prior Yes (confirmed) answer for the same pair.
     """
     from app.nickname_match import is_nickname_only_first_match, ordered_nickname_pair
     import uuid as _uuid
@@ -190,6 +221,12 @@ def record_rejected_nickname_pair(
         return None
     if not is_nickname_only_first_match(left, right):
         return None
+
+    # Opposite answer wins — drop confirmed if present.
+    db.query(models.ConfirmedNicknamePair).filter(
+        models.ConfirmedNicknamePair.name_a == key[0],
+        models.ConfirmedNicknamePair.name_b == key[1],
+    ).delete(synchronize_session=False)
 
     existing = (
         db.query(models.RejectedNicknamePair)
@@ -202,19 +239,60 @@ def record_rejected_nickname_pair(
     if existing:
         return existing
 
-    admin_uuid = None
-    if admin_id and admin_id != "dev-bypass":
-        try:
-            from uuid import UUID
-            admin_uuid = UUID(admin_id)
-        except ValueError:
-            pass
-
     row = models.RejectedNicknamePair(
         id=f"rnick-{_uuid.uuid4().hex[:12]}",
         name_a=key[0],
         name_b=key[1],
-        rejected_by_admin_id=admin_uuid,
+        rejected_by_admin_id=_admin_uuid(admin_id),
+        source_group_id=source_group_id,
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(row)
+    return row
+
+
+def record_confirmed_nickname_pair(
+    db: Session,
+    left: Optional[str],
+    right: Optional[str],
+    *,
+    admin_id: Optional[str] = None,
+    source_group_id: Optional[str] = None,
+) -> Optional[models.ConfirmedNicknamePair]:
+    """Persist that two nickname-linked first names are the same person.
+
+    Skips the confirmation modal next time. Clears a prior No (rejected) answer.
+    """
+    from app.nickname_match import is_nickname_only_first_match, ordered_nickname_pair
+    import uuid as _uuid
+
+    key = ordered_nickname_pair(left, right)
+    if not key:
+        return None
+    if not is_nickname_only_first_match(left, right):
+        return None
+
+    db.query(models.RejectedNicknamePair).filter(
+        models.RejectedNicknamePair.name_a == key[0],
+        models.RejectedNicknamePair.name_b == key[1],
+    ).delete(synchronize_session=False)
+
+    existing = (
+        db.query(models.ConfirmedNicknamePair)
+        .filter(
+            models.ConfirmedNicknamePair.name_a == key[0],
+            models.ConfirmedNicknamePair.name_b == key[1],
+        )
+        .first()
+    )
+    if existing:
+        return existing
+
+    row = models.ConfirmedNicknamePair(
+        id=f"cnick-{_uuid.uuid4().hex[:12]}",
+        name_a=key[0],
+        name_b=key[1],
+        confirmed_by_admin_id=_admin_uuid(admin_id),
         source_group_id=source_group_id,
         created_at=datetime.now(timezone.utc),
     )

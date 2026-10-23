@@ -94,9 +94,12 @@ export default function RequestDetail() {
     const personName = formatPersonName(req.person);
     const outcome = req.action === 'Add' ? 'Added' : 'Removed';
     const handledAt = new Date().toISOString();
+    // Same as Add to Directory / New Requests: only this id is handled. Late peers
+    // that joined while Confirm was open rematch against this Directory row.
+    const handledId = req.id;
 
     setConfirmAction(null);
-    removeRequestHighlight(req.id);
+    removeRequestHighlight(handledId);
 
     const cached = await new Promise((resolve) => {
       loadWithCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data) => resolve(data)).catch(() => resolve(null));
@@ -105,59 +108,52 @@ export default function RequestDetail() {
     const currentRequests = Array.isArray(cached?.requests) ? cached.requests : [];
     const currentDirectory = Array.isArray(cached?.persons) ? cached.persons : directory;
 
-    const nextRequests = currentRequests.filter((r) => r.id !== req.id);
-    const existingPerson = currentDirectory.find((p) => p.id === req.id || p.sourceRequestId === req.id);
-    const nextDirectory = existingPerson
-      ? currentDirectory.map((p) =>
-          (p.id === req.id || p.sourceRequestId === req.id)
-            ? {
-                ...p,
-                status: outcome,
-                dateAdded: handledAt,
-                handledBy: adminDisplayName,
-                adminNotes: adminNote || '',
-                partnerId: req.partnerId || p.partnerId || null,
-              }
-            : p,
-        )
-      : [
-          {
-            id: `temp-${req.id}`,
-            displayId: req.displayId,
-            sourceRequestId: req.id,
-            sourceRequestNumber: req.displayId,
-            firstName: req.person.firstName,
-            lastName: req.person.lastName,
-            email: req.person.email,
-            location: req.person.location,
-            role: req.person.role || req.role,
-            directorFirst: req.person.directorFirst || req.directorFirst,
-            directorLast: req.person.directorLast || req.directorLast,
-            status: outcome,
-            dateAdded: handledAt,
-            requestReceivedAt: req.receivedAt,
-            addedBy: req.createdBy || getManagerDisplayName(req.submittedBy, req.tags),
-            managerName: req.createdBy || getManagerDisplayName(req.submittedBy, req.tags),
-            handledBy: adminDisplayName,
-            managerEmail: req.submittedBy?.email || '',
-            club: req.submittedBy?.club || '',
-            managerNotes: req.notes || '',
-            adminNotes: adminNote || '',
-            notes: req.notes || '',
-            partnerId: req.partnerId || null,
-          },
-          ...currentDirectory,
-        ];
+    const nextRequests = currentRequests.filter((r) => r.id !== handledId);
+    const existingPerson = currentDirectory.find((p) => p.id === handledId || p.sourceRequestId === handledId);
+    const directoryPersonPayload = {
+      id: existingPerson?.id || `temp-${handledId}`,
+      displayId: existingPerson?.displayId || req.displayId,
+      sourceRequestId: handledId,
+      sourceRequestNumber: existingPerson?.sourceRequestNumber || req.displayId,
+      firstName: req.person.firstName,
+      lastName: req.person.lastName,
+      email: req.person.email,
+      location: req.person.location,
+      role: req.person.role || req.role,
+      directorFirst: req.person.directorFirst || req.directorFirst,
+      directorLast: req.person.directorLast || req.directorLast,
+      status: outcome,
+      dateAdded: handledAt,
+      requestReceivedAt: req.receivedAt,
+      addedBy: req.createdBy || getManagerDisplayName(req.submittedBy, req.tags),
+      managerName: req.createdBy || getManagerDisplayName(req.submittedBy, req.tags),
+      handledBy: adminDisplayName,
+      managerEmail: req.submittedBy?.email || '',
+      club: req.submittedBy?.club || '',
+      managerNotes: req.notes || '',
+      adminNotes: adminNote || '',
+      notes: req.notes || '',
+      partnerId: req.partnerId || existingPerson?.partnerId || null,
+    };
+    const nextDirectory = outcome === 'Removed'
+      ? currentDirectory.filter((p) => p.id !== handledId && p.sourceRequestId !== handledId)
+      : existingPerson
+        ? currentDirectory.map((p) =>
+            (p.id === handledId || p.sourceRequestId === handledId)
+              ? { ...p, ...directoryPersonPayload, id: p.id }
+              : p,
+          )
+        : [directoryPersonPayload, ...currentDirectory];
 
     try {
-      await fetchJson(`/api/admin/requests/${req.id}/mark-handled`, {
+      await fetchJson(`/api/admin/requests/${handledId}/mark-handled`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ adminNote: adminNote || null }),
       });
 
-      suppressNewRequests({ requestIds: [req.id] });
-      removeRequestsFromCache(requestsCacheKey, { requestIds: [req.id] });
+      suppressNewRequests({ requestIds: [handledId] });
+      removeRequestsFromCache(requestsCacheKey, { requestIds: [handledId] });
       patchCache(requestsCacheKey, { requests: nextRequests, persons: nextDirectory });
       bumpCacheEpoch(requestsCacheKey);
       writeCache(directoryCacheKey, nextDirectory);

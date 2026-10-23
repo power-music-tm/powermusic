@@ -21,6 +21,7 @@ import {
   flushViewedRequestHighlights,
   recordNewRequestsPageDeparted,
   syncAdminNewRequestHighlights,
+  syncPendingRequestIdsForBadge,
   ADMIN_NEW_ROW_HIGHLIGHT_CLASS,
 } from '../utils/adminUiHighlights';
 import { useAuth } from '../context/AuthContext';
@@ -42,7 +43,8 @@ import {
   firstInvalidPersonField,
 } from '../utils/managerFormValidation';
 
-const REQUESTS_POLL_MS = 10000;
+/** Visible-tab safety net when Realtime is slow/offline (GitHub-style poll). */
+const REQUESTS_POLL_MS = 5000;
 const SORT_PRESETS = [
   { value: 'displayId-desc', label: 'ID (newest first)' },
   { value: 'displayId-asc', label: 'ID (oldest first)' },
@@ -570,6 +572,13 @@ export default function Requests() {
     [highlightVersion],
   );
 
+  // Keep sidebar unopened badge in sync with the live queue (source of truth here).
+  // Skip the empty initial mount so we do not wipe opened-ids before the first fetch.
+  useEffect(() => {
+    if (tableLoading && newRequests.length === 0) return;
+    syncPendingRequestIdsForBadge(newRequests.map((row) => row.id));
+  }, [newRequests, tableLoading]);
+
   const handleOpenRequest = (row) => {
     markRequestViewed(row.id);
     bumpHighlights();
@@ -753,18 +762,21 @@ export default function Requests() {
       setTableLoading(true);
     }
     refreshRequestsPage();
-    const refresh = () => {
+
+    // Industry pattern: Realtime nudge (below) + visible-tab poll + focus/visible refetch.
+    const refreshIfVisible = () => {
       if (!document.hidden) refreshRequestsPage({ networkOnly: true });
     };
-    window.addEventListener('focus', refresh);
-    const poll = window.setInterval(refresh, REQUESTS_POLL_MS);
+    window.addEventListener('focus', refreshIfVisible);
+    const poll = window.setInterval(refreshIfVisible, REQUESTS_POLL_MS);
     return () => {
-      window.removeEventListener('focus', refresh);
+      window.removeEventListener('focus', refreshIfVisible);
       window.clearInterval(poll);
     };
   }, [applyRequestsPage, refreshRequestsPage, requestsCacheKey, selectedPartnerId]);
 
   useRealtimeBroadcast('requests-changed', () => {
+    if (document.hidden) return;
     refreshRequestsPage({ networkOnly: true });
   });
 
@@ -774,14 +786,17 @@ export default function Requests() {
         recordNewRequestsPageDeparted();
         flushViewedRequestHighlights();
         bumpHighlights();
+        return;
       }
+      // Returning to the tab — pull fresh queue (same as GitHub Notifications).
+      refreshRequestsPage({ networkOnly: true });
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);
       recordNewRequestsPageDeparted();
     };
-  }, []);
+  }, [refreshRequestsPage]);
 
   // ── Filter / Sort states ──
   const [searchQuery, setSearchQuery] = useState('');
@@ -1101,58 +1116,55 @@ export default function Requests() {
     const personName = formatPersonName(req.person);
     const outcome = req.action === 'Add' ? 'Added' : 'Removed';
     const handledAt = new Date().toISOString();
+    // Same as Add to Directory: only this request is handled. Peers that joined
+    // while Confirm was open stay as New Requests and re-match this Directory row.
+    const handledId = req.id;
 
     setConfirmActionRequest(null);
-    removeRequestHighlight(req.id);
-    pendingCreatedIdsRef.current.delete(req.id);
+    removeRequestHighlight(handledId);
+    pendingCreatedIdsRef.current.delete(handledId);
     bumpHighlights();
 
-    const nextRequests = newRequests.filter((r) => r.id !== req.id);
-    const existingPerson = liveDirectory.find((p) => p.id === req.id || p.sourceRequestId === req.id);
-    const nextDirectory = existingPerson
-      ? liveDirectory.map((p) =>
-          (p.id === req.id || p.sourceRequestId === req.id)
-            ? {
-                ...p,
-                status: outcome,
-                dateAdded: handledAt,
-                handledBy: adminDisplayName,
-                adminNotes: adminNote || '',
-                partnerId: req.partnerId || p.partnerId || null,
-              }
-            : p,
-        )
-      : [
-          {
-            id: `temp-${req.id}`,
-            displayId: req.displayId,
-            sourceRequestId: req.id,
-            sourceRequestNumber: req.displayId,
-            firstName: req.person.firstName,
-            lastName: req.person.lastName,
-            email: req.person.email,
-            location: req.person.location,
-            role: req.person.role || req.role,
-            directorFirst: req.person.directorFirst || req.directorFirst,
-            directorLast: req.person.directorLast || req.directorLast,
-            status: outcome,
-            dateAdded: handledAt,
-            requestReceivedAt: req.receivedAt,
-            addedBy: req.createdBy || getManagerDisplayName(req.submittedBy, req.tags),
-            managerName: req.createdBy || getManagerDisplayName(req.submittedBy, req.tags),
-            handledBy: adminDisplayName,
-            managerEmail: req.submittedBy?.email || '',
-            club: req.submittedBy?.club || '',
-            managerNotes: req.notes || '',
-            adminNotes: adminNote || '',
-            notes: req.notes || '',
-            partnerId: req.partnerId || null,
-          },
-          ...liveDirectory,
-        ];
+    const nextRequests = newRequests.filter((r) => r.id !== handledId);
+    const existingPerson = liveDirectory.find((p) => p.id === handledId || p.sourceRequestId === handledId);
+    const directoryPersonPayload = {
+      id: existingPerson?.id || `temp-${handledId}`,
+      displayId: existingPerson?.displayId || req.displayId,
+      sourceRequestId: handledId,
+      sourceRequestNumber: existingPerson?.sourceRequestNumber || req.displayId,
+      firstName: req.person.firstName,
+      lastName: req.person.lastName,
+      email: req.person.email,
+      location: req.person.location,
+      role: req.person.role || req.role,
+      directorFirst: req.person.directorFirst || req.directorFirst,
+      directorLast: req.person.directorLast || req.directorLast,
+      status: outcome,
+      dateAdded: handledAt,
+      requestReceivedAt: req.receivedAt,
+      addedBy: req.createdBy || getManagerDisplayName(req.submittedBy, req.tags),
+      managerName: req.createdBy || getManagerDisplayName(req.submittedBy, req.tags),
+      handledBy: adminDisplayName,
+      managerEmail: req.submittedBy?.email || '',
+      club: req.submittedBy?.club || '',
+      managerNotes: req.notes || '',
+      adminNotes: adminNote || '',
+      notes: req.notes || '',
+      partnerId: req.partnerId || existingPerson?.partnerId || null,
+    };
+    // Add → active Directory; Remove → archive (keep active list clean).
+    const nextDirectory = outcome === 'Removed'
+      ? liveDirectory.filter((p) => p.id !== handledId && p.sourceRequestId !== handledId)
+      : existingPerson
+        ? liveDirectory.map((p) =>
+            (p.id === handledId || p.sourceRequestId === handledId)
+              ? { ...p, ...directoryPersonPayload, id: p.id }
+              : p,
+          )
+        : [directoryPersonPayload, ...liveDirectory];
 
-    suppressNewRequests({ requestIds: [req.id] });
-    removeRequestsFromCache(requestsCacheKey, { requestIds: [req.id] });
+    suppressNewRequests({ requestIds: [handledId] });
+    removeRequestsFromCache(requestsCacheKey, { requestIds: [handledId] });
     bumpCacheEpoch(requestsCacheKey);
     setNewRequests(nextRequests);
     setLiveDirectory(nextDirectory);
@@ -1162,7 +1174,7 @@ export default function Requests() {
     sessionStorage.setItem('pm_directory_pending_tab', outcome === 'Added' ? 'Added' : 'Removed');
 
     try {
-      await fetchJson(`/api/admin/requests/${req.id}/mark-handled`, {
+      await fetchJson(`/api/admin/requests/${handledId}/mark-handled`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ adminNote: adminNote || null }),
@@ -1173,12 +1185,14 @@ export default function Requests() {
           : `${personName} marked as ${outcome}. They are now in the Directory.`,
         'success',
       );
+      // Pull rematched late arrivals (Already Exists / Already Removed) into the list.
+      refreshRequestsPage({ networkOnly: true });
       refreshCache(directoryCacheKey, () => fetchJson(`/api/persons${selectedPartnerId ? `?partner_id=${encodeURIComponent(selectedPartnerId)}` : ''}`), (data) => {
         setLiveDirectory(Array.isArray(data) ? data : []);
       }).catch(() => {});
     } catch (err) {
       console.error(err);
-      clearNewRequestsSuppressions({ requestIds: [req.id] });
+      clearNewRequestsSuppressions({ requestIds: [handledId] });
       showToast(err.message || 'Failed to save. Refreshing list.', 'error');
       loadWithCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data, isStale) => {
         if (!isStale && Array.isArray(data.requests)) {
@@ -1221,7 +1235,10 @@ export default function Requests() {
     setConfirmDismissRequest(null);
     removeRequestHighlight(req.id);
     pendingCreatedIdsRef.current.delete(req.id);
-    const alsoIds = new Set(impact?.confirmedSiblingIds || []);
+    // Freeze cascade from confirm-open impact — late arrivals stay on New Requests.
+    const alsoIds = Array.isArray(impact?.confirmedSiblingIds)
+      ? impact.confirmedSiblingIds.filter(Boolean)
+      : [];
     for (const id of alsoIds) {
       removeRequestHighlight(id);
       pendingCreatedIdsRef.current.delete(id);
@@ -1239,7 +1256,7 @@ export default function Requests() {
     patchCache(requestsCacheKey, { requests: nextRequests });
 
     try {
-      await dismissRequest(req.id);
+      await dismissRequest(req.id, { alsoDeleteIds: alsoIds });
       const confirmedCount = impact?.confirmedSiblingCount || 0;
       showToast(
         confirmedCount > 0
@@ -1274,6 +1291,10 @@ export default function Requests() {
   // ── Bulk Action states ──
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  // Frozen at Confirm bulk delete open — late arrivals are not cascade-deleted.
+  const [bulkDeleteSnapshotIds, setBulkDeleteSnapshotIds] = useState([]);
+  const [bulkDeleteCascadeIds, setBulkDeleteCascadeIds] = useState([]);
+  const [bulkDeletePreparing, setBulkDeletePreparing] = useState(false);
 
   const handleToggleSelect = useCallback((id, isSelected) => {
     setSelectedIds((prev) => {
@@ -1295,33 +1316,78 @@ export default function Requests() {
     });
   }, []);
 
-  const handleBulkDismissRequest = async () => {
+  const openBulkDeleteConfirm = async () => {
     const ids = Array.from(selectedIds);
-    if (ids.length === 0) return;
-    
+    if (ids.length === 0 || bulkDeletePreparing) return;
+    setBulkDeletePreparing(true);
+    setBulkDeleteSnapshotIds(ids);
+    try {
+      const impacts = await Promise.all(
+        ids.map((id) => getDismissImpact(id).catch(() => null)),
+      );
+      const selected = new Set(ids);
+      const cascade = new Set();
+      for (const impact of impacts) {
+        for (const sid of impact?.confirmedSiblingIds || []) {
+          if (sid && !selected.has(sid)) cascade.add(sid);
+        }
+      }
+      setBulkDeleteCascadeIds(Array.from(cascade));
+      setConfirmBulkDelete(true);
+    } catch {
+      setBulkDeleteCascadeIds([]);
+      setConfirmBulkDelete(true);
+    } finally {
+      setBulkDeletePreparing(false);
+    }
+  };
+
+  const closeBulkDeleteConfirm = () => {
     setConfirmBulkDelete(false);
-    
-    ids.forEach((id) => {
+    setBulkDeleteSnapshotIds([]);
+    setBulkDeleteCascadeIds([]);
+  };
+
+  const handleBulkDismissRequest = async () => {
+    const ids = bulkDeleteSnapshotIds.length > 0
+      ? bulkDeleteSnapshotIds
+      : Array.from(selectedIds);
+    if (ids.length === 0) return;
+    const alsoDeleteIds = bulkDeleteCascadeIds;
+    const removeIds = [...ids, ...alsoDeleteIds];
+    const removeSet = new Set(removeIds);
+
+    closeBulkDeleteConfirm();
+
+    removeIds.forEach((id) => {
       removeRequestHighlight(id);
       pendingCreatedIdsRef.current.delete(id);
     });
     bumpHighlights();
 
-    const nextRequests = newRequests.filter((r) => !selectedIds.has(r.id));
-    
-    suppressNewRequests({ requestIds: ids });
-    removeRequestsFromCache(requestsCacheKey, { requestIds: ids });
+    const nextRequests = newRequests.filter((r) => !removeSet.has(r.id));
+
+    suppressNewRequests({ requestIds: removeIds });
+    removeRequestsFromCache(requestsCacheKey, { requestIds: removeIds });
     bumpCacheEpoch(requestsCacheKey);
     setNewRequests(nextRequests);
     patchCache(requestsCacheKey, { requests: nextRequests });
     setSelectedIds(new Set());
 
     try {
-      await bulkDismissRequests(ids);
+      await bulkDismissRequests(ids, { alsoDeleteIds });
       showToast(`Deleted ${ids.length} request${ids.length === 1 ? '' : 's'}.`, 'success');
+      // Survivors (late arrivals / potentials) may need a list refresh.
+      refreshCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data, isStale) => {
+        if (!isStale && Array.isArray(data.requests)) {
+          syncAdminNewRequestHighlights(data.requests, { isManualEntry });
+          setNewRequests(data.requests);
+          setLiveDirectory(data.persons);
+        }
+      }).catch(() => {});
     } catch (err) {
       console.error(err);
-      clearNewRequestsSuppressions({ requestIds: ids });
+      clearNewRequestsSuppressions({ requestIds: removeIds });
       showToast(err.message || 'Failed to bulk delete. Refreshing list.', 'error');
       loadWithCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data, isStale) => {
         if (!isStale && Array.isArray(data.requests)) {
@@ -1663,11 +1729,13 @@ export default function Requests() {
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => setConfirmBulkDelete(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 rounded-lg text-sm font-semibold transition-colors shadow-sm cursor-pointer"
+              type="button"
+              disabled={bulkDeletePreparing}
+              onClick={openBulkDeleteConfirm}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 rounded-lg text-sm font-semibold transition-colors shadow-sm cursor-pointer disabled:opacity-60"
             >
               <Trash2 className="w-4 h-4" />
-              <span>Delete</span>
+              <span>{bulkDeletePreparing ? 'Preparing…' : 'Delete'}</span>
             </button>
           </div>
         </div>
@@ -2115,18 +2183,20 @@ export default function Requests() {
       {/* ── Confirm Bulk Delete modal ── */}
       <Modal
         isOpen={confirmBulkDelete}
-        onClose={() => setConfirmBulkDelete(false)}
+        onClose={closeBulkDeleteConfirm}
         confirm
         title="Confirm bulk delete"
         footer={
           <>
             <button
-              onClick={() => setConfirmBulkDelete(false)}
+              type="button"
+              onClick={closeBulkDeleteConfirm}
               className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer"
             >
               Cancel
             </button>
             <button
+              type="button"
               onClick={handleBulkDismissRequest}
               className="px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer"
             >
@@ -2136,7 +2206,9 @@ export default function Requests() {
         }
       >
         <p>
-          Are you sure you want to delete <strong>{selectedIds.size}</strong> selected request{selectedIds.size === 1 ? '' : 's'}?
+          Are you sure you want to delete{' '}
+          <strong>{bulkDeleteSnapshotIds.length || selectedIds.size}</strong> selected request
+          {(bulkDeleteSnapshotIds.length || selectedIds.size) === 1 ? '' : 's'}?
         </p>
         <p className="mt-2 text-sm text-[var(--color-text-muted)]">
           This removes them from the incoming queue. Confirmed duplicates of a selected request are deleted with it; potential duplicates are kept for review.

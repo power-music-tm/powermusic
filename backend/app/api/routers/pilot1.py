@@ -1020,6 +1020,12 @@ def mark_request_handled(
     if was_new:
         decrement_manager_pending_stat(db, req)
 
+    # Peers that joined while the Add/Remove User confirm was open stay as new
+    # requests and re-group against this Directory person — not swept away.
+    from app.duplicate_group_service import release_group_peers_after_mark_handled
+    admin_id = str(admin.id) if getattr(admin, "id", None) else None
+    release_group_peers_after_mark_handled(db, req, admin_id=admin_id)
+
     db.commit()
     db.refresh(req)
     hydrate_request_display([req])
@@ -1049,6 +1055,7 @@ def request_dismiss_impact(
 @router.post("/api/admin/requests/{request_id}/dismiss", response_model=schemas.RequestOut)
 def dismiss_request(
     request_id: str,
+    payload: schemas.DismissRequestIn = schemas.DismissRequestIn(),
     db: Session = Depends(get_db),
     admin: AuthenticatedUser = Depends(require_admin),
 ):
@@ -1062,7 +1069,12 @@ def dismiss_request(
 
     was_new = req.status == "new"
     group_id = req.duplicate_group_id
-    requests_to_dismiss, survivors = collect_selective_dismiss_targets(db, req)
+    # alsoDeleteIds frozen at confirm-open — late arrivals stay open.
+    requests_to_dismiss, survivors = collect_selective_dismiss_targets(
+        db,
+        req,
+        also_delete_ids=payload.alsoDeleteIds,
+    )
 
     dismiss_ids = [r.id for r in requests_to_dismiss]
     permanently_delete_requests(db, dismiss_ids)
@@ -1106,13 +1118,19 @@ def bulk_dismiss_requests(
 
     any_was_new = any(r.status == "new" for r in reqs)
     all_dismiss_ids = set()
+    # Freeze cascade peers at confirm-open — requests that join mid-modal stay open.
+    frozen_also = list(payload.alsoDeleteIds or [])
 
     for req in reqs:
         if req.id in all_dismiss_ids:
             continue
 
         group_id = req.duplicate_group_id
-        requests_to_dismiss, survivors = collect_selective_dismiss_targets(db, req)
+        requests_to_dismiss, survivors = collect_selective_dismiss_targets(
+            db,
+            req,
+            also_delete_ids=frozen_also,
+        )
         dismiss_ids = [r.id for r in requests_to_dismiss]
         all_dismiss_ids.update(dismiss_ids)
 
@@ -1838,6 +1856,70 @@ def get_duplicate_group_details(
         ),
         "members": member_out,
         "classificationSummary": classification_summary,
+        "answeredNicknamePairs": _answered_nickname_pairs_payload(db),
+    }
+
+
+def _answered_nickname_pairs_payload(db: Session) -> list:
+    from app.duplicate_matching import (
+        get_all_confirmed_nickname_pairs,
+        get_all_rejected_nickname_pairs,
+    )
+
+    out = []
+    for a, b in sorted(get_all_rejected_nickname_pairs(db)):
+        out.append({"nameA": a, "nameB": b, "decision": "different"})
+    for a, b in sorted(get_all_confirmed_nickname_pairs(db)):
+        out.append({"nameA": a, "nameB": b, "decision": "same"})
+    return out
+
+
+@router.post("/api/nickname-pairs/learn")
+def learn_nickname_pair_api(
+    payload: schemas.NicknamePairLearnIn,
+    db: Session = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    """Record Yes/No for a nickname pair once — skips the modal next time."""
+    from app.duplicate_matching import (
+        record_confirmed_nickname_pair,
+        record_rejected_nickname_pair,
+    )
+    from app.nickname_match import ordered_nickname_pair
+
+    admin_id = str(admin.id) if getattr(admin, "id", None) else None
+    key = ordered_nickname_pair(payload.firstNameA, payload.firstNameB)
+    if not key:
+        raise HTTPException(status_code=400, detail="Both first names are required.")
+
+    if payload.decision == "different":
+        row = record_rejected_nickname_pair(
+            db,
+            payload.firstNameA,
+            payload.firstNameB,
+            admin_id=admin_id,
+            source_group_id=payload.sourceGroupId,
+        )
+    else:
+        row = record_confirmed_nickname_pair(
+            db,
+            payload.firstNameA,
+            payload.firstNameB,
+            admin_id=admin_id,
+            source_group_id=payload.sourceGroupId,
+        )
+
+    if not row:
+        raise HTTPException(
+            status_code=400,
+            detail="Names must be nickname-linked (not exact matches) to learn.",
+        )
+
+    db.commit()
+    return {
+        "nameA": key[0],
+        "nameB": key[1],
+        "decision": payload.decision,
     }
 
 
@@ -1933,6 +2015,7 @@ def merge_group_peers_api(
             payload.finalValues,
             source_request_id=payload.sourceRequestId,
             admin_id=admin_id,
+            member_ids=payload.memberIds,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2016,6 +2099,7 @@ def resolve_group_add_api(
             partner_id=group.partner_id,
             admin_note=payload.adminNote,
             source_request_id=payload.sourceRequestId,
+            member_ids=payload.memberIds,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -2074,6 +2158,7 @@ def resolve_group_add_as_new_api(
             partner_id=group.partner_id,
             admin_note=payload.adminNote,
             source_request_id=payload.sourceRequestId,
+            member_ids=payload.memberIds,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -2131,6 +2216,7 @@ def resolve_group_keep_existing_and_archive_api(
             admin_id=admin_id,
             admin_note=payload.adminNote,
             source_request_id=payload.sourceRequestId,
+            member_ids=payload.memberIds,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -2245,6 +2331,7 @@ def resolve_group_update_api(
             admin_id=admin_id,
             admin_note=payload.adminNote,
             source_request_id=payload.sourceRequestId,
+            member_ids=payload.memberIds,
         )
         db.commit()
     except ValueError as exc:
@@ -2297,6 +2384,7 @@ def resolve_group_keep_existing_api(
         db, group,
         admin_id=admin_id,
         admin_note=payload.adminNote,
+        member_ids=payload.memberIds,
     )
     dir_person_id = group.directory_person_id
     db.commit()
@@ -2342,7 +2430,14 @@ def resolve_group_delete_directory_api(
     admin_id = str(admin.id) if getattr(admin, "id", None) else None
 
     count = resolve_group_delete_from_directory(
-        db, group, directory_person=dir_person, final_values=payload.finalValues, admin_id=admin_id, admin_note=payload.adminNote, source_request_id=payload.sourceRequestId
+        db,
+        group,
+        directory_person=dir_person,
+        final_values=payload.finalValues,
+        admin_id=admin_id,
+        admin_note=payload.adminNote,
+        source_request_id=payload.sourceRequestId,
+        member_ids=payload.memberIds,
     )
 
     db.commit()
@@ -2380,7 +2475,13 @@ def resolve_group_mark_removed_api(
     admin_id = str(admin.id) if getattr(admin, "id", None) else None
 
     count = resolve_group_mark_removed(
-        db, group, final_values=payload.finalValues, admin_id=admin_id, admin_note=payload.adminNote, source_request_id=payload.sourceRequestId
+        db,
+        group,
+        final_values=payload.finalValues,
+        admin_id=admin_id,
+        admin_note=payload.adminNote,
+        source_request_id=payload.sourceRequestId,
+        member_ids=payload.memberIds,
     )
     dir_person_id = group.directory_person_id
     db.commit()

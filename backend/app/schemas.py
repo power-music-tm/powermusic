@@ -16,6 +16,8 @@ from app.input_validation import (
 
 class BulkActionPayload(BaseModel):
     ids: List[str]
+    # Confirmed siblings frozen at bulk-delete confirm-open. Late arrivals stay.
+    alsoDeleteIds: Optional[List[str]] = None
 
 
 class SubmittedBy(BaseModel):
@@ -681,6 +683,18 @@ class DuplicateGroupDetailOut(BaseModel):
     members: List[DuplicateGroupMemberOut] = []
     # Aggregated classification counts: { alreadyExists, duplicateCount, potentialCount }
     classificationSummary: Optional[Any] = None
+    # Nickname pairs already answered (Yes or No) — skip confirmation modal.
+    # Each entry: { "nameA": "kiara", "nameB": "kierra", "decision": "same"|"different" }
+    answeredNicknamePairs: List[Any] = []
+
+
+class NicknamePairLearnIn(BaseModel):
+    """POST /api/nickname-pairs/learn — record Yes/No once for a nickname pair."""
+
+    firstNameA: str
+    firstNameB: str
+    decision: Literal["same", "different"]
+    sourceGroupId: Optional[str] = None
 
 
 class DuplicateGroupSummaryOut(BaseModel):
@@ -720,10 +734,14 @@ class MergePeersIn(BaseModel):
 
     Collapses Request History to one open request. Group stays active so the
     admin can continue with Keep Existing / Add / Update / Attach.
+
+    memberIds (optional): freeze the peer set at confirm-open time. Requests that
+    join the group after that snapshot stay in the group and are not deleted.
     """
 
     finalValues: PersonInfo
     sourceRequestId: Optional[str] = None
+    memberIds: Optional[List[str]] = None
 
 
 class DismissImpactOut(BaseModel):
@@ -739,6 +757,16 @@ class DismissImpactOut(BaseModel):
     potentialSiblingCount: int = 0
 
 
+class DismissRequestIn(BaseModel):
+    """Optional body for POST /api/admin/requests/{id}/dismiss.
+
+    alsoDeleteIds: freeze confirmed siblings at Delete-confirm open. Requests that
+    join the group after that stay open (not cascade-deleted).
+    """
+
+    alsoDeleteIds: Optional[List[str]] = None
+
+
 # ── Resolution action schemas (Task 2) ───────────────────────────────────────
 
 
@@ -751,11 +779,15 @@ class ResolveAndAddIn(BaseModel):
 
     sourceRequestId is the current request the admin clicked Merge on — its manager
     attribution is copied onto the Directory record.
+
+    memberIds (optional): freeze the peer set at confirm-open time. Requests that
+    join after that stay open and re-group against the new Directory person.
     """
 
     finalValues: PersonInfo
     adminNote: Optional[str] = Field(default=None, max_length=5000)
     sourceRequestId: Optional[str] = None
+    memberIds: Optional[List[str]] = None
 
 
 class ResolveAddAsNewIn(BaseModel):
@@ -763,11 +795,15 @@ class ResolveAddAsNewIn(BaseModel):
 
     Directory match is a false positive: leave the existing Directory person alone,
     dismiss the pair, and add the incoming request as a NEW Directory person.
+
+    memberIds (optional): freeze peers at confirm-open; late arrivals stay open and
+    re-group against Directory (previous and/or the new person just added).
     """
 
     finalValues: PersonInfo
     adminNote: Optional[str] = Field(default=None, max_length=5000)
     sourceRequestId: Optional[str] = None
+    memberIds: Optional[List[str]] = None
 
 
 class ResolveKeepExistingAndArchiveIn(BaseModel):
@@ -775,11 +811,14 @@ class ResolveKeepExistingAndArchiveIn(BaseModel):
 
     Remove-request false positive vs Directory: leave Directory unchanged, dismiss
     the pair, and archive the incoming Remove request with finalValues.
+
+    memberIds (optional): freeze peers at confirm-open; late arrivals re-group vs Directory.
     """
 
     finalValues: PersonInfo
     adminNote: Optional[str] = Field(default=None, max_length=5000)
     sourceRequestId: Optional[str] = None
+    memberIds: Optional[List[str]] = None
 
 
 class ResolveAndUpdateIn(BaseModel):
@@ -790,12 +829,16 @@ class ResolveAndUpdateIn(BaseModel):
 
     sourceRequestId is the current request the admin clicked Merge on — its manager
     attribution is copied onto the Directory record.
+
+    memberIds (optional): freeze peers at confirm-open; late arrivals stay open and
+    re-group against the updated Directory person.
     """
 
     directoryPersonId: str
     finalValues: PersonInfo
     adminNote: Optional[str] = Field(default=None, max_length=5000)
     sourceRequestId: Optional[str] = None
+    memberIds: Optional[List[str]] = None
 
 
 class ResolveAndUpdatePreviewIn(BaseModel):
@@ -813,29 +856,42 @@ class ResolveKeepExistingIn(BaseModel):
     """POST /api/duplicate-groups/{id}/resolve-keep-existing (Case C — discard new data).
 
     No finalValues required: the Directory record is intentionally left unchanged.
+
+    memberIds (optional): freeze peers at confirm-open; late arrivals stay open and
+    re-group against Directory (not deleted with the confirmed request).
     """
 
     adminNote: Optional[str] = Field(default=None, max_length=5000)
+    memberIds: Optional[List[str]] = None
 
 
 class ResolveDeleteIn(BaseModel):
     """POST /api/duplicate-groups/{id}/resolve-delete-directory (Case D).
-    
+
     directoryPersonId must match group.directory_person_id.
+
+    memberIds (optional): freeze peers at confirm-open; late arrivals re-group vs
+    the Removed Directory person.
     """
 
     directoryPersonId: str
     finalValues: PersonInfo
     adminNote: Optional[str] = Field(default=None, max_length=5000)
     sourceRequestId: Optional[str] = None
+    memberIds: Optional[List[str]] = None
 
 
 class ResolveMarkRemovedIn(BaseModel):
-    """POST /api/duplicate-groups/{id}/resolve-mark-removed (Case E)."""
+    """POST /api/duplicate-groups/{id}/resolve-mark-removed (Case E).
+
+    memberIds (optional): freeze peers at confirm-open; late arrivals re-group vs
+    the new Removed Directory person.
+    """
 
     finalValues: PersonInfo
     adminNote: Optional[str] = Field(default=None, max_length=5000)
     sourceRequestId: Optional[str] = None
+    memberIds: Optional[List[str]] = None
 
 
 class FieldDiffOut(BaseModel):

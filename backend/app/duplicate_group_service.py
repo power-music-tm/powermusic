@@ -1287,17 +1287,21 @@ def get_dismiss_impact(
 def collect_selective_dismiss_targets(
     db: Session,
     req: models.ManagerRequest,
+    *,
+    also_delete_ids: Optional[List[str]] = None,
 ) -> Tuple[List[models.ManagerRequest], List[models.ManagerRequest]]:
     """Return (requests_to_dismiss, survivors_to_keep).
 
-    Only dismisses the requested ``req``. All other active group members are survivors.
+    Always deletes ``req``. When ``also_delete_ids`` is provided (frozen at
+    Delete-confirm open), also deletes those IDs if they are still new members of
+    the same group — late arrivals not in that list stay as survivors.
+    When ``also_delete_ids`` is omitted, only ``req`` is deleted.
     """
     to_dismiss = [req]
-    survivors: List[models.ManagerRequest] = []
     if not req.duplicate_group_id or req.status != "new":
-        return to_dismiss, survivors
+        return to_dismiss, []
 
-    survivors = (
+    peers = (
         db.query(models.ManagerRequest)
         .filter(
             models.ManagerRequest.duplicate_group_id == req.duplicate_group_id,
@@ -1306,6 +1310,14 @@ def collect_selective_dismiss_targets(
         )
         .all()
     )
+    cascade = {mid for mid in (also_delete_ids or []) if mid and mid != req.id}
+    if cascade:
+        for peer in peers:
+            if peer.id in cascade:
+                to_dismiss.append(peer)
+
+    dismiss_ids = {r.id for r in to_dismiss}
+    survivors = [p for p in peers if p.id not in dismiss_ids]
     return to_dismiss, survivors
 
 
@@ -1438,6 +1450,119 @@ def get_group_members(
         .order_by(models.ManagerRequest.received_at.asc(), models.ManagerRequest.id.asc())
         .all()
     )
+
+
+def _members_for_resolve_snapshot(
+    all_members: List[models.ManagerRequest],
+    member_ids: Optional[List[str]],
+) -> Tuple[List[models.ManagerRequest], List[models.ManagerRequest]]:
+    """Split group members into confirm-open snapshot vs late arrivals.
+
+    Empty / omitted ``member_ids`` → legacy behavior (everyone is in the snapshot).
+    """
+    snapshot = {mid for mid in (member_ids or []) if mid}
+    if not snapshot:
+        return list(all_members), []
+    members = [m for m in all_members if m.id in snapshot]
+    late = [m for m in all_members if m.id and m.id not in snapshot]
+    return members, late
+
+
+def _detach_and_regroup_late_arrivals(
+    db: Session,
+    late_arrivals: List[models.ManagerRequest],
+    *,
+    exclude_id: Optional[str] = None,
+) -> None:
+    """Leave late arrivals out of a resolve: detach, then re-match (e.g. vs Directory)."""
+    for late in late_arrivals:
+        if not late or not late.id or late.id == exclude_id:
+            continue
+        late.duplicate_group_id = None
+        _clear_duplicate_tags(late)
+    db.flush()
+    for late in late_arrivals:
+        if not late or not late.id or late.id == exclude_id:
+            continue
+        db.refresh(late)
+        process_request_grouping(db, late)
+    db.flush()
+
+
+def release_group_peers_after_mark_handled(
+    db: Session,
+    handled_req: models.ManagerRequest,
+    *,
+    admin_id: Optional[str] = None,
+) -> None:
+    """After Add User or Remove User confirm: peers that joined the group stay open.
+
+    Shared by both buttons (same mark-handled API). The handled request becomes
+    the Directory row. Any other ``new`` members on the same group (late arrivals
+    while the confirm modal was open) are detached and re-matched against that
+    Directory person (Already Exists for Add / Already Removed for Remove).
+    """
+    group_id = handled_req.duplicate_group_id
+    handled_req.duplicate_group_id = None
+    _clear_duplicate_tags(handled_req)
+    db.flush()
+
+    if not group_id:
+        return
+
+    group = (
+        db.query(models.DuplicateGroup)
+        .filter(models.DuplicateGroup.id == group_id)
+        .first()
+    )
+
+    def _peers_on_group() -> List[models.ManagerRequest]:
+        return (
+            db.query(models.ManagerRequest)
+            .filter(
+                models.ManagerRequest.duplicate_group_id == group_id,
+                models.ManagerRequest.status == "new",
+                models.ManagerRequest.id != handled_req.id,
+            )
+            .all()
+        )
+
+    peers = _peers_on_group()
+    for peer in peers:
+        peer.duplicate_group_id = None
+        _clear_duplicate_tags(peer)
+    db.flush()
+
+    # Catch attach races that landed between the first query and detach.
+    for stray in _peers_on_group():
+        stray.duplicate_group_id = None
+        _clear_duplicate_tags(stray)
+        peers.append(stray)
+    db.flush()
+
+    if group and group.status == "active":
+        group.directory_person_id = handled_req.id
+        group.representative_request_id = handled_req.id
+        _finalize_group(
+            db,
+            group,
+            resolution_type="mark_handled",
+            final_values=None,
+            previous_values=None,
+            admin_id=admin_id,
+            admin_note=None,
+            now=datetime.now(timezone.utc),
+        )
+
+    db.flush()
+    seen: Set[str] = set()
+    for peer in peers:
+        if not peer.id or peer.id in seen:
+            continue
+        seen.add(peer.id)
+        db.refresh(peer)
+        process_request_grouping(db, peer)
+    db.flush()
 
 
 def get_active_groups(
@@ -1809,6 +1934,7 @@ def merge_group_peers(
     *,
     source_request_id: Optional[str] = None,
     admin_id: Optional[str] = None,
+    member_ids: Optional[List[str]] = None,
 ) -> Optional[dict]:
     """Collapse Request History inside an active group to one open request.
 
@@ -1821,6 +1947,9 @@ def merge_group_peers(
       * Not-the-Same-Person dismissals from deleted peers transfer to the survivor
 
     Directory linkage (``directory_person_id``) is never cleared here.
+
+    When ``member_ids`` is provided, only those peers are merged. Requests that
+    joined the group after the admin opened Merge (live arrivals) stay listed.
 
     Returns ``{survivorRequestId, deletedIds, groupId, memberCount}`` or None.
     Raises ``ValueError`` when final_values are invalid.
@@ -1835,7 +1964,7 @@ def merge_group_peers(
     if not group or group.status != "active":
         return None
 
-    members = (
+    all_new_members = (
         db.query(models.ManagerRequest)
         .filter(
             models.ManagerRequest.duplicate_group_id == group.id,
@@ -1844,10 +1973,20 @@ def merge_group_peers(
         .all()
     )
     # Never treat the Directory row as a mergeable peer.
-    members = [
-        m for m in members
+    all_peers = [
+        m for m in all_new_members
         if m.id and m.id != group.directory_person_id
     ]
+    if not all_peers:
+        return None
+
+    snapshot = {mid for mid in (member_ids or []) if mid}
+    # Empty / omitted snapshot → legacy behavior (merge everyone currently in group).
+    members = (
+        [m for m in all_peers if m.id in snapshot]
+        if snapshot
+        else list(all_peers)
+    )
     if not members:
         return None
 
@@ -1877,10 +2016,19 @@ def merge_group_peers(
     # ungroups a sole peer when there is no Directory match.
     group.status = "active"
     group.resolved_at = None
-    _sync_group_representative_and_tags(db, group, member_requests=[survivor])
 
-    # Peer history is gone. Keep Already Exists / Already Removed when Directory
-    # is linked; peer-duplicate pills are suppressed in the UI when memberCount=1.
+    discarded_set = set(discarded_ids)
+    remaining_peers = [
+        m for m in all_peers
+        if m.id == survivor.id or m.id not in discarded_set
+    ]
+    # Late arrivals (not in snapshot) remain; include them in sync.
+    if survivor.id not in {m.id for m in remaining_peers}:
+        remaining_peers = [survivor] + remaining_peers
+    _sync_group_representative_and_tags(db, group, member_requests=remaining_peers)
+
+    # Peer history among the snapshot is gone. Keep Already Exists / Already Removed
+    # when Directory is linked; peer-duplicate pills follow remaining member count.
     if group.directory_person_id:
         dir_person = (
             db.query(models.ManagerRequest)
@@ -1906,7 +2054,7 @@ def merge_group_peers(
         "survivorRequestId": survivor.id,
         "deletedIds": discarded_ids,
         "groupId": group.id,
-        "memberCount": 1,
+        "memberCount": len(remaining_peers),
     }
 
 
@@ -2076,12 +2224,15 @@ def resolve_group_add(
     partner_id: Optional[str] = None,
     admin_note: Optional[str] = None,
     source_request_id: Optional[str] = None,
+    member_ids: Optional[List[str]] = None,
 ) -> models.ManagerRequest:
     """Create ONE Directory record from final_values, resolve the group, and permanently delete discarded requests.
 
     Invariants:
     - Retains the representative / source request, updating it in-place to status="handled", outcome="Added".
-    - Permanently deletes all other member requests in the group.
+    - Permanently deletes other snapshot member requests in the group.
+    - When ``member_ids`` is provided, peers that joined after confirm stay open and
+      re-group against the new Directory person (Already Exists).
     - Stamps group resolution metadata, links directory_person_id, and sets status='resolved'.
     - Does NOT call db.commit() — router commits.
 
@@ -2090,7 +2241,8 @@ def resolve_group_add(
     _validate_final_values(final_values)
     now = datetime.now(timezone.utc)
 
-    members = get_group_members(db, group.id)
+    all_members = get_group_members(db, group.id)
+    members, late_arrivals = _members_for_resolve_snapshot(all_members, member_ids)
     # Determine the retained request:
     retained_req = _current_request_member(
         members,
@@ -2181,7 +2333,7 @@ def resolve_group_add(
         db.add(dir_row)
         db.flush()
 
-    # Permanently delete discarded member requests
+    # Permanently delete discarded snapshot peers only (not late arrivals).
     discarded_ids = [m.id for m in members if m.id != dir_row.id]
     if discarded_ids:
         permanently_delete_requests(db, discarded_ids)
@@ -2201,6 +2353,7 @@ def resolve_group_add(
         now=now,
     )
     db.flush()
+    _detach_and_regroup_late_arrivals(db, late_arrivals, exclude_id=dir_row.id)
     return dir_row
 
 
@@ -2216,14 +2369,18 @@ def resolve_group_add_as_new(
     partner_id: Optional[str] = None,
     admin_note: Optional[str] = None,
     source_request_id: Optional[str] = None,
+    member_ids: Optional[List[str]] = None,
 ) -> models.ManagerRequest:
     """False-positive vs Directory: dismiss the Directory link, then add as a new person.
 
     Leaves the existing Directory record unchanged. Persists dismissed pairs so the
-    incoming request(s) are not re-linked to that Directory person on regrouping.
+    snapshot incoming request(s) are not re-linked to that Directory person on regrouping.
     When the first names were nickname-related (not exact), also learns that those
     two nicknames are different for all future matching.
     Then resolves like Case A (create/update a NEW Directory row from final_values).
+
+    Late arrivals (``member_ids``) are not dismissed vs the old Directory and are
+    left for ``resolve_group_add`` to re-group against Directory.
 
     Requires group.directory_person_id. Does NOT call db.commit().
     """
@@ -2248,11 +2405,10 @@ def resolve_group_add_as_new(
     old_dir = db.query(models.ManagerRequest).filter_by(id=old_dir_id).first()
     dir_first = (old_dir.person_first_name if old_dir else None) or ""
     incoming_first = (final_values.firstName if final_values else None) or ""
-    members = get_group_members(db, group.id)
+    all_members = get_group_members(db, group.id)
+    members, late_arrivals = _members_for_resolve_snapshot(all_members, member_ids)
 
-    # Learn every nickname-only first name in the group vs Directory (not only
-    # final_values — form may still show the Directory spelling while a sibling
-    # like Kiara was the nickname match the admin rejected).
+    # Learn nicknames only for the confirm-open snapshot (not late arrivals).
     learned_nickname_pair = None
     learn_candidates = [incoming_first]
     for member in members:
@@ -2276,6 +2432,7 @@ def resolve_group_add_as_new(
         if learned and learned_nickname_pair is None:
             learned_nickname_pair = key
 
+    # Dismiss only snapshot peers vs old Directory — late arrivals may still match it.
     for member in members:
         if not member.id or member.id == old_dir_id:
             continue
@@ -2302,6 +2459,7 @@ def resolve_group_add_as_new(
         partner_id=partner_id,
         admin_note=admin_note,
         source_request_id=source_request_id,
+        member_ids=member_ids,
     )
 
     meta = dict(group.resolution_metadata or {})
@@ -2314,6 +2472,7 @@ def resolve_group_add_as_new(
         }
     group.resolution_metadata = meta
     db.flush()
+    # Late arrivals are detached + re-grouped inside resolve_group_add (member_ids).
     return dir_row
 
 
@@ -2325,6 +2484,7 @@ def resolve_group_keep_existing_and_archive(
     admin_id: Optional[str],
     admin_note: Optional[str] = None,
     source_request_id: Optional[str] = None,
+    member_ids: Optional[List[str]] = None,
 ) -> models.ManagerRequest:
     """False-positive Remove vs Directory: leave Directory unchanged; archive the Remove request.
 
@@ -2332,7 +2492,8 @@ def resolve_group_keep_existing_and_archive(
       - Dismisses pairs vs the linked Directory person so regrouping does not re-attach.
       - Applies final_values onto the retained Remove request.
       - Marks that request handled / Removed / archived (existing archive convention).
-      - Permanently deletes other incoming members.
+      - Permanently deletes other snapshot members.
+      - Late arrivals (``member_ids``) stay open and re-group against Directory.
       - Does NOT modify the Directory record.
 
     Requires group.directory_person_id. Does NOT call db.commit().
@@ -2358,10 +2519,12 @@ def resolve_group_keep_existing_and_archive(
         except ValueError:
             pass
 
-    members = get_group_members(db, group.id)
+    all_members = get_group_members(db, group.id)
+    members, late_arrivals = _members_for_resolve_snapshot(all_members, member_ids)
     if not members:
         raise ValueError("No incoming requests to archive in this group.")
 
+    # Dismiss only snapshot peers — late arrivals must still match Directory.
     for member in members:
         if not member.id or member.id == old_dir_id:
             continue
@@ -2449,6 +2612,7 @@ def resolve_group_keep_existing_and_archive(
     meta["archived_request_id"] = retained_req.id
     group.resolution_metadata = meta
     db.flush()
+    _detach_and_regroup_late_arrivals(db, late_arrivals, exclude_id=retained_req.id)
     return retained_req
 
 
@@ -2464,8 +2628,9 @@ def resolve_group_update(
     admin_id: Optional[str],
     admin_note: Optional[str] = None,
     source_request_id: Optional[str] = None,
+    member_ids: Optional[List[str]] = None,
 ) -> models.ManagerRequest:
-    """Update the existing Directory record in-place with final_values; resolve group and permanently delete incoming requests.
+    """Update the existing Directory record in-place with final_values; resolve group and permanently delete snapshot incoming requests.
 
     Status transitions (alongside the field update):
     - Incoming Remove → archive the Directory row (active → archive).
@@ -2474,17 +2639,19 @@ def resolve_group_update(
     Invariants:
     - group.directory_person_id must equal directory_person.id (caller verifies).
     - Updates directory_person in-place.
-    - Permanently deletes all incoming member requests in the group.
+    - Permanently deletes snapshot incoming member requests.
+    - Late arrivals (``member_ids``) stay open and re-group against the updated Directory.
     - Does NOT call db.commit() — router commits.
 
     Returns the updated Directory ManagerRequest row.
     """
     _validate_final_values(final_values)
     now = datetime.now(timezone.utc)
-    
-    members = get_group_members(db, group.id)
+
+    all_members = get_group_members(db, group.id)
+    members, late_arrivals = _members_for_resolve_snapshot(all_members, member_ids)
     from app.user_display import hydrate_request_users
-    hydrate_request_users(db, members + [directory_person])
+    hydrate_request_users(db, members + late_arrivals + [directory_person])
 
     # Snapshot the current values for audit BEFORE modifying.
     from app.intake_persons import get_director_fields
@@ -2525,9 +2692,7 @@ def resolve_group_update(
     
     existing_stored = get_lifecycle_history(directory_person)
     existing_stored_ids = {e.get("id") for e in existing_stored}
-    
-    members = get_group_members(db, group.id)
-    
+
     manager_source = _current_request_member(
         members,
         source_request_id=source_request_id,
@@ -2560,11 +2725,11 @@ def resolve_group_update(
         history_title = "Restored to active"
 
     snapshot_events = _snapshot_discarded_manager_requests(directory_person, members, existing_stored_ids)
-    
+
     # Add explicit Update Directory event
     from app.request_display import parse_request_display_number
     dir_display_id = parse_request_display_number(directory_person.id)
-    
+
     from app.user_display import POWER_MUSIC_ADMIN_DISPLAY_NAME
 
     update_event_id = f"{directory_person.id}-update-{now.timestamp()}"
@@ -2580,7 +2745,7 @@ def resolve_group_update(
         "handledBy": POWER_MUSIC_ADMIN_DISPLAY_NAME,
         "outcome": directory_person.outcome,
     })
-    
+
     if snapshot_events:
         append_lifecycle_history(directory_person, snapshot_events)
     _apply_merge_manager_provenance(
@@ -2590,12 +2755,12 @@ def resolve_group_update(
     if admin_note:
         directory_person.admin_notes = admin_note
 
-    # Permanently delete all incoming member requests
+    # Permanently delete snapshot peers only (not late arrivals).
     discarded_ids = [m.id for m in members if m.id != directory_person.id]
     if discarded_ids:
         permanently_delete_requests(db, discarded_ids)
 
-    # Clear representative pointer since member requests are deleted
+    # Clear representative pointer since snapshot member requests are deleted
     group.representative_request_id = None
     group.directory_person_id = directory_person.id
 
@@ -2610,6 +2775,7 @@ def resolve_group_update(
         now=now,
     )
     db.flush()
+    _detach_and_regroup_late_arrivals(db, late_arrivals, exclude_id=directory_person.id)
     return directory_person
 
 
@@ -2622,24 +2788,27 @@ def resolve_group_keep_existing(
     *,
     admin_id: Optional[str],
     admin_note: Optional[str] = None,
+    member_ids: Optional[List[str]] = None,
 ) -> int:
-    """Resolve group without modifying the Directory; permanently delete all incoming requests.
+    """Resolve group without modifying the Directory; permanently delete snapshot incoming requests.
 
     Invariants:
     - Directory record is left completely unchanged.
-    - Incoming member requests are permanently deleted.
+    - Snapshot member requests are permanently deleted.
+    - Late arrivals (``member_ids``) stay open and re-group against Directory.
     - Does NOT call db.commit() — router commits.
 
     Returns the count of requests deleted.
     """
     now = datetime.now(timezone.utc)
-    members = get_group_members(db, group.id)
-    
+    all_members = get_group_members(db, group.id)
+    members, late_arrivals = _members_for_resolve_snapshot(all_members, member_ids)
+
     from app.intake_persons import append_lifecycle_history, get_lifecycle_history
     directory_person = db.query(models.ManagerRequest).filter(models.ManagerRequest.id == group.directory_person_id).first()
     if directory_person:
         from app.user_display import hydrate_request_users
-        hydrate_request_users(db, members + [directory_person])
+        hydrate_request_users(db, members + late_arrivals + [directory_person])
         existing_stored = get_lifecycle_history(directory_person)
         existing_stored_ids = {e.get("id") for e in existing_stored}
         snapshot_events = _snapshot_discarded_manager_requests(directory_person, members, existing_stored_ids)
@@ -2664,6 +2833,7 @@ def resolve_group_keep_existing(
         now=now,
     )
     db.flush()
+    _detach_and_regroup_late_arrivals(db, late_arrivals)
     return count
 
 
@@ -2679,6 +2849,7 @@ def resolve_group_delete_from_directory(
     admin_id: Optional[str],
     admin_note: Optional[str] = None,
     source_request_id: Optional[str] = None,
+    member_ids: Optional[List[str]] = None,
 ) -> int:
     """Resolve group by marking Directory person as Removed and permanently deleting incoming requests.
 
@@ -2686,7 +2857,8 @@ def resolve_group_delete_from_directory(
     - Preserves the Add lifecycle events into intake_persons["history"] BEFORE mutating.
     - Updates the directory_person with final_values.
     - Sets outcome="Removed", action="Remove", handled_at=now, archived_at=None.
-    - Permanently deletes all incoming member requests.
+    - Permanently deletes snapshot incoming member requests.
+    - Late arrivals (``member_ids``) stay open and re-group against the Removed Directory.
     - Does NOT call db.commit() — router commits.
 
     Returns the count of requests processed.
@@ -2697,10 +2869,11 @@ def resolve_group_delete_from_directory(
     from app.manager_request_tags import TAG_PARTNER_REQUEST, TAG_VERIFIED, has_tag as _has_tag
 
     now = datetime.now(timezone.utc)
-    
-    members = get_group_members(db, group.id)
+
+    all_members = get_group_members(db, group.id)
+    members, late_arrivals = _members_for_resolve_snapshot(all_members, member_ids)
     from app.user_display import hydrate_request_users
-    hydrate_request_users(db, members + [directory_person])
+    hydrate_request_users(db, members + late_arrivals + [directory_person])
 
     # ── Step 1: Snapshot existing Add lifecycle events before mutating ──────────
     # The directory_person row currently represents the Add event.  Once we
@@ -2763,7 +2936,6 @@ def resolve_group_delete_from_directory(
                 "outcome": outcome_label,
             })
 
-    members = get_group_members(db, group.id)
     snapshot_events.extend(_snapshot_discarded_manager_requests(directory_person, members, existing_stored_ids))
 
     # Append all snapshot events captured so far (Add lifecycle + Remove requests).
@@ -2817,7 +2989,7 @@ def resolve_group_delete_from_directory(
 
     # ── Step 4: Freeze the "Marked as Removed" event with the correct timestamp ─
     # The live history-builder will also try to emit "{id}-handled" for the
-    # mutated row, but since the same ID was already stored (via Step 1 frozen
+    # mutated row, but since the same ID was already stored (via Step 1 stored
     # history OR via this explicit entry), the seen-set dedup will skip it.
     # Using a distinct "-handled-remove" suffix ensures the dedup set never
     # accidentally suppresses this event using the "-handled-add" or bare
@@ -2857,6 +3029,7 @@ def resolve_group_delete_from_directory(
         now=now,
     )
     db.flush()
+    _detach_and_regroup_late_arrivals(db, late_arrivals, exclude_id=directory_person.id)
     return count
 
 
@@ -2872,20 +3045,24 @@ def resolve_group_mark_removed(
     partner_id: Optional[str] = None,
     admin_note: Optional[str] = None,
     source_request_id: Optional[str] = None,
+    member_ids: Optional[List[str]] = None,
 ) -> int:
     """Resolve group and retain representative request as Removed Directory record (Case E), deleting discarded requests.
 
     Invariants:
     - Retains representative / source request, updating it to status='handled', outcome='Removed', action='Remove'.
-    - Permanently deletes all other member requests in the group.
+    - Permanently deletes other snapshot member requests.
+    - Late arrivals (``member_ids``) stay open and re-group against the Removed Directory.
     - Does NOT call db.commit() — router commits.
 
     Returns the count of requests processed.
     """
     now = datetime.now(timezone.utc)
-    members = get_group_members(db, group.id)
+    all_members = get_group_members(db, group.id)
+    members, late_arrivals = _members_for_resolve_snapshot(all_members, member_ids)
     retained_req = _current_request_member(
         members,
+        source_request_id=source_request_id,
         representative_request_id=group.representative_request_id,
     )
     if retained_req is None and members:
@@ -2998,6 +3175,7 @@ def resolve_group_mark_removed(
         now=now,
     )
     db.flush()
+    _detach_and_regroup_late_arrivals(db, late_arrivals, exclude_id=dir_row.id)
     return len(members) or 1
 
 

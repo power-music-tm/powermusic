@@ -66,15 +66,28 @@ export function firstNamesNicknameMatch(left, right, options = {}) {
   return nicknameGraphRelated(a, b);
 }
 
+/** Ordered ``a|b`` key for nickname pair answers (matches backend). */
+export function orderedNicknamePairKey(left, right) {
+  const a = normalizeFirstName(left);
+  const b = normalizeFirstName(right);
+  if (!a || !b || a === b) return null;
+  return a <= b ? `${a}|${b}` : `${b}|${a}`;
+}
+
 /**
  * True when first names differ after normalize but are nickname-graph related.
  * Used to show the "learn these nicknames are different" confirmation on
  * Keep Existing and Add New.
  */
-export function isNicknameOnlyFirstMatch(left, right) {
+export function isNicknameOnlyFirstMatch(left, right, options = {}) {
   const a = normalizeFirstName(left);
   const b = normalizeFirstName(right);
   if (!a || !b || a === b) return false;
+  const rejected = options?.rejectedPairs;
+  if (rejected instanceof Set) {
+    const key = a <= b ? `${a}|${b}` : `${b}|${a}`;
+    if (rejected.has(key)) return false;
+  }
   return nicknameGraphRelated(a, b);
 }
 

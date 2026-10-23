@@ -31,6 +31,42 @@ import {
 import { resolveAdminDisplayName } from '../../utils/adminDisplayName';
 import PasswordInput from '../auth/PasswordInput';
 import PasswordRequirements, { PasswordMatchHint } from '../auth/PasswordRequirements';
+import { useUnopenedNewRequestsCount } from '../../hooks/useUnopenedNewRequestsCount';
+
+function formatNavCount(count) {
+  if (!count || count < 1) return null;
+  return count > 99 ? '99+' : String(count);
+}
+
+function NewRequestsCountBadge({ count, active = false, collapsed = false }) {
+  const label = formatNavCount(count);
+  if (!label) return null;
+
+  // Active row is already brand-accent — use solid white so the count stays readable.
+  const tone = active
+    ? 'bg-white text-[var(--color-brand-accent)]'
+    : 'bg-[var(--color-brand-accent)] text-white';
+
+  if (collapsed) {
+    return (
+      <span
+        className={`absolute -right-1 -top-1 inline-flex min-w-[1.125rem] items-center justify-center rounded-full px-1 py-0.5 text-[9px] font-bold leading-none ring-2 ring-[var(--color-surface-sidebar)] ${tone}`}
+        aria-hidden="true"
+      >
+        {label}
+      </span>
+    );
+  }
+
+  return (
+    <span
+      className={`ml-auto inline-flex min-w-[1.25rem] shrink-0 items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none ${tone}`}
+      aria-hidden="true"
+    >
+      {label}
+    </span>
+  );
+}
 
 function partnerInitials(name) {
   const parts = String(name || '')
@@ -223,6 +259,7 @@ export default function Sidebar({
   const { partners, partnerLogos, selectedPartnerId, selectedPartnerLogo, setSelectedPartnerId, partnerLabel, createPartner } = usePartners();
   const { clearToasts, showToast } = useToast();
   const navigate = useNavigate();
+  const unopenedNewRequestsCount = useUnopenedNewRequestsCount(selectedPartnerId);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -590,13 +627,47 @@ export default function Sidebar({
               </span>
             )}
             <HoverTip
-              label={showExpanded ? '' : 'New Requests'}
+              label={
+                showExpanded
+                  ? ''
+                  : unopenedNewRequestsCount > 0
+                    ? `New Requests (${formatNavCount(unopenedNewRequestsCount)} unopened)`
+                    : 'New Requests'
+              }
               placement="right"
               className={showExpanded ? 'w-full' : ''}
             >
-              <NavLink to="/new-requests" className={navItemClass} onClick={handleNavClick} aria-label="New Requests">
-                <Inbox className="h-4 w-4 shrink-0" />
-                {showExpanded ? <span>New Requests</span> : null}
+              <NavLink
+                to="/new-requests"
+                className={navItemClass}
+                onClick={handleNavClick}
+                aria-label={
+                  unopenedNewRequestsCount > 0
+                    ? `New Requests, ${unopenedNewRequestsCount} unopened`
+                    : 'New Requests'
+                }
+              >
+                {({ isActive }) => (
+                  <>
+                    <span className="relative shrink-0">
+                      <Inbox className="h-4 w-4" />
+                      {!showExpanded ? (
+                        <NewRequestsCountBadge
+                          count={unopenedNewRequestsCount}
+                          active={isActive}
+                          collapsed
+                        />
+                      ) : null}
+                    </span>
+                    {showExpanded ? <span className="min-w-0 truncate">New Requests</span> : null}
+                    {showExpanded ? (
+                      <NewRequestsCountBadge
+                        count={unopenedNewRequestsCount}
+                        active={isActive}
+                      />
+                    ) : null}
+                  </>
+                )}
               </NavLink>
             </HoverTip>
             <HoverTip
