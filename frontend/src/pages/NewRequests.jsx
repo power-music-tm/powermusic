@@ -613,7 +613,10 @@ export default function Requests() {
         },
       );
     } else {
-      navigate(`/new-requests/${encodeURIComponent(row.id)}`);
+      navigate(`/new-requests/${encodeURIComponent(row.id)}`, {
+        // Seed detail so a stale/collapsed list cache cannot flash "not found".
+        state: { seedRequest: row, from: '/new-requests' },
+      });
     }
   };
 

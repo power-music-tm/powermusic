@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import RequestDetailView from '../components/RequestDetailDrawer';
 import { AdminPageScroll, Modal, Toast, useToast } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
 import { usePartners } from '../context/PartnerContext';
+import { useRealtimeBroadcast } from '../hooks/useRealtimeBroadcast';
 import { fetchJson } from '../utils/api';
 import {
+  getAdminRequest,
   getNewRequestsPage,
   loadWithCache,
   patchCache,
@@ -16,6 +18,8 @@ import {
   bumpCacheEpoch,
   REQUESTS_PAGE_CACHE_KEY,
 } from '../utils/pilot2Api';
+import { fetchGroupDetail } from '../utils/duplicateGroupApi';
+import { groupDetailCacheKey } from '../utils/groupDetailCache';
 import { getManagerDisplayName } from '../utils/manualEntry';
 import {
   markDirectoryPersonHighlight,
@@ -24,11 +28,69 @@ import {
 } from '../utils/adminUiHighlights';
 import { formatPersonName } from '../utils/personDisplay';
 
+/** Match Group Detail cadence so the 1→2 grouping jump is not slower than 3+. */
+const REQUEST_DETAIL_POLL_MS = 4000;
+
 function safeNewRequestsBackPath(from) {
   if (typeof from !== 'string') return '/new-requests';
   if (!from.startsWith('/new-requests')) return '/new-requests';
   if (from.includes('://') || from.includes('//')) return '/new-requests';
   return from;
+}
+
+function seedFromRequest(match, groupDetail = null) {
+  const members = Array.isArray(groupDetail?.members) ? groupDetail.members : null;
+  return {
+    id: match.id,
+    displayId: match.displayId,
+    receivedAt: match.receivedAt,
+    person: match.person,
+    action: match.action,
+    status: match.status,
+    submittedBy: match.submittedBy,
+    notes: match.notes,
+    tags: match.tags,
+    createdBy: match.createdBy,
+    directorFirst: match.directorFirst || match.person?.directorFirst,
+    directorLast: match.directorLast || match.person?.directorLast,
+    groupClassificationSummary: groupDetail?.classificationSummary || null,
+    groupMembers: members,
+    groupDirectoryPersonId: groupDetail?.directoryPersonId || null,
+    groupDirectoryPerson: groupDetail?.directoryPerson || null,
+    groupPreview: groupDetail
+      ? {
+          members,
+          representativeRequestId: groupDetail.representativeRequestId || match.id,
+          classificationSummary: groupDetail.classificationSummary || null,
+          directoryPersonId: groupDetail.directoryPersonId || null,
+        }
+      : null,
+  };
+}
+
+/**
+ * When a solo request gains a duplicate group, hand off to Group Detail with a
+ * warm cache + list seed so the 2nd member paints like later arrivals (no load flash).
+ */
+async function promoteToGroupDetail(match, navigate) {
+  const groupId = match?.duplicateGroupId;
+  if (!groupId || match.status !== 'new') return false;
+
+  let detail = null;
+  try {
+    detail = await fetchGroupDetail(groupId);
+    if (detail?.id) {
+      writeCache(groupDetailCacheKey(groupId), detail);
+    }
+  } catch {
+    // Seed alone still avoids a blank Group Detail mount.
+  }
+
+  navigate(`/new-requests/group/${encodeURIComponent(groupId)}`, {
+    replace: true,
+    state: { seedFromList: seedFromRequest(match, detail) },
+  });
+  return true;
 }
 
 export default function RequestDetail() {
@@ -50,52 +112,136 @@ export default function RequestDetail() {
   const directoryCacheKey = selectedPartnerId ? `directory_persons:${selectedPartnerId}` : 'directory_persons';
   const backTo = safeNewRequestsBackPath(location.state?.from);
 
+  const liveReadyRef = useRef(false);
+  const promoteInFlightRef = useRef(false);
+  const requestRef = useRef(null);
+  requestRef.current = request;
+
   const goBack = useCallback(() => {
     navigate(backTo);
   }, [navigate, backTo]);
 
-  const applyPage = useCallback((data) => {
-    const requests = Array.isArray(data?.requests) ? data.requests : [];
-    const persons = Array.isArray(data?.persons) ? data.persons : [];
-    setDirectory(persons);
-
-    const match = requests.find((row) => row.id === requestId) || null;
-    if (match) {
-      // Guard: if this request belongs to a duplicate group, redirect to the
-      // group resolution page so it cannot be mark-handled as a simple request.
-      if (match.duplicateGroupId) {
-        navigate(
-          `/new-requests/group/${encodeURIComponent(match.duplicateGroupId)}`,
-          { replace: true },
-        );
-        return;
-      }
-      setRequest(match);
-      setNotFound(false);
-      markRequestViewed(match.id);
-    } else {
+  const applyMatch = useCallback(async (match, { allowPromote = true } = {}) => {
+    if (!match || match.id !== requestId) {
       setRequest(null);
       setNotFound(true);
+      setLoading(false);
+      return;
     }
+
+    if (match.status && match.status !== 'new') {
+      setRequest(null);
+      setNotFound(true);
+      setLoading(false);
+      return;
+    }
+
+    // Solo request was grouped (2nd+ duplicate arrived) — jump to group UI with warm seed.
+    if (allowPromote && match.duplicateGroupId) {
+      if (promoteInFlightRef.current) return;
+      promoteInFlightRef.current = true;
+      try {
+        await promoteToGroupDetail(match, navigate);
+      } finally {
+        promoteInFlightRef.current = false;
+      }
+      return;
+    }
+
+    setRequest(match);
+    setNotFound(false);
     setLoading(false);
+    markRequestViewed(match.id);
   }, [requestId, navigate]);
 
+  const refreshRequest = useCallback(async ({ silent = false } = {}) => {
+    if (!requestId) return;
+    try {
+      const match = await getAdminRequest(requestId);
+      await applyMatch(match);
+    } catch (err) {
+      if (silent && requestRef.current) return;
+      console.error(err);
+      setRequest(null);
+      setNotFound(true);
+      setLoading(false);
+    }
+  }, [requestId, applyMatch]);
+
   useEffect(() => {
+    let cancelled = false;
+    liveReadyRef.current = false;
+    promoteInFlightRef.current = false;
     setLoading(true);
     setNotFound(false);
-    loadWithCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), applyPage).catch((err) => {
-      console.error(err);
+
+    const seed = location.state?.seedRequest;
+    if (seed?.id && seed.id === requestId && seed.status === 'new' && !seed.duplicateGroupId) {
+      setRequest(seed);
+      setNotFound(false);
       setLoading(false);
-      setNotFound(true);
-    });
-  }, [applyPage, requestsCacheKey, selectedPartnerId]);
+      markRequestViewed(seed.id);
+    }
+
+    loadWithCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data) => {
+      if (cancelled) return;
+      const persons = Array.isArray(data?.persons) ? data.persons : [];
+      setDirectory(persons);
+    }).catch(() => {});
+
+    getAdminRequest(requestId)
+      .then(async (match) => {
+        if (cancelled) return;
+        await applyMatch(match);
+        if (!cancelled) liveReadyRef.current = true;
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error(err);
+        setRequest(null);
+        setNotFound(true);
+        setLoading(false);
+        liveReadyRef.current = true;
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestId, requestsCacheKey, selectedPartnerId, navigate, applyMatch]);
+
+  // Live: when a 2nd duplicate lands, promote to Group Detail as fast as 3+ arrivals.
+  useEffect(() => {
+    if (!requestId) return undefined;
+    const refreshIfVisible = () => {
+      if (document.hidden || !liveReadyRef.current || promoteInFlightRef.current) return;
+      // Only watch while still on the solo detail page (no group yet).
+      if (requestRef.current?.duplicateGroupId) return;
+      void refreshRequest({ silent: true });
+    };
+    window.addEventListener('focus', refreshIfVisible);
+    const onVisibility = () => {
+      if (!document.hidden) refreshIfVisible();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    const poll = window.setInterval(refreshIfVisible, REQUEST_DETAIL_POLL_MS);
+    return () => {
+      window.removeEventListener('focus', refreshIfVisible);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.clearInterval(poll);
+    };
+  }, [requestId, refreshRequest]);
+
+  useRealtimeBroadcast('requests-changed', () => {
+    if (!liveReadyRef.current || document.hidden || promoteInFlightRef.current) return;
+    if (requestRef.current?.duplicateGroupId) return;
+    void refreshRequest({ silent: true });
+  }, { enabled: Boolean(requestId) });
 
   const completeRequest = async (req, adminNote = '') => {
     const personName = formatPersonName(req.person);
     const outcome = req.action === 'Add' ? 'Added' : 'Removed';
     const handledAt = new Date().toISOString();
-    // Same as Add to Directory / New Requests: only this id is handled. Late peers
-    // that joined while Confirm was open rematch against this Directory row.
     const handledId = req.id;
 
     setConfirmAction(null);
