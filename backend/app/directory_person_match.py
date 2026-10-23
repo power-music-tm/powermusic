@@ -449,32 +449,51 @@ def find_directory_conflict(
     return None
 
 
+def _directory_text_search_clause(pattern: str):
+    return or_(
+        models.ManagerRequest.person_first_name.ilike(pattern),
+        models.ManagerRequest.person_last_name.ilike(pattern),
+        # Full name "first last" — `+` works on SQLite and Postgres (func.concat does not on SQLite).
+        (
+            models.ManagerRequest.person_first_name
+            + " "
+            + models.ManagerRequest.person_last_name
+        ).ilike(pattern),
+        models.ManagerRequest.person_email.ilike(pattern),
+        models.ManagerRequest.person_location.ilike(pattern),
+    )
+
+
 def search_roster_rows(
     db: Session,
     query: str,
     *,
     limit: int = 25,
     partner_id: Optional[str] = None,
+    outcome: str = "Added",
 ) -> List[models.ManagerRequest]:
-    """Manager/admin Directory search: every matching Added row (no identity collapse)."""
+    """Manager Directory search: every matching row for Active or Removed (no identity collapse)."""
     pattern = f"%{query}%"
-    query_obj = db.query(models.ManagerRequest).filter(
+    filters = [
         models.ManagerRequest.status == "handled",
-        models.ManagerRequest.outcome == "Added",
-        models.ManagerRequest.archived_at.is_(None),
-        or_(
-            models.ManagerRequest.person_first_name.ilike(pattern),
-            models.ManagerRequest.person_last_name.ilike(pattern),
-            # Full name "first last" — `+` works on SQLite and Postgres (func.concat does not on SQLite).
-            (
-                models.ManagerRequest.person_first_name
-                + " "
-                + models.ManagerRequest.person_last_name
-            ).ilike(pattern),
-            models.ManagerRequest.person_email.ilike(pattern),
-            models.ManagerRequest.person_location.ilike(pattern),
-        ),
-    )
+        models.ManagerRequest.outcome.in_(DIRECTORY_LEDGER_OUTCOMES),
+        _directory_text_search_clause(pattern),
+    ]
+    if outcome == "Removed":
+        filters.append(
+            or_(
+                models.ManagerRequest.outcome == "Removed",
+                models.ManagerRequest.archived_at.isnot(None),
+            )
+        )
+    else:
+        filters.extend(
+            [
+                models.ManagerRequest.outcome == "Added",
+                models.ManagerRequest.archived_at.is_(None),
+            ]
+        )
+    query_obj = db.query(models.ManagerRequest).filter(*filters)
     if partner_id:
         query_obj = query_obj.filter(models.ManagerRequest.partner_id == partner_id)
     return (
@@ -552,14 +571,11 @@ def removed_snapshot_rows(
     limit: int = 1000,
     partner_id: Optional[str] = None,
 ) -> List[models.ManagerRequest]:
-    """Removed Directory rows for manager snapshots (no identity collapse)."""
-    query = db.query(models.ManagerRequest).filter(
-        models.ManagerRequest.status == "handled",
-        models.ManagerRequest.outcome == "Removed",
-    )
-    if partner_id:
-        query = query.filter(models.ManagerRequest.partner_id == partner_id)
-    return query.order_by(models.ManagerRequest.handled_at.desc()).limit(limit).all()
+    """Removed/archived Directory rows for manager snapshots (no identity collapse).
+
+    Same membership as admin Archived: outcome Removed or archived_at set.
+    """
+    return archived_snapshot_rows(db, limit=limit, partner_id=partner_id)
 
 
 def archived_snapshot_rows(
@@ -628,10 +644,12 @@ def roster_match_candidates(
     *,
     limit: int = 10,
     partner_id: Optional[str] = None,
+    outcome: str = "Added",
 ) -> List[models.ManagerRequest]:
-    """Manager form overlap hits: every overlapping Added row (no identity collapse)."""
+    """Manager form overlap hits: every overlapping Active or Removed row (no collapse)."""
     email, first, last, location = _person_probe_fields(person)
     gll = _is_gll(db, partner_id)
+    want_removed = outcome == "Removed"
     candidates = _roster_sql_candidates(
         db,
         email=email,
@@ -640,12 +658,18 @@ def roster_match_candidates(
         location=location,
         partner_id=partner_id,
         is_gll=gll,
+        include_archived=want_removed,
     )
+
+    def _in_outcome_set(row: models.ManagerRequest) -> bool:
+        if want_removed:
+            return (row.outcome or "") == "Removed" or getattr(row, "archived_at", None) is not None
+        return (row.outcome or "") == "Added" and getattr(row, "archived_at", None) is None
+
     matches = [
         row
         for row in sorted(candidates, key=_handled_at_sort_key, reverse=True)
-        if (row.outcome or "") == "Added"
-        and getattr(row, "archived_at", None) is None
+        if _in_outcome_set(row)
         and manager_form_directory_overlap_reasons(
             email=email,
             first=first,

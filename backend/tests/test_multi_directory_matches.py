@@ -255,13 +255,49 @@ class TestMultiDirectoryMatches:
             location="Alaska Country",
             handled_at=now - timedelta(hours=2),
         )
-        db.add_all([a, b, c])
+        removed_a = _dir_row(
+            partner_id=partner.id,
+            first="Carl",
+            last="Jonson",
+            email="cj@gmail.com",
+            location="England",
+            handled_at=now - timedelta(days=3),
+            action="Remove",
+            outcome="Removed",
+        )
+        removed_a.archived_at = now - timedelta(days=2)
+        removed_b = _dir_row(
+            partner_id=partner.id,
+            first="Carl",
+            last="Jonson",
+            email="cj@gmail.com",
+            location="England",
+            handled_at=now - timedelta(days=4),
+            action="Remove",
+            outcome="Removed",
+        )
+        removed_b.archived_at = now - timedelta(days=3)
+        db.add_all([a, b, c, removed_a, removed_b])
         db.flush()
 
         search_ids = {
             r.id for r in search_roster_rows(db, "cj@gmail.com", limit=25, partner_id=partner.id)
         }
         assert {a.id, b.id, c.id} <= search_ids
+        assert removed_a.id not in search_ids
+
+        removed_search_ids = {
+            r.id
+            for r in search_roster_rows(
+                db,
+                "cj@gmail.com",
+                limit=25,
+                partner_id=partner.id,
+                outcome="Removed",
+            )
+        }
+        assert {removed_a.id, removed_b.id} <= removed_search_ids
+        assert a.id not in removed_search_ids
 
         match_ids = {
             r.id
@@ -278,6 +314,23 @@ class TestMultiDirectoryMatches:
             )
         }
         assert {a.id, b.id, c.id} <= match_ids
+
+        removed_match_ids = {
+            r.id
+            for r in roster_match_candidates(
+                db,
+                schemas.PersonInfo(
+                    firstName="Carl",
+                    lastName="Jonson",
+                    email="cj@gmail.com",
+                    location="Somewhere",
+                ),
+                limit=25,
+                partner_id=partner.id,
+                outcome="Removed",
+            )
+        }
+        assert {removed_a.id, removed_b.id} <= removed_match_ids
 
     def test_directory_lists_show_every_row_without_collapse(self, db: Session):
         """Active and Archived Directory show stored rows as-is (no identity collapse)."""

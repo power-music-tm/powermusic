@@ -2277,10 +2277,10 @@ export default function GroupResolutionView({
           </>
         }
       >
-        <p className="text-sm text-[var(--color-text-secondary)]">
+        <p className="text-sm leading-relaxed text-[var(--color-text-secondary)]">
           More than one active Directory record matches this request. Choose exactly one to
           {' '}{currentRep?.action === 'Remove' ? 'archive and update' : 'update'}
-          . Nothing is selected yet — pick a record below, then review the final values on the next step.
+          , then confirm the final values on the next step. Nothing is selected yet.
           Archived Directory records are not listed.
         </p>
         <fieldset className="mt-4 space-y-2">
@@ -2307,13 +2307,14 @@ export default function GroupResolutionView({
                   disabled={submitting || !id}
                   onChange={() => id && setSelectedDirectoryId(id)}
                 />
-                <span className="min-w-0 flex-1">
-                  <span className="text-sm font-semibold text-[var(--color-text-primary)]">
+                <span className="min-w-0 flex-1 space-y-1">
+                  <span className="block text-sm font-semibold text-[var(--color-text-primary)]">
                     Directory record {index + 1}: {name}
                   </span>
-                  <span className="mt-1 block text-xs text-[var(--color-text-secondary)]">
-                    {(person.email || 'No email')}
-                    {' · '}
+                  <span className="block text-xs text-[var(--color-text-secondary)]">
+                    Email: {(person.email || '').trim() || 'No email'}
+                  </span>
+                  <span className="block text-xs text-[var(--color-text-secondary)]">
                     {locLabel}: {((person.location || '').trim() || 'No location')}
                   </span>
                 </span>

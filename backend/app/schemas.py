@@ -544,6 +544,8 @@ class DuplicateCheckIn(BaseModel):
     # For PureGym: location. For Health Fitness: client (same physical field).
     location: Optional[str] = Field(default=None, max_length=100)
     partnerId: Optional[str] = None
+    # Manager form directory scope: Active ("Added") or Removed/archived ("Removed").
+    outcome: Optional[str] = Field(default="Added", max_length=16)
 
     @field_validator("email", mode="before")
     @classmethod

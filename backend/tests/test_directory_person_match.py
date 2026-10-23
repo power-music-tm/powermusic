@@ -238,10 +238,17 @@ class TestActiveRoster:
             outcome="Removed",
             action="Remove",
         )
+        archived_added = _handled_row(
+            db,
+            _person(email=f"archived-added-{uuid.uuid4().hex[:8]}@example.com"),
+            outcome="Added",
+            action="Add",
+        )
+        archived_added.archived_at = datetime(2026, 10, 1, tzinfo=timezone.utc)
         db.flush()
 
         snapshot_ids = {row.id for row in removed_snapshot_rows(db, limit=100)}
-        assert {removed.id, other_removed.id} <= snapshot_ids
+        assert {removed.id, other_removed.id, archived_added.id} <= snapshot_ids
         assert added.id not in snapshot_ids
         assert readded.id not in snapshot_ids
 

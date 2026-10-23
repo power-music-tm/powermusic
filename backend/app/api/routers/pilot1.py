@@ -206,6 +206,7 @@ def _find_related_people(
     last_name: str,
     location: str,
     partner_id: Optional[str] = None,
+    outcome: str = "Added",
 ) -> list[tuple[models.ManagerRequest, set[str]]]:
     from app.directory_person_match import manager_form_directory_overlap_reasons
     from app.duplicate_matching import is_gll_partner
@@ -217,7 +218,9 @@ def _find_related_people(
         location=location,
     )
     gll = is_gll_partner(db, partner_id)
-    rows = roster_match_candidates(db, probe, partner_id=partner_id)
+    rows = roster_match_candidates(
+        db, probe, partner_id=partner_id, outcome=outcome
+    )
     return [
         (
             row,
@@ -244,6 +247,7 @@ def _related_person_candidates(
     location: str,
     partner_id: Optional[str] = None,
     limit: int = 10,
+    outcome: str = "Added",
 ) -> list[dict]:
     related = _find_related_people(
         db,
@@ -252,6 +256,7 @@ def _related_person_candidates(
         last_name=last_name,
         location=location,
         partner_id=partner_id,
+        outcome=outcome,
     )
     rows = []
     for person, reasons in related[:limit]:
@@ -277,8 +282,11 @@ def _search_people(
     *,
     limit: int,
     partner_id: Optional[str] = None,
+    outcome: str = "Added",
 ) -> list[models.ManagerRequest]:
-    return search_roster_rows(db, query, limit=limit, partner_id=partner_id)
+    return search_roster_rows(
+        db, query, limit=limit, partner_id=partner_id, outcome=outcome
+    )
 
 
 def _manager_partner_id(
@@ -1337,6 +1345,9 @@ def match_person_candidates(
         return []
 
     capped = min(max(limit, 1), 15)
+    outcome = (payload.outcome or "Added").strip()
+    if outcome not in {"Added", "Removed"}:
+        raise HTTPException(status_code=422, detail="outcome must be Added or Removed")
     return _related_person_candidates(
         db,
         email=p_email,
@@ -1345,6 +1356,7 @@ def match_person_candidates(
         location=p_location,
         partner_id=resolved_partner_id,
         limit=capped,
+        outcome=outcome,
     )
 
 
@@ -1515,13 +1527,18 @@ def search_persons_for_manager(
     q: str = "",
     partner_id: Optional[str] = None,
     partner_slug: Optional[str] = None,
+    outcome: str = "Added",
     limit: int = 25,
     db: Session = Depends(get_db),
     manager=Depends(_limit_search),
     x_partner_id: Optional[str] = Header(None, alias="X-Partner-Id"),
     x_partner_slug: Optional[str] = Header(None, alias="X-Partner-Slug"),
 ):
-    """Scoped search for the manager submit form — name, email, or location."""
+    """Scoped search for the manager submit form — name, email, or location.
+
+    ``outcome=Added`` searches Active Directory; ``outcome=Removed`` searches
+    Removed/archived rows. Both return every matching stored row (no collapse).
+    """
     resolved_partner_id = _manager_partner_id(
         db,
         manager.email,
@@ -1530,6 +1547,8 @@ def search_persons_for_manager(
         header_partner_id=x_partner_id,
         header_partner_slug=partner_slug or x_partner_slug,
     )
+    if outcome not in {"Added", "Removed"}:
+        raise HTTPException(status_code=422, detail="outcome must be Added or Removed")
     try:
         query = normalize_search_query(q, max_length=100).lower()
     except ValueError as exc:
@@ -1538,7 +1557,13 @@ def search_persons_for_manager(
         return []
 
     capped = min(max(limit, 1), 25)
-    people = _search_people(db, query, limit=capped, partner_id=resolved_partner_id)
+    people = _search_people(
+        db,
+        query,
+        limit=capped,
+        partner_id=resolved_partner_id,
+        outcome=outcome,
+    )
     return [_person_search_row(person) for person in people]
 
 

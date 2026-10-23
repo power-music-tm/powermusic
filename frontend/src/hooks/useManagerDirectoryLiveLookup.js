@@ -46,34 +46,9 @@ export function useManagerDirectoryLiveLookup({
   const trimmedSearch = searchInput.trim();
   const hasSearchQuery = isUsableSearchQuery(trimmedSearch);
   const formsKey = useMemo(() => personFormsMatchKey(personForms), [personForms]);
-  const useServerLookup = rosterOutcome === 'Added';
-
-  const localSearchResults = useMemo(() => {
-    if (useServerLookup || !enabled) return [];
-    return filterDirectorySearch(localSnapshot, searchInput);
-  }, [useServerLookup, enabled, localSnapshot, searchInput]);
-
-  const localFormMatch = useMemo(() => {
-    if (useServerLookup || !enabled) {
-      return { formMatchResults: [], formMatchUsersByRowId: new Map() };
-    }
-    const rowsByFormIndex = personForms
-      .map((form, formIndex) => ({
-        formIndex,
-        rows: formHasMatchCriteria(form)
-          ? findFormMatchCandidates(localSnapshot, form, MATCH_LIMIT, { isGll })
-          : [],
-      }))
-      .filter(({ rows }) => rows.length > 0);
-    return mergeFormMatchRows(rowsByFormIndex);
-  }, [useServerLookup, enabled, localSnapshot, personForms, formsKey, isGll]);
+  const directoryOutcome = rosterOutcome === 'Removed' ? 'Removed' : 'Added';
 
   useEffect(() => {
-    if (!useServerLookup) {
-      setServerSearchResults([]);
-      setSearchLoading(false);
-      return undefined;
-    }
     if (!enabled) {
       setServerSearchResults([]);
       setSearchLoading(false);
@@ -90,14 +65,20 @@ export function useManagerDirectoryLiveLookup({
     setSearchLoading(true);
     const timer = window.setTimeout(async () => {
       try {
-        const rows = await searchManagerDirectory(trimmedSearch, SEARCH_LIMIT, partnerId);
+        const rows = await searchManagerDirectory(
+          trimmedSearch,
+          SEARCH_LIMIT,
+          partnerId,
+          directoryOutcome,
+        );
         if (active) {
           setServerSearchResults(rows);
         }
       } catch (err) {
         console.error(err);
         if (active && !isRateLimitError(err)) {
-          setServerSearchResults([]);
+          // Fall back to local snapshot filter if server search fails.
+          setServerSearchResults(filterDirectorySearch(localSnapshot, searchInput));
         }
       } finally {
         if (active) setSearchLoading(false);
@@ -108,15 +89,18 @@ export function useManagerDirectoryLiveLookup({
       active = false;
       window.clearTimeout(timer);
     };
-  }, [useServerLookup, enabled, hasSearchQuery, trimmedSearch, partnerId, debounceMs]);
+  }, [
+    enabled,
+    hasSearchQuery,
+    trimmedSearch,
+    partnerId,
+    debounceMs,
+    directoryOutcome,
+    localSnapshot,
+    searchInput,
+  ]);
 
   useEffect(() => {
-    if (!useServerLookup) {
-      setFormMatchResults([]);
-      setFormMatchUsersByRowId(new Map());
-      setMatchLoading(false);
-      return undefined;
-    }
     if (!enabled) {
       setFormMatchResults([]);
       setFormMatchUsersByRowId(new Map());
@@ -145,6 +129,7 @@ export function useManagerDirectoryLiveLookup({
               personForms[formIndex],
               MATCH_LIMIT,
               partnerId,
+              directoryOutcome,
             );
             return { formIndex, rows };
           }),
@@ -156,8 +141,18 @@ export function useManagerDirectoryLiveLookup({
       } catch (err) {
         console.error(err);
         if (active && !isRateLimitError(err)) {
-          setFormMatchResults([]);
-          setFormMatchUsersByRowId(new Map());
+          const rowsByFormIndex = indexesWithCriteria.map((formIndex) => ({
+            formIndex,
+            rows: findFormMatchCandidates(
+              localSnapshot,
+              personForms[formIndex],
+              MATCH_LIMIT,
+              { isGll },
+            ),
+          }));
+          const merged = mergeFormMatchRows(rowsByFormIndex);
+          setFormMatchResults(merged.formMatchResults);
+          setFormMatchUsersByRowId(merged.formMatchUsersByRowId);
         }
       } finally {
         if (active) setMatchLoading(false);
@@ -168,22 +163,23 @@ export function useManagerDirectoryLiveLookup({
       active = false;
       window.clearTimeout(timer);
     };
-  }, [useServerLookup, enabled, formsKey, partnerId, debounceMs, personForms]);
-
-  const resolvedSearchResults = useServerLookup ? serverSearchResults : localSearchResults;
-  const resolvedFormMatchResults = useServerLookup
-    ? formMatchResults
-    : localFormMatch.formMatchResults;
-  const resolvedFormMatchUsersByRowId = useServerLookup
-    ? formMatchUsersByRowId
-    : localFormMatch.formMatchUsersByRowId;
+  }, [
+    enabled,
+    formsKey,
+    partnerId,
+    debounceMs,
+    personForms,
+    directoryOutcome,
+    localSnapshot,
+    isGll,
+  ]);
 
   return {
-    serverSearchResults: resolvedSearchResults,
-    formMatchResults: resolvedFormMatchResults,
-    formMatchUsersByRowId: resolvedFormMatchUsersByRowId,
-    searchLoading: useServerLookup ? searchLoading : false,
-    matchLoading: useServerLookup ? matchLoading : false,
+    serverSearchResults,
+    formMatchResults,
+    formMatchUsersByRowId,
+    searchLoading,
+    matchLoading,
     hasSearchQuery,
   };
 }
