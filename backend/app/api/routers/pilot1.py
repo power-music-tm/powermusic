@@ -971,6 +971,21 @@ def get_new_requests_page(
         "persons": directory_rows_to_api_dicts(db, directory),
     }
 
+@router.get("/api/admin/requests/{request_id}", response_model=schemas.RequestOut)
+def get_admin_request(
+    request_id: str,
+    db: Session = Depends(get_db),
+    _admin: AuthenticatedUser = Depends(require_admin),
+):
+    """Load one request by id — used by Request Detail (not the collapsed list page)."""
+    req = db.query(models.ManagerRequest).filter(models.ManagerRequest.id == request_id).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
+    hydrate_request_display([req])
+    hydrate_request_users(db, [req])
+    return request_to_api_dict(req)
+
+
 @router.post("/api/admin/requests/{request_id}/mark-handled", response_model=schemas.RequestOut)
 def mark_request_handled(
     request_id: str,

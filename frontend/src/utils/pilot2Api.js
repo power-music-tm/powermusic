@@ -461,6 +461,9 @@ export const getNewRequestsPage = (partnerId = '') => {
   const query = partnerId ? `?partner_id=${encodeURIComponent(partnerId)}` : '';
   return request(`/api/admin/requests/page${query}`);
 };
+/** Single request by id — Request Detail must not rely only on the collapsed list page. */
+export const getAdminRequest = (id) =>
+  request(`/api/admin/requests/${encodeURIComponent(id)}`);
 export const getPilot2Workspace = () => request('/api/pilot2/workspace');
 export const dismissRequest = (id, { alsoDeleteIds } = {}) =>
   request(`/api/admin/requests/${id}/dismiss`, {
