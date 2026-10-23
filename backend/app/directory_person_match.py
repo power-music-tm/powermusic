@@ -480,12 +480,8 @@ def search_roster_rows(
         _directory_text_search_clause(pattern),
     ]
     if outcome == "Removed":
-        filters.append(
-            or_(
-                models.ManagerRequest.outcome == "Removed",
-                models.ManagerRequest.archived_at.isnot(None),
-            )
-        )
+        # Remove form: Removed rows only (never active Added), no identity collapse.
+        filters.append(models.ManagerRequest.outcome == "Removed")
     else:
         filters.extend(
             [
@@ -571,11 +567,17 @@ def removed_snapshot_rows(
     limit: int = 1000,
     partner_id: Optional[str] = None,
 ) -> List[models.ManagerRequest]:
-    """Removed/archived Directory rows for manager snapshots (no identity collapse).
+    """Manager Remove-form Directory: every outcome=Removed row (no identity collapse).
 
-    Same membership as admin Archived: outcome Removed or archived_at set.
+    Does not include active Added rows, even if manually archived_at is set.
     """
-    return archived_snapshot_rows(db, limit=limit, partner_id=partner_id)
+    query = db.query(models.ManagerRequest).filter(
+        models.ManagerRequest.status == "handled",
+        models.ManagerRequest.outcome == "Removed",
+    )
+    if partner_id:
+        query = query.filter(models.ManagerRequest.partner_id == partner_id)
+    return query.order_by(models.ManagerRequest.handled_at.desc()).limit(limit).all()
 
 
 def archived_snapshot_rows(
@@ -646,7 +648,10 @@ def roster_match_candidates(
     partner_id: Optional[str] = None,
     outcome: str = "Added",
 ) -> List[models.ManagerRequest]:
-    """Manager form overlap hits: every overlapping Active or Removed row (no collapse)."""
+    """Manager form overlap hits: every overlapping Active or Removed row (no collapse).
+
+    Remove form uses outcome=Removed only (never Added rows).
+    """
     email, first, last, location = _person_probe_fields(person)
     gll = _is_gll(db, partner_id)
     want_removed = outcome == "Removed"
@@ -663,7 +668,7 @@ def roster_match_candidates(
 
     def _in_outcome_set(row: models.ManagerRequest) -> bool:
         if want_removed:
-            return (row.outcome or "") == "Removed" or getattr(row, "archived_at", None) is not None
+            return (row.outcome or "") == "Removed"
         return (row.outcome or "") == "Added" and getattr(row, "archived_at", None) is None
 
     matches = [

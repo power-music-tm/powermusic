@@ -1537,7 +1537,7 @@ def search_persons_for_manager(
     """Scoped search for the manager submit form — name, email, or location.
 
     ``outcome=Added`` searches Active Directory; ``outcome=Removed`` searches
-    Removed/archived rows. Both return every matching stored row (no collapse).
+    Removed rows only. Both return every matching stored row (no collapse).
     """
     resolved_partner_id = _manager_partner_id(
         db,
