@@ -217,16 +217,16 @@ function directoryResolveScenario({ action }) {
   if (action === 'Remove') {
     return {
       key: 'remove_active',
-      title: 'Archive and update Directory record?',
-      body: 'The selected Directory record will be moved to archive and updated with these values. No new Directory record will be created. Archived records are not changed.',
+      title: 'Confirm: archive and update Directory record?',
+      body: 'After you confirm, the Directory record you chose will be moved to archive and updated with the final resolved values below. No new Directory record will be created. Other matching Directory records are left unchanged.',
       confirmLabel: 'Archive and Update Record',
       submittingLabel: 'Archiving…',
     };
   }
   return {
     key: 'add_active',
-    title: 'Update Directory record?',
-    body: 'The selected Directory record will be updated with these values and will remain active. No duplicate Directory record will be created.',
+    title: 'Confirm: update Directory record?',
+    body: 'After you confirm, the Directory record you chose will be updated with the final resolved values below and will remain active. No duplicate Directory record will be created. Other matching Directory records are left unchanged.',
     confirmLabel: 'Update Directory Record',
     submittingLabel: 'Updating…',
   };
@@ -649,7 +649,14 @@ export default function GroupResolutionView({
     setMergePageOpen(true);
   };
 
+  const openDirectorySelect = () => {
+    // Step 2 of 3 when multiple active Directory matches: radio, no pre-select.
+    setSelectedDirectoryId(null);
+    setConfirmAction('select_directory');
+  };
+
   const openDirectoryConfirm = (directoryId) => {
+    // Step 3: confirm final resolved values against the chosen Directory record.
     const id = directoryId || null;
     if (!id && hasDirectory) return;
     setSelectedDirectoryId(id);
@@ -670,10 +677,8 @@ export default function GroupResolutionView({
     // Freeze now — late arrivals after Add/Update confirm stay out of this resolve.
     setPeersMergeMemberIds(snapshotPeersForMerge());
     if (hasDirectory && directoryPersons.length > 1) {
-      // Explicit choice required — never auto-select by age/id.
-      // Only active Directory records are listed.
-      setSelectedDirectoryId(null);
-      setConfirmAction('select_directory');
+      // Multi-match: always radio first — never jump to a pre-selected confirm.
+      openDirectorySelect();
       return;
     }
     if (hasDirectory && directoryPersons.length === 1) {
@@ -909,8 +914,7 @@ export default function GroupResolutionView({
       setPendingConfirmAction(null);
       setPeersMergeMemberIds(snapshotPeersForMerge());
       if (hasDirectory && directoryPersons.length > 1) {
-        setSelectedDirectoryId(null);
-        setConfirmAction('select_directory');
+        openDirectorySelect();
         return;
       }
       if (hasDirectory && directoryPersons.length === 1) {
@@ -1925,7 +1929,12 @@ export default function GroupResolutionView({
                     {directoryPersons.length > 1 ? (
                       <>
                         These are existing active Directory records that also match this request.
-                        Choose which record to update when resolving. Archived matches are not listed.
+                        When you choose{' '}
+                        <span className="font-semibold text-[var(--color-text-secondary)]">
+                          {resolvePrimaryLabel({ hasDirectory: true, action: currentRep?.action })}
+                        </span>
+                        , you will pick which record to update (nothing is pre-selected), then confirm the final values.
+                        Archived matches are not listed.
                       </>
                     ) : currentRep?.action === 'Remove' ? (
                       <>
@@ -2132,12 +2141,16 @@ export default function GroupResolutionView({
         </>
       )}
 
-      {/* ── Multi-match Directory selection (explicit; no default) ── */}
+      {/* ── Step 2: Multi-match Directory selection (radio; no default) ── */}
       <Modal
         isOpen={confirmAction === 'select_directory'}
         onClose={closeConfirmModal}
         closeDisabled={submitting}
-        title="Choose which Directory record to update"
+        title={
+          currentRep?.action === 'Remove'
+            ? 'Which Directory record should be archived and updated?'
+            : 'Which Directory record should be updated?'
+        }
         footer={
           <>
             <button
@@ -2154,22 +2167,24 @@ export default function GroupResolutionView({
               onClick={() => openDirectoryConfirm(selectedDirectoryId)}
               className="px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              Continue
+              Continue to confirmation
             </button>
           </>
         }
       >
         <p className="text-sm text-[var(--color-text-secondary)]">
-          More than one active Directory record matches this request. Select exactly one record to
+          More than one active Directory record matches this request. Choose exactly one to
           {' '}{currentRep?.action === 'Remove' ? 'archive and update' : 'update'}
-          . Archived Directory records and historical requests are not listed here.
+          . Nothing is selected yet — pick a record below, then review the final values on the next step.
+          Archived Directory records are not listed.
         </p>
         <fieldset className="mt-4 space-y-2">
           <legend className="sr-only">Matching active Directory records</legend>
-          {directoryPersons.map((person) => {
+          {directoryPersons.map((person, index) => {
             const id = person.id;
             const checked = selectedDirectoryId === id;
             const name = [person.firstName, person.lastName].filter(Boolean).join(' ').trim() || 'Unknown';
+            const locLabel = isGll ? 'Gym Location' : (isHealthFitness ? 'Client' : 'Location');
             return (
               <label
                 key={id || name}
@@ -2188,11 +2203,13 @@ export default function GroupResolutionView({
                   onChange={() => id && setSelectedDirectoryId(id)}
                 />
                 <span className="min-w-0 flex-1">
-                  <span className="text-sm font-semibold text-[var(--color-text-primary)]">{name}</span>
+                  <span className="text-sm font-semibold text-[var(--color-text-primary)]">
+                    Directory record {index + 1}: {name}
+                  </span>
                   <span className="mt-1 block text-xs text-[var(--color-text-secondary)]">
                     {(person.email || 'No email')}
                     {' · '}
-                    {((person.location || '').trim() || 'No location')}
+                    {locLabel}: {((person.location || '').trim() || 'No location')}
                   </span>
                 </span>
               </label>
@@ -2254,17 +2271,31 @@ export default function GroupResolutionView({
           {confirmAction === 'peers_merge'
             ? `These ${incomingMemberCount()} new requests will be merged into the person below, and the older versions will be removed. Directory stays unchanged for now. After this, choose Keep Existing or ${resolvePrimaryLabel({ hasDirectory, action: currentRep?.action })} on the current request.`
             : hasDirectory
-            ? (dirScenario?.body || 'The selected Directory record will be updated, and the requests in this group will be closed.')
+            ? (dirScenario?.body || 'The selected Directory record will be updated with the final resolved values below, and the requests in this group will be closed.')
             : currentRep?.action === 'Remove'
             ? 'The final resolved values will be used, and the person will be marked as removed in the Directory. The requests in this group will be closed.'
             : 'A new Directory record will be created from the final resolved values, and the requests in this group will be closed.'}
         </p>
         {hasDirectory && selectedDirPerson && confirmAction === 'merge' ? (
-          <div className="mt-3 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-surface-bg)]/60 px-3.5 py-2.5 text-xs text-[var(--color-text-secondary)]">
-            <span className="font-semibold text-[var(--color-text-primary)]">Selected record: </span>
-            {[selectedDirPerson.firstName, selectedDirPerson.lastName].filter(Boolean).join(' ') || 'Unknown'}
-            {' · '}
-            {selectedDirPerson.email || 'No email'}
+          <div className="mt-3 flex flex-wrap items-start justify-between gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-surface-bg)]/60 px-3.5 py-2.5 text-xs text-[var(--color-text-secondary)]">
+            <div className="min-w-0">
+              <span className="font-semibold text-[var(--color-text-primary)]">Updating Directory record: </span>
+              {[selectedDirPerson.firstName, selectedDirPerson.lastName].filter(Boolean).join(' ') || 'Unknown'}
+              {' · '}
+              {selectedDirPerson.email || 'No email'}
+              {' · '}
+              {((selectedDirPerson.location || '').trim() || 'No location')}
+            </div>
+            {directoryPersons.length > 1 ? (
+              <button
+                type="button"
+                disabled={submitting || mergeEditing}
+                onClick={openDirectorySelect}
+                className="shrink-0 text-xs font-semibold text-[var(--color-brand-secondary)] underline-offset-2 hover:underline cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Change selection
+              </button>
+            ) : null}
           </div>
         ) : null}
 

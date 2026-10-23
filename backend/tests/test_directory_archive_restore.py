@@ -109,6 +109,82 @@ def test_archive_and_restore_person(db: Session):
     assert TAG_ALREADY_EXISTS in tags_after_restore
 
 
+def test_restore_after_remove_outcome_returns_to_active():
+    """Remove-and-Update sets outcome=Removed; restore must flip that too.
+
+    Clearing only archived_at left history saying "Restored to active" while the
+    row still matched archived_snapshot_rows (outcome == Removed).
+    """
+    import json
+    import sqlite3
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.dialects.postgresql import JSONB
+    from sqlalchemy.ext.compiler import compiles
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.types import ARRAY
+
+    from app.manager_request_tags import TAG_REMOVED
+
+    sqlite3.register_adapter(list, json.dumps)
+    sqlite3.register_adapter(dict, json.dumps)
+
+    @compiles(ARRAY, "sqlite")
+    def _compile_array(type_, compiler, **kw):
+        return "JSON"
+
+    @compiles(JSONB, "sqlite")
+    def _compile_jsonb(type_, compiler, **kw):
+        return "JSON"
+
+    engine = create_engine("sqlite:///:memory:")
+    models.Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = Session()
+
+    try:
+        uid = uuid.uuid4().hex[:8]
+        req_id = f"test-arch-rm-{uid}"
+        now = datetime.now(timezone.utc)
+
+        req = models.ManagerRequest(
+            id=req_id,
+            received_at=now,
+            handled_at=now,
+            status="handled",
+            outcome="Removed",
+            action="Remove",
+            archived_at=now,
+            tags=[TAG_REMOVED],
+            person_first_name="Carl",
+            person_last_name="Jonson",
+            person_email=f"ctd.{uid}@gmail.com",
+            person_location="Somerset",
+        )
+        db.add(req)
+        db.commit()
+
+        from app.api.routers.pilot1 import _restore_directory_row_to_active
+        from app.directory_person_match import archived_snapshot_rows, directory_ledger_rows
+
+        assert req_id in {r.id for r in archived_snapshot_rows(db)}
+        assert req_id not in {r.id for r in directory_ledger_rows(db)}
+
+        _restore_directory_row_to_active(req, now=datetime.now(timezone.utc))
+        db.commit()
+        db.refresh(req)
+
+        assert req.archived_at is None
+        assert req.outcome == "Added"
+        assert req.action == "Add"
+        assert TAG_REMOVED not in (req.tags or [])
+
+        assert req_id in {r.id for r in directory_ledger_rows(db)}
+        assert req_id not in {r.id for r in archived_snapshot_rows(db)}
+    finally:
+        db.close()
+
+
 def test_partner_isolation_for_archive_restore(db: Session):
     uid = uuid.uuid4().hex[:8]
     req_id = f"test-arch-p1-{uid}"

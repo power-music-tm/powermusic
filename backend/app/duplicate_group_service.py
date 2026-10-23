@@ -211,23 +211,52 @@ _MATCH_CLASS_RANK = {
 }
 
 
+def _directory_location_key(row: models.ManagerRequest) -> str:
+    return (row.person_location or "").strip().lower()
+
+
+def _is_duplicate_directory_update_target(
+    left: models.ManagerRequest,
+    right: models.ManagerRequest,
+    *,
+    is_ht: bool,
+    is_gll: bool,
+) -> bool:
+    """True when two Directory rows are stacked copies of the same update target.
+
+    Collapses accidental Add User duplicates (same identity + same location).
+    Keeps separately selectable rows when location differs (e.g. London vs England
+    with the same email) so the admin radio step can choose which to update.
+    """
+    if not same_person_for_partner(
+        left, right, is_healthtech=is_ht, is_gll=is_gll
+    ):
+        return False
+    if is_gll:
+        return True
+    loc_l = _directory_location_key(left)
+    loc_r = _directory_location_key(right)
+    if loc_l and loc_r and loc_l != loc_r:
+        return False
+    return True
+
+
 def _collapse_directory_matches_to_representatives(
     matches: List[Tuple[models.ManagerRequest, str]],
     *,
     is_ht: bool,
     is_gll: bool,
 ) -> List[Tuple[models.ManagerRequest, str]]:
-    """One Directory match per same-person identity (Directory ledger rule).
+    """Collapse stacked Directory copies; keep distinct update targets selectable.
 
-    Repeated Add User / manual-entry cycles can leave many handled Added rows for
-    the same person. Directory UI dedupes those; matching must do the same so
-    admins are not asked to pick among 15 identical records.
-    Distinct people who still classify as matches remain separate choices.
+    Repeated Add User cycles can leave many identical handled Added rows. Those
+    collapse to one representative (newest active). Rows that still differ as
+    update targets (notably different locations) stay separate for the radio UI.
     """
     if len(matches) <= 1:
         return matches
 
-    # Preferred representative first, then greedily keep if not same person as kept.
+    # Preferred representative first, then greedily keep if not a stacked duplicate.
     ranked = sorted(
         matches,
         key=lambda item: (
@@ -241,8 +270,8 @@ def _collapse_directory_matches_to_representatives(
             (
                 i
                 for i, (prior, _) in enumerate(kept)
-                if same_person_for_partner(
-                    person, prior, is_healthtech=is_ht, is_gll=is_gll
+                if _is_duplicate_directory_update_target(
+                    person, prior, is_ht=is_ht, is_gll=is_gll
                 )
             ),
             None,
@@ -268,7 +297,7 @@ def _find_all_directory_matches(
     is_gll: bool,
     dismissed_set: Optional[Set[Tuple[str, str]]] = None,
 ) -> List[Tuple[models.ManagerRequest, str]]:
-    """Return directory matches, collapsed to one representative per same person."""
+    """Return directory matches; collapse stacked copies, keep distinct targets."""
     matches: List[Tuple[models.ManagerRequest, str]] = []
     for dir_cand in dir_candidates:
         if are_requests_dismissed(db, req_id, dir_cand.id, dismissed_set=dismissed_set):

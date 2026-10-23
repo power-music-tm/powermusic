@@ -211,9 +211,10 @@ class TestExplicitDirectorySelection:
         incoming = _req(db, partner_id=partner.id, first="Chris", last="Ortiz", email="c.o@jdgyms.co.uk", location="West", action="Add", received_at=now)
         group = _group(db, partner_id=partner.id, primary_id=active_a.id, match_ids=[active_a.id, active_b.id, archived.id], members=[incoming])
 
-        # Same-email actives collapse to one representative (newest); archived excluded.
+        # Differently located actives stay separately selectable; archived excluded.
         eligible = eligible_directory_person_ids_for_group(db, group)
-        assert eligible == {active_b.id}
+        assert eligible == {active_a.id, active_b.id}
+        assert archived.id not in eligible
 
         before_loc = archived.person_location
         before_arch = archived.archived_at

@@ -1,8 +1,9 @@
-"""Directory matching collapses same-person duplicates to one representative.
+"""Directory matching collapses stacked duplicates; keeps distinct update targets.
 
-Repeated Add User / manual-entry can leave many handled Added rows for one identity.
-Directory UI dedupes those; grouping/match discovery must do the same.
-Distinct people who still classify as matches remain separate choices.
+Repeated Add User / manual-entry can leave many identical handled Added rows
+(same identity + same location). Those collapse to one representative.
+Same-email rows with different locations stay separately selectable so the
+admin radio step can choose which Directory record to update.
 """
 
 from __future__ import annotations
@@ -146,8 +147,8 @@ class TestMultiDirectoryMatches:
         live = find_all_directory_matches_for_requests(db, [incoming])
         assert [r.id for r in live] == [newest.id]
 
-    def test_same_email_different_locations_still_one_representative(self, db: Session):
-        """Email-only same_person → Directory shows one; matching follows."""
+    def test_same_email_different_locations_remain_selectable(self, db: Session):
+        """Same email, different locations → both stay for the radio choose step."""
         now = datetime.now(timezone.utc)
         partner = _partner(db)
 
@@ -184,9 +185,13 @@ class TestMultiDirectoryMatches:
         group = process_request_grouping(db, incoming)
         db.flush()
         assert group is not None
-        assert group.directory_person_id == newer.id
+        # Primary uses stable oldest-first ranking; both remain selectable.
+        assert group.directory_person_id in {older.id, newer.id}
         stored = (group.resolution_metadata or {}).get("matched_directory_person_ids") or []
-        assert stored == [newer.id]
+        assert set(stored) == {older.id, newer.id}
+
+        live = find_all_directory_matches_for_requests(db, [incoming])
+        assert {r.id for r in live} == {older.id, newer.id}
 
     def test_collapse_keeps_distinct_identities(self, db: Session):
         """Rows that are not same_person are not collapsed together."""
@@ -219,6 +224,50 @@ class TestMultiDirectoryMatches:
             is_gll=False,
         )
         assert {p.id for p, _ in collapsed} == {a.id, b.id}
+
+    def test_collapse_keeps_same_email_different_locations(self, db: Session):
+        """Stacked-copy collapse must not erase differently located update targets."""
+        from app.duplicate_group_service import _collapse_directory_matches_to_representatives
+
+        now = datetime.now(timezone.utc)
+        partner = _partner(db)
+        london = _dir_row(
+            partner_id=partner.id,
+            first="Carl",
+            last="Johnson",
+            email="cj@therealgmail.com",
+            location="London",
+            handled_at=now - timedelta(days=10),
+        )
+        england = _dir_row(
+            partner_id=partner.id,
+            first="Carl",
+            last="Johnson",
+            email="cj@therealgmail.com",
+            location="England",
+            handled_at=now - timedelta(days=1),
+        )
+        stacked = _dir_row(
+            partner_id=partner.id,
+            first="Carl",
+            last="Johnson",
+            email="cj@therealgmail.com",
+            location="England",
+            handled_at=now - timedelta(days=2),
+        )
+        db.add_all([london, england, stacked])
+        db.flush()
+
+        collapsed = _collapse_directory_matches_to_representatives(
+            [
+                (london, "potential_duplicate"),
+                (england, "potential_duplicate"),
+                (stacked, "potential_duplicate"),
+            ],
+            is_ht=False,
+            is_gll=False,
+        )
+        assert {p.id for p, _ in collapsed} == {london.id, england.id}
 
     def test_other_partner_directory_never_included(self, db: Session):
         now = datetime.now(timezone.utc)

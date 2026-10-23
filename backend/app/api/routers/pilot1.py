@@ -518,6 +518,26 @@ def bulk_archive_persons(
     return directory_rows_to_api_dicts(db, reqs)
 
 
+def _restore_directory_row_to_active(req: models.ManagerRequest, *, now: datetime) -> None:
+    """Fully return a Directory row to the active ledger.
+
+    Manual archive only sets ``archived_at`` (outcome may stay Added). Remove-and-
+    Update sets ``outcome="Removed"`` (and usually ``archived_at``). Archive UI
+    lists either condition; Active requires ``outcome="Added"`` and no
+    ``archived_at``. Clearing only ``archived_at`` left Removed rows stuck in
+    archive while still writing "Restored to active" history.
+    """
+    from app.manager_request_tags import TAG_REMOVED
+
+    req.archived_at = None
+    req.outcome = "Added"
+    req.action = "Add"
+    req.handled_at = now
+    tags = list(req.tags or [])
+    if TAG_REMOVED in tags:
+        req.tags = [t for t in tags if t != TAG_REMOVED]
+
+
 @router.post("/api/persons/{person_id}/restore", response_model=schemas.PersonOut)
 def restore_person(
     person_id: str,
@@ -535,7 +555,7 @@ def restore_person(
             raise HTTPException(status_code=404, detail="Directory record not found for partner")
 
     now = datetime.now(timezone.utc)
-    req.archived_at = None
+    _restore_directory_row_to_active(req, now=now)
 
     from app.intake_persons import append_lifecycle_history
     from app.request_display import parse_request_display_number
@@ -583,7 +603,7 @@ def bulk_restore_persons(
     for req in reqs:
         if partner_id and req.partner_id and req.partner_id != partner_id:
             continue
-        req.archived_at = None
+        _restore_directory_row_to_active(req, now=now)
         restore_event_id = f"{req.id}-restore-{now.timestamp()}"
         append_lifecycle_history(req, [{
             "id": restore_event_id,
@@ -1777,7 +1797,7 @@ def get_duplicate_group_details(
 
     dismissed_pairs = get_all_dismissed_pairs(db)
 
-    # Live re-scan: Directory matches collapsed to one representative per same person.
+    # Live re-scan: collapse stacked Directory copies; keep distinct update targets.
     matched_dir_rows = find_all_directory_matches_for_requests(
         db,
         members,
