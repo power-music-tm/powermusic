@@ -106,11 +106,36 @@ export const resolveGroupKeepExisting = (groupId, { adminNote } = {}) =>
  * Removes requestId2 from the group. requestId1 (the representative) stays.
  * Persists the dismissed pair so the grouping engine never re-pairs them.
  */
-export const unlinkGroupMember = (groupId, { requestId1, requestId2 }) =>
+export const unlinkGroupMember = (groupId, { requestId1, requestId2, strictSingle = false }) =>
   groupRequest(`/api/duplicate-groups/${groupId}/unlink`, {
     method: 'POST',
-    body: JSON.stringify({ requestId1, requestId2 }),
+    body: JSON.stringify({ requestId1, requestId2, strictSingle: Boolean(strictSingle) }),
   });
+
+/**
+ * POST /api/duplicate-groups/{groupId}/reattach-lookalike
+ * Move this group's sole open request onto a separated lookalike (Not the same person).
+ * Requires peer history already merged to one request.
+ */
+export const reattachGroupLookalike = (groupId, { targetRequestId }) =>
+  groupRequest(`/api/duplicate-groups/${groupId}/reattach-lookalike`, {
+    method: 'POST',
+    body: JSON.stringify({ targetRequestId }),
+  });
+
+/**
+ * POST /api/duplicate-groups/{groupId}/merge-peers
+ * Collapse Request History to one open request. Group stays active; Directory unchanged.
+ */
+export const mergeGroupPeers = (groupId, { finalValues, sourceRequestId }) =>
+  groupRequest(`/api/duplicate-groups/${groupId}/merge-peers`, {
+    method: 'POST',
+    body: JSON.stringify({
+      finalValues,
+      sourceRequestId: sourceRequestId || null,
+    }),
+  });
+
 /**
  * POST /api/duplicate-groups/{groupId}/resolve-delete-directory
  * Case D — Remove request with existing Directory match. Permanently deletes Directory record.

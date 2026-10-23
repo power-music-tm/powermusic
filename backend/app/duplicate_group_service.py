@@ -481,7 +481,14 @@ def _process_request_grouping_impl(
                 flag_modified(group, "resolution_metadata")
             # Absorb any other ungrouped candidates into this group too.
             _absorb_ungrouped_matches(
-                db, group, req_person, exclude_id=req.id, ungrouped_candidates=p_cands, is_healthtech=is_ht, is_gll=is_gll
+                db,
+                group,
+                req_person,
+                exclude_id=req.id,
+                ungrouped_candidates=p_cands,
+                dismissed_set=dismissed_set,
+                is_healthtech=is_ht,
+                is_gll=is_gll,
             )
             members = [req] + [c for c in p_cands if c.duplicate_group_id == group.id]
             _sync_group_representative_and_tags(db, group, member_requests=members)
@@ -535,7 +542,12 @@ def _absorb_ungrouped_matches(
     is_healthtech: bool = False,
     is_gll: bool = False,
 ) -> None:
-    """Pull any still-ungrouped pending requests that match req_person into *group*."""
+    """Pull still-ungrouped pending requests that match *req_person* into *group*.
+
+    Never reunites requests that were separated via Not the Same Person: a
+    candidate is skipped when dismissed against the incoming request, against
+    this group id, OR against any member already in the group.
+    """
     if ungrouped_candidates is not None:
         candidates = [
             c for c in ungrouped_candidates
@@ -557,18 +569,313 @@ def _absorb_ungrouped_matches(
             ungrouped_q = ungrouped_q.filter(models.ManagerRequest.id != exclude_id)
         candidates = ungrouped_q.limit(100).all()
 
+    # Flush so in-memory assignments (incoming + best match) are visible to the
+    # member query even when the session has autoflush disabled.
+    db.flush()
+
+    # Members already assigned to this group (including those just attached).
+    member_ids: Set[str] = {
+        m.id
+        for m in db.query(models.ManagerRequest)
+        .filter(
+            models.ManagerRequest.duplicate_group_id == group.id,
+            models.ManagerRequest.status == "new",
+        )
+        .all()
+        if m.id
+    }
+    if exclude_id:
+        member_ids.add(exclude_id)
+
+    # Pre-score which ungrouped candidates match the probe person so we can
+    # honour sibling Not-the-Same-Person dismissals (A dismissed B, both match
+    # the group — neither should be absorbed even if the original peer left).
+    matching_ungrouped_ids: Set[str] = set()
+    cand_classifications: dict = {}
     for cand in candidates:
+        if not cand.id:
+            continue
+        classification, _score = match_classification_for_partner(
+            req_person,
+            person_from_model(cand),
+            is_healthtech=is_healthtech,
+            is_gll=is_gll,
+        )
+        if classification:
+            matching_ungrouped_ids.add(cand.id)
+            cand_classifications[cand.id] = classification
+
+    for cand in candidates:
+        if not cand.id:
+            continue
         if are_requests_dismissed(db, exclude_id or "", cand.id, dismissed_set=dismissed_set):
             continue
         if is_request_dismissed_from_group(db, cand.id, group.id):
             continue
-        
-        classification, score = match_classification_for_partner(req_person, person_from_model(cand), is_healthtech=is_healthtech, is_gll=is_gll)
+        # Critical: respect pairwise Not-the-Same-Person dismissals vs anyone
+        # already in the group (not only vs the newly arriving request).
+        if any(
+            are_requests_dismissed(db, cand.id, mid, dismissed_set=dismissed_set)
+            for mid in member_ids
+            if mid != cand.id
+        ):
+            continue
+        # Sibling lookalike barrier: dismissed against another ungrouped match.
+        if any(
+            are_requests_dismissed(db, cand.id, other_id, dismissed_set=dismissed_set)
+            for other_id in matching_ungrouped_ids
+            if other_id != cand.id
+        ):
+            continue
+
+        classification = cand_classifications.get(cand.id)
         if classification:
             cand.duplicate_group_id = group.id
+            member_ids.add(cand.id)
+            matching_ungrouped_ids.discard(cand.id)
             upgraded = _best_classification(group.classification, classification)
             if upgraded != group.classification:
                 group.classification = upgraded
+
+
+def find_separated_lookalike_requests(
+    db: Session,
+    group: models.DuplicateGroup,
+    members: List[models.ManagerRequest],
+    *,
+    dismissed_set: Optional[Set[Tuple[str, str]]] = None,
+    limit: int = 20,
+) -> List[models.ManagerRequest]:
+    """Open requests that match this group's newest member but stay outside the group.
+
+    Typical case: previously unlinked ("Not the Same Person") lookalikes that the
+    new request also matches. Used for the admin warning with hyperlinks.
+
+    A candidate counts when it matches the probe AND is blocked from this group by:
+      * a pairwise dismissal vs a current member, or
+      * a group-level dismissal for this group id, or
+      * a pairwise dismissal vs another open request that also matches the probe
+        (sibling lookalike cohort — covers the case where dismissals were recorded
+        against a peer that later left the group after Merge).
+    """
+    if not members:
+        return []
+
+    probe = max(members, key=lambda m: _norm_dt(m.received_at))
+    probe_person = person_from_model(probe)
+    is_ht = is_healthtech_from_request(db, probe)
+    is_gll = is_gll_from_request(db, probe)
+    member_ids = {m.id for m in members if m.id}
+
+    q = db.query(models.ManagerRequest).filter(
+        models.ManagerRequest.status == "new",
+    )
+    if member_ids:
+        q = q.filter(models.ManagerRequest.id.notin_(list(member_ids)))
+    if group.partner_id:
+        q = q.filter(models.ManagerRequest.partner_id == group.partner_id)
+    candidates = q.order_by(models.ManagerRequest.received_at.desc()).limit(80).all()
+
+    if dismissed_set is None:
+        dismissed_set = get_all_dismissed_pairs(db)
+
+    matching: List[models.ManagerRequest] = []
+    for cand in candidates:
+        if not cand.id or cand.id in member_ids:
+            continue
+        classification, _ = match_classification_for_partner(
+            probe_person,
+            person_from_model(cand),
+            is_healthtech=is_ht,
+            is_gll=is_gll,
+        )
+        if classification:
+            matching.append(cand)
+
+    matching_ids = {c.id for c in matching}
+
+    out: List[models.ManagerRequest] = []
+    for cand in matching:
+        blocked = any(
+            are_requests_dismissed(db, cand.id, mid, dismissed_set=dismissed_set)
+            for mid in member_ids
+        ) or is_request_dismissed_from_group(db, cand.id, group.id)
+        if not blocked:
+            # Sibling lookalike: dismissed against another open match outside this group.
+            blocked = any(
+                are_requests_dismissed(db, cand.id, other_id, dismissed_set=dismissed_set)
+                for other_id in matching_ids
+                if other_id != cand.id
+            )
+        if not blocked:
+            continue
+        out.append(cand)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _clear_dismissed_pair(db: Session, request_id_a: str, request_id_b: str) -> None:
+    """Remove Not-the-Same-Person dismissals between two requests (both orderings)."""
+    if not request_id_a or not request_id_b or request_id_a == request_id_b:
+        return
+    db.query(models.DismissedDuplicateMatch).filter(
+        or_(
+            and_(
+                models.DismissedDuplicateMatch.request_id_1 == request_id_a,
+                models.DismissedDuplicateMatch.request_id_2 == request_id_b,
+            ),
+            and_(
+                models.DismissedDuplicateMatch.request_id_1 == request_id_b,
+                models.DismissedDuplicateMatch.request_id_2 == request_id_a,
+            ),
+        )
+    ).delete(synchronize_session=False)
+
+
+def _clear_dismissed_group(db: Session, request_id: str, group_id: str) -> None:
+    """Remove a request↔group dismissal so the request may join that group again."""
+    if not request_id or not group_id:
+        return
+    db.query(models.DismissedGroupMatch).filter(
+        models.DismissedGroupMatch.request_id == request_id,
+        models.DismissedGroupMatch.group_id == group_id,
+    ).delete(synchronize_session=False)
+
+
+def reattach_to_lookalike(
+    db: Session,
+    group_id: str,
+    target_request_id: str,
+    *,
+    admin_id: Optional[str] = None,
+) -> Optional[dict]:
+    """Move this group's sole open request onto a separated lookalike request.
+
+    Preconditions:
+      * Source group is active and has exactly one status=new member (admin must
+        Merge peer history first when multiple requests share the group).
+      * target_request_id is an open lookalike that was separated via Not the
+        same person (returned by find_separated_lookalike_requests).
+
+    Effects:
+      * Clears pairwise dismissal only between the source member and the target.
+      * Leaves dismissals vs other lookalikes intact.
+      * Joins the target's existing group, or creates a new two-member group.
+      * Dismisses the emptied source group.
+
+    Returns ``{sourceRequestId, targetRequestId, newGroupId, previousGroupId}``
+    or None when the operation is not allowed.
+    """
+    group = (
+        db.query(models.DuplicateGroup)
+        .filter(models.DuplicateGroup.id == group_id)
+        .first()
+    )
+    if not group or group.status != "active":
+        return None
+
+    members = (
+        db.query(models.ManagerRequest)
+        .filter(
+            models.ManagerRequest.duplicate_group_id == group.id,
+            models.ManagerRequest.status == "new",
+        )
+        .all()
+    )
+    if len(members) != 1:
+        return None
+
+    source = members[0]
+    if not source.id or source.id == target_request_id:
+        return None
+
+    target = (
+        db.query(models.ManagerRequest)
+        .filter(models.ManagerRequest.id == target_request_id)
+        .first()
+    )
+    if not target or target.status != "new":
+        return None
+    if group.partner_id and target.partner_id and target.partner_id != group.partner_id:
+        return None
+
+    lookalikes = find_separated_lookalike_requests(db, group, members)
+    if not any(r.id == target.id for r in lookalikes):
+        return None
+
+    is_ht = is_healthtech_from_request(db, source)
+    is_gll = is_gll_from_request(db, source)
+    classification, _ = match_classification_for_partner(
+        person_from_model(source),
+        person_from_model(target),
+        is_healthtech=is_ht,
+        is_gll=is_gll,
+    )
+    if not classification:
+        return None
+
+    now = datetime.now(timezone.utc)
+
+    # Allow this pair to share a group again; leave other lookalike dismissals.
+    _clear_dismissed_pair(db, source.id, target.id)
+
+    destination: Optional[models.DuplicateGroup] = None
+    if target.duplicate_group_id:
+        destination = (
+            db.query(models.DuplicateGroup)
+            .filter(
+                models.DuplicateGroup.id == target.duplicate_group_id,
+                models.DuplicateGroup.status == "active",
+            )
+            .first()
+        )
+
+    if destination is None:
+        destination = models.DuplicateGroup(
+            id=_new_group_id(),
+            partner_id=group.partner_id or target.partner_id,
+            classification=classification,
+            status="active",
+            created_at=now,
+            directory_person_id=None,
+            representative_request_id=None,
+        )
+        db.add(destination)
+        db.flush()
+        target.duplicate_group_id = destination.id
+    else:
+        upgraded = _best_classification(destination.classification, classification)
+        if upgraded != destination.classification:
+            destination.classification = upgraded
+
+    _clear_dismissed_group(db, source.id, destination.id)
+    _clear_dismissed_group(db, target.id, group.id)
+
+    source.duplicate_group_id = destination.id
+    db.flush()
+
+    # Empty source group — mark dismissed so it leaves New Requests.
+    group.status = "dismissed"
+    group.resolved_at = now
+    group.representative_request_id = None
+
+    dest_members = (
+        db.query(models.ManagerRequest)
+        .filter(
+            models.ManagerRequest.duplicate_group_id == destination.id,
+            models.ManagerRequest.status == "new",
+        )
+        .all()
+    )
+    _sync_group_representative_and_tags(db, destination, member_requests=dest_members)
+
+    return {
+        "sourceRequestId": source.id,
+        "targetRequestId": target.id,
+        "newGroupId": destination.id,
+        "previousGroupId": group_id,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -764,23 +1071,28 @@ def unlink_duplicate_members(
 
     cohort_ids = {m.id for m in cohort}
 
+    # Everyone else currently in the group — dismiss against ALL of them so
+    # later absorb cannot reunite Not-the-Same-Person peers via a third request.
+    other_q = db.query(models.ManagerRequest).filter(
+        models.ManagerRequest.duplicate_group_id == group.id,
+    )
+    if cohort_ids:
+        other_q = other_q.filter(models.ManagerRequest.id.notin_(list(cohort_ids)))
+    other_members = other_q.all()
+    dismiss_against_ids = {m.id for m in other_members if m.id}
+    dismiss_against_ids.add(request_id_1)
+    if group.directory_person_id:
+        dismiss_against_ids.add(group.directory_person_id)
+
     for member in cohort:
-        if not are_requests_dismissed(db, request_id_1, member.id):
-            db.add(
-                models.DismissedDuplicateMatch(
-                    id=f"dism-{uuid.uuid4().hex[:12]}",
-                    request_id_1=request_id_1,
-                    request_id_2=member.id,
-                    dismissed_by_admin_id=admin_uuid,
-                    created_at=now,
-                )
-            )
-        if group.directory_person_id and member.id != group.directory_person_id:
-            if not are_requests_dismissed(db, group.directory_person_id, member.id):
+        for other_id in dismiss_against_ids:
+            if not other_id or other_id == member.id:
+                continue
+            if not are_requests_dismissed(db, other_id, member.id):
                 db.add(
                     models.DismissedDuplicateMatch(
                         id=f"dism-{uuid.uuid4().hex[:12]}",
-                        request_id_1=group.directory_person_id,
+                        request_id_1=other_id,
                         request_id_2=member.id,
                         dismissed_by_admin_id=admin_uuid,
                         created_at=now,
@@ -1370,6 +1682,210 @@ def _apply_merge_manager_provenance(
 
     dir_row.intake_persons = intake
     dir_row.tags = tags
+
+
+def _apply_final_values_to_request(
+    req: models.ManagerRequest,
+    final_values: schemas.PersonInfo,
+) -> None:
+    """Write admin-confirmed identity fields onto an open request (peers merge)."""
+    from app.intake_persons import set_director_fields
+
+    req.person_first_name = (final_values.firstName or "").strip()
+    req.person_last_name = (final_values.lastName or "").strip()
+    req.person_email = (final_values.email or "").strip()
+    req.person_location = (final_values.location or "").strip()
+    if hasattr(final_values, "role") and final_values.role is not None:
+        req.role = (final_values.role or "").strip() or None
+    if (
+        getattr(final_values, "directorFirst", None) is not None
+        or getattr(final_values, "directorLast", None) is not None
+    ):
+        set_director_fields(
+            req,
+            getattr(final_values, "directorFirst", None) or "",
+            getattr(final_values, "directorLast", None) or "",
+        )
+
+
+def _transfer_dismissals_onto_survivor(
+    db: Session,
+    survivor_id: str,
+    discarded_ids: List[str],
+    *,
+    admin_id: Optional[str] = None,
+) -> None:
+    """Before deleting peers, copy their Not-the-Same-Person barriers onto the survivor.
+
+    permanently_delete_requests wipes dismissals that reference deleted IDs. Without
+    this transfer, lookalike barriers recorded against older history rows vanish
+    after Request History Merge.
+    """
+    discarded = {did for did in discarded_ids if did and did != survivor_id}
+    if not survivor_id or not discarded:
+        return
+
+    now = datetime.now(timezone.utc)
+    admin_uuid = admin_id if admin_id and admin_id != "dev-bypass" else None
+
+    pair_rows = (
+        db.query(models.DismissedDuplicateMatch)
+        .filter(
+            or_(
+                models.DismissedDuplicateMatch.request_id_1.in_(list(discarded)),
+                models.DismissedDuplicateMatch.request_id_2.in_(list(discarded)),
+            )
+        )
+        .all()
+    )
+    for row in pair_rows:
+        other = (
+            row.request_id_2
+            if row.request_id_1 in discarded
+            else row.request_id_1
+        )
+        if not other or other in discarded or other == survivor_id:
+            continue
+        if are_requests_dismissed(db, survivor_id, other):
+            continue
+        db.add(
+            models.DismissedDuplicateMatch(
+                id=f"dism-{uuid.uuid4().hex[:12]}",
+                request_id_1=survivor_id,
+                request_id_2=other,
+                dismissed_by_admin_id=admin_uuid,
+                created_at=now,
+            )
+        )
+
+    group_rows = (
+        db.query(models.DismissedGroupMatch)
+        .filter(models.DismissedGroupMatch.request_id.in_(list(discarded)))
+        .all()
+    )
+    for row in group_rows:
+        if not row.group_id:
+            continue
+        if is_request_dismissed_from_group(db, survivor_id, row.group_id):
+            continue
+        db.add(
+            models.DismissedGroupMatch(
+                id=f"dism-grp-{uuid.uuid4().hex[:12]}",
+                request_id=survivor_id,
+                group_id=row.group_id,
+                dismissed_by_admin_id=admin_uuid,
+                created_at=now,
+            )
+        )
+    db.flush()
+
+
+def merge_group_peers(
+    db: Session,
+    group_id: str,
+    final_values: schemas.PersonInfo,
+    *,
+    source_request_id: Optional[str] = None,
+    admin_id: Optional[str] = None,
+) -> Optional[dict]:
+    """Collapse Request History inside an active group to one open request.
+
+    Used by every multi-request resolve path (Add / Update / Keep Existing /
+    Archive / Attach lookalike) before the final action. Unlike bulk-dismiss:
+
+      * The group stays **active**
+      * The survivor stays on this ``duplicate_group_id``
+      * Confirmed ``final_values`` are written onto the survivor
+      * Not-the-Same-Person dismissals from deleted peers transfer to the survivor
+
+    Directory linkage (``directory_person_id``) is never cleared here.
+
+    Returns ``{survivorRequestId, deletedIds, groupId, memberCount}`` or None.
+    Raises ``ValueError`` when final_values are invalid.
+    """
+    _validate_final_values(final_values)
+
+    group = (
+        db.query(models.DuplicateGroup)
+        .filter(models.DuplicateGroup.id == group_id)
+        .first()
+    )
+    if not group or group.status != "active":
+        return None
+
+    members = (
+        db.query(models.ManagerRequest)
+        .filter(
+            models.ManagerRequest.duplicate_group_id == group.id,
+            models.ManagerRequest.status == "new",
+        )
+        .all()
+    )
+    # Never treat the Directory row as a mergeable peer.
+    members = [
+        m for m in members
+        if m.id and m.id != group.directory_person_id
+    ]
+    if not members:
+        return None
+
+    survivor = _current_request_member(
+        members,
+        source_request_id=source_request_id,
+        representative_request_id=group.representative_request_id,
+    )
+    if not survivor:
+        return None
+
+    discarded = [m for m in members if m.id != survivor.id]
+    discarded_ids = [m.id for m in discarded]
+
+    _apply_final_values_to_request(survivor, final_values)
+
+    if discarded_ids:
+        _transfer_dismissals_onto_survivor(
+            db,
+            survivor.id,
+            discarded_ids,
+            admin_id=admin_id,
+        )
+        permanently_delete_requests(db, discarded_ids)
+
+    # Critical: do NOT call finalize_group_after_selective_dismiss — that path
+    # ungroups a sole peer when there is no Directory match.
+    group.status = "active"
+    group.resolved_at = None
+    _sync_group_representative_and_tags(db, group, member_requests=[survivor])
+
+    # Peer history is gone. Keep Already Exists / Already Removed when Directory
+    # is linked; peer-duplicate pills are suppressed in the UI when memberCount=1.
+    if group.directory_person_id:
+        dir_person = (
+            db.query(models.ManagerRequest)
+            .filter(models.ManagerRequest.id == group.directory_person_id)
+            .first()
+        )
+        if dir_person and dir_person.outcome == "Removed":
+            if group.classification not in (
+                "already_removed",
+                "already_removed_conflict",
+            ):
+                group.classification = "already_removed"
+        else:
+            if group.classification not in (
+                "already_exists",
+                "already_exists_conflict",
+            ):
+                group.classification = "already_exists"
+
+    db.flush()
+
+    return {
+        "survivorRequestId": survivor.id,
+        "deletedIds": discarded_ids,
+        "groupId": group.id,
+        "memberCount": 1,
+    }
 
 
 def permanently_delete_requests(db: Session, request_ids: List[str]) -> int:
@@ -1999,17 +2515,7 @@ def resolve_group_update(
     from app.request_display import parse_request_display_number
     dir_display_id = parse_request_display_number(directory_person.id)
     
-    admin_name = "Power Music Admin"
-    if admin_id and admin_id != "dev-bypass":
-        from app.models import PowermusicUser
-        try:
-            from uuid import UUID
-            uuid_val = UUID(admin_id)
-            admin_user = db.query(PowermusicUser).filter(PowermusicUser.id == uuid_val).first()
-            if admin_user:
-                admin_name = f"{admin_user.first_name} {admin_user.last_name}".strip() or "Power Music Admin"
-        except Exception:
-            pass
+    from app.user_display import POWER_MUSIC_ADMIN_DISPLAY_NAME
 
     update_event_id = f"{directory_person.id}-update-{now.timestamp()}"
     snapshot_events.append({
@@ -2019,9 +2525,9 @@ def resolve_group_update(
         "requestId": directory_person.id,
         "displayId": dir_display_id,
         "action": directory_person.action,
-        "title": "Power Music Admin updated the directory record",
-        "detail": f"By {admin_name}",
-        "handledBy": admin_name,
+        "title": "Directory record updated",
+        "detail": f"By {POWER_MUSIC_ADMIN_DISPLAY_NAME}",
+        "handledBy": POWER_MUSIC_ADMIN_DISPLAY_NAME,
         "outcome": directory_person.outcome,
     })
     

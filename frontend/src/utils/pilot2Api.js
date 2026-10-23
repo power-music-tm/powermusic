@@ -190,6 +190,159 @@ export function removeRequestsFromCache(key, { requestIds = [], groupIds = [] } 
   } catch { /* quota */ }
 }
 
+function standaloneRequestRowFromMember(member, { stripDuplicateTags = true } = {}) {
+  if (!member?.id) return null;
+  const tags = Array.isArray(member.tags) ? member.tags : [];
+  return {
+    id: member.id,
+    displayId: member.displayId || 0,
+    receivedAt: member.receivedAt || null,
+    person: member.person || {
+      firstName: member.firstName || '',
+      lastName: member.lastName || '',
+      email: member.email || '',
+      location: member.location || '',
+      role: member.role || null,
+    },
+    action: member.action || 'Add',
+    status: member.status || 'new',
+    tags: stripDuplicateTags
+      ? tags.filter((t) => !String(t).toLowerCase().includes('duplicate'))
+      : tags,
+    submittedBy: member.submittedBy || null,
+    notes: member.notes || '',
+    createdBy: member.createdBy || null,
+    directorFirst: member.directorFirst || member.person?.directorFirst || null,
+    directorLast: member.directorLast || member.person?.directorLast || null,
+    duplicateGroupId: null,
+    groupMembers: null,
+    groupPreview: null,
+    groupClassificationSummary: null,
+    groupDirectoryPersonId: null,
+    groupDirectoryPerson: null,
+  };
+}
+
+/**
+ * After "Not the same person" → New Requests: keep the list cache warm and
+ * detach the unlinked member as its own row (groups are usually one list row).
+ */
+export function detachRequestFromGroupInCache(key, {
+  requestId,
+  groupId,
+  member = null,
+  remainingMembers = null,
+} = {}) {
+  if (!requestId) return;
+  try {
+    const cached = sessionStorage.getItem(`pm_cache_${key}`);
+    if (!cached) return;
+    const parsed = JSON.parse(cached);
+    if (!parsed || !Array.isArray(parsed.requests)) return;
+
+    const remaining = Array.isArray(remainingMembers)
+      ? remainingMembers.filter((m) => m?.id && m.id !== requestId)
+      : null;
+    let detached = null;
+    let nextRequests = [];
+
+    for (const row of parsed.requests) {
+      if (!row) continue;
+
+      // Already a solo row for this request — clear any leftover group pointers.
+      if (row.id === requestId) {
+        detached = {
+          ...row,
+          duplicateGroupId: null,
+          groupMembers: null,
+          groupPreview: null,
+          groupClassificationSummary: null,
+          groupDirectoryPersonId: null,
+          groupDirectoryPerson: null,
+          tags: Array.isArray(row.tags)
+            ? row.tags.filter((t) => !String(t).toLowerCase().includes('duplicate'))
+            : row.tags,
+        };
+        continue;
+      }
+
+      const isSourceGroup = groupId && row.duplicateGroupId === groupId;
+      if (!isSourceGroup) {
+        nextRequests.push(row);
+        continue;
+      }
+
+      // Pull member snapshot from the group preview when the parent did not pass one.
+      if (!detached) {
+        const previewMembers = Array.isArray(row.groupPreview?.members)
+          ? row.groupPreview.members
+          : (Array.isArray(row.groupMembers) ? row.groupMembers : []);
+        const fromPreview = previewMembers.find((m) => m?.id === requestId) || null;
+        detached = standaloneRequestRowFromMember(member || fromPreview);
+      }
+
+      if (remaining && remaining.length === 0) {
+        // Group dissolved — drop the shell row.
+        continue;
+      }
+
+      if (remaining && remaining.length === 1) {
+        const sole = remaining[0];
+        nextRequests.push({
+          ...standaloneRequestRowFromMember(sole, { stripDuplicateTags: true }),
+          // Keep id as the remaining request; no group shell.
+        });
+        continue;
+      }
+
+      if (remaining && remaining.length > 1) {
+        const rep =
+          remaining.find((m) => m.isRepresentative)
+          || remaining[0];
+        const preview = {
+          ...(row.groupPreview && typeof row.groupPreview === 'object' ? row.groupPreview : {}),
+          members: remaining,
+          representativeRequestId: rep.id,
+        };
+        nextRequests.push({
+          ...row,
+          id: rep.id,
+          displayId: rep.displayId || row.displayId || 0,
+          receivedAt: rep.receivedAt || row.receivedAt || null,
+          person: rep.person || row.person,
+          action: rep.action || row.action,
+          status: rep.status || row.status,
+          tags: rep.tags || row.tags,
+          submittedBy: rep.submittedBy || row.submittedBy,
+          notes: rep.notes || row.notes,
+          createdBy: rep.createdBy || row.createdBy,
+          directorFirst: rep.directorFirst || rep.person?.directorFirst || row.directorFirst,
+          directorLast: rep.directorLast || rep.person?.directorLast || row.directorLast,
+          duplicateGroupId: groupId,
+          groupMembers: remaining,
+          groupPreview: preview,
+        });
+        continue;
+      }
+
+      // No remainingMembers hint — keep the group shell; network refresh will trim it.
+      nextRequests.push(row);
+    }
+
+    if (!detached) {
+      detached = standaloneRequestRowFromMember(member);
+    }
+    if (detached) {
+      nextRequests = [detached, ...nextRequests.filter((r) => r?.id !== detached.id)];
+    }
+
+    sessionStorage.setItem(
+      `pm_cache_${key}`,
+      JSON.stringify({ ...parsed, requests: nextRequests }),
+    );
+  } catch { /* quota */ }
+}
+
 // Local tombstones so optimistic removals are not resurrected by a stale poll/SWR write.
 const NEW_REQUESTS_SUPPRESS_KEY = 'pm_new_requests_suppress_v1';
 const NEW_REQUESTS_SUPPRESS_TTL_MS = 10 * 60 * 1000;

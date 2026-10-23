@@ -233,6 +233,37 @@ def bootstrap_intake_persons(req: models.ManagerRequest) -> None:
 
 # ── Lifecycle history helpers ──────────────────────────────────────────────────
 
+# Admin-side timeline lines always use this actor (matches "Added and moved to active").
+_ADMIN_HISTORY_ACTOR = "Power Music Admin"
+_ADMIN_HISTORY_DETAIL = f"By {_ADMIN_HISTORY_ACTOR}"
+_ADMIN_EVENT_TYPES = frozenset({
+    "handled",
+    "admin_notes_edited",
+})
+
+
+def _normalize_lifecycle_event(event: Dict[str, Any]) -> Dict[str, Any]:
+    """Force admin attribution wording to match the rest of Directory history."""
+    if not isinstance(event, dict):
+        return event
+    out = dict(event)
+    event_type = out.get("type")
+    detail = out.get("detail")
+    title = out.get("title")
+
+    if isinstance(title, str):
+        if title.strip().lower() == "admin notes edited":
+            out["title"] = "Admin notes edited"
+        elif title.strip() == "Power Music Admin updated the directory record":
+            out["title"] = "Directory record updated"
+
+    is_admin_event = event_type in _ADMIN_EVENT_TYPES
+    detail_is_by_line = isinstance(detail, str) and detail.strip().lower().startswith("by ")
+    if is_admin_event or detail_is_by_line:
+        out["detail"] = _ADMIN_HISTORY_DETAIL
+        out["handledBy"] = _ADMIN_HISTORY_ACTOR
+    return out
+
 
 def get_lifecycle_history(req: models.ManagerRequest) -> List[Dict[str, Any]]:
     """Return the append-only lifecycle history list stored inside intake_persons.
@@ -243,10 +274,13 @@ def get_lifecycle_history(req: models.ManagerRequest) -> List[Dict[str, Any]]:
         at        – ISO-8601 timestamp string
         action    – "Add" | "Remove" | ...
         title     – human-readable title
+
+    Admin attribution is normalized on read so older rows that stored a personal
+    admin name (e.g. "By Andrea None") display as "By Power Music Admin".
     """
     raw = get_intake_persons(req).get("history")
     if isinstance(raw, list):
-        return list(raw)
+        return [_normalize_lifecycle_event(e) if isinstance(e, dict) else e for e in raw]
     return []
 
 
@@ -265,6 +299,9 @@ def append_lifecycle_history(
     existing: List[Dict[str, Any]] = []
     if isinstance(current.get("history"), list):
         existing = list(current["history"])
-    existing.extend(events)
+    existing.extend(
+        _normalize_lifecycle_event(e) if isinstance(e, dict) else e
+        for e in events
+    )
     current["history"] = existing
     req.intake_persons = current

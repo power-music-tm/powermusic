@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import RequestDetailView from '../components/RequestDetailDrawer';
 import { AdminPageScroll, Modal, Toast, useToast } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
@@ -24,9 +24,17 @@ import {
 } from '../utils/adminUiHighlights';
 import { formatPersonName } from '../utils/personDisplay';
 
+function safeNewRequestsBackPath(from) {
+  if (typeof from !== 'string') return '/new-requests';
+  if (!from.startsWith('/new-requests')) return '/new-requests';
+  if (from.includes('://') || from.includes('//')) return '/new-requests';
+  return from;
+}
+
 export default function RequestDetail() {
   const { requestId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { profile } = useAuth();
   const { selectedPartnerId } = usePartners();
   const { toast, showToast, dismissToast } = useToast();
@@ -40,10 +48,11 @@ export default function RequestDetail() {
   const adminDisplayName = profile?.full_name?.trim() || 'Power Music Admin';
   const requestsCacheKey = selectedPartnerId ? `${REQUESTS_PAGE_CACHE_KEY}:${selectedPartnerId}` : REQUESTS_PAGE_CACHE_KEY;
   const directoryCacheKey = selectedPartnerId ? `directory_persons:${selectedPartnerId}` : 'directory_persons';
+  const backTo = safeNewRequestsBackPath(location.state?.from);
 
   const goBack = useCallback(() => {
-    navigate('/new-requests');
-  }, [navigate]);
+    navigate(backTo);
+  }, [navigate, backTo]);
 
   const applyPage = useCallback((data) => {
     const requests = Array.isArray(data?.requests) ? data.requests : [];

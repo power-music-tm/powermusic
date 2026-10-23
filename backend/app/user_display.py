@@ -96,16 +96,21 @@ def resolve_manager_name(
     return ""
 
 
+# Lifecycle / Directory history always attributes admin actions to this label —
+# never the signed-in user's personal name (e.g. "Andrea None").
+POWER_MUSIC_ADMIN_DISPLAY_NAME = "Power Music Admin"
+
+
 def resolve_handled_by_name(
     req: models.ManagerRequest,
     *,
     admin_user: Optional[models.PowermusicUser] = None,
 ) -> str:
-    admin_user = admin_user or getattr(req, "_admin_user", None)
-    if admin_user is not None:
-        return user_display_name(admin_user)
+    # Keep the unused kwarg for call-site compatibility; admin identity is not
+    # shown in history — only the product admin label is.
+    _ = admin_user or getattr(req, "_admin_user", None)
     if req.status == "handled":
-        return "Power Music Admin"
+        return POWER_MUSIC_ADMIN_DISPLAY_NAME
     return ""
 
 

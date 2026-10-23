@@ -671,6 +671,14 @@ export default function Requests() {
       return;
     }
     if (Array.isArray(data.requests)) {
+      // Server is source of truth for still-open rows. Clear request-id tombstones
+      // for anything the API still returns (e.g. after Attach moved a survivor).
+      if (!isStale && data.requests.length) {
+        clearNewRequestsSuppressions({
+          requestIds: data.requests.map((r) => r.id).filter(Boolean),
+          groupIds: data.requests.map((r) => r.duplicateGroupId).filter(Boolean),
+        });
+      }
       const server = applyNewRequestsSuppressions(data.requests);
       // Warm group caches so open paints all members instantly (manual + manager).
       if (!isStale) warmGroupCachesFromRequests(server);
@@ -725,11 +733,25 @@ export default function Requests() {
   }, [applyRequestsPage, requestsCacheKey, selectedPartnerId]);
 
   useEffect(() => {
-    // Drop previous gym's rows immediately — header updates before /page returns.
-    setNewRequests([]);
-    setLiveDirectory([]);
-    setTableLoading(true);
     pendingCreatedIdsRef.current.clear();
+    // Prefer a warm session cache (e.g. after Not-the-same-person redirect) so
+    // the table does not flash empty for the full /page round-trip (~poll interval).
+    let hadCache = false;
+    try {
+      const raw = sessionStorage.getItem(`pm_cache_${requestsCacheKey}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.requests)) {
+          hadCache = true;
+          applyRequestsPage(parsed, true, selectedPartnerId || '');
+        }
+      }
+    } catch { /* ignore */ }
+    if (!hadCache) {
+      setNewRequests([]);
+      setLiveDirectory([]);
+      setTableLoading(true);
+    }
     refreshRequestsPage();
     const refresh = () => {
       if (!document.hidden) refreshRequestsPage({ networkOnly: true });
@@ -740,7 +762,7 @@ export default function Requests() {
       window.removeEventListener('focus', refresh);
       window.clearInterval(poll);
     };
-  }, [refreshRequestsPage]);
+  }, [applyRequestsPage, refreshRequestsPage, requestsCacheKey, selectedPartnerId]);
 
   useRealtimeBroadcast('requests-changed', () => {
     refreshRequestsPage({ networkOnly: true });

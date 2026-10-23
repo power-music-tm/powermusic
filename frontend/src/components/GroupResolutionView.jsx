@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import {
   ArrowLeft, ChevronRight, ChevronDown, Check, Database, Clock, Pencil,
-  X, Users, Inbox, Trash2, AlertTriangle, Mail, MapPin,
+  X, Users, Inbox, Trash2, AlertTriangle, Mail, MapPin, Loader2,
 } from 'lucide-react';
 import { Tag, Modal, HoverTip } from './ui';
 import { usePartners } from '../context/PartnerContext';
@@ -11,17 +11,24 @@ import { formatAdminDateTime, formatRequestDisplayId } from '../utils/requestDis
 import { getManagerDisplayName, isManualEntry, MANUAL_ENTRY_CLUB } from '../utils/manualEntry';
 import { readManagerNotes } from '../utils/managerNotes';
 import { fetchJson } from '../utils/api';
-import { dismissRequest, getDismissImpact, bulkDismissRequests, suppressNewRequests, removeRequestsFromCache, REQUESTS_PAGE_CACHE_KEY } from '../utils/pilot2Api';
+import { dismissRequest, getDismissImpact, suppressNewRequests, removeRequestsFromCache, REQUESTS_PAGE_CACHE_KEY } from '../utils/pilot2Api';
 import {
+  fetchGroupDetail,
   resolveGroupAdd,
   resolveGroupAddAsNew,
   resolveGroupUpdate,
   resolveGroupKeepExisting,
   resolveGroupKeepExistingAndArchive,
   unlinkGroupMember,
+  reattachGroupLookalike,
+  mergeGroupPeers,
   resolveGroupDeleteFromDirectory,
   resolveGroupMarkRemoved,
 } from '../utils/duplicateGroupApi';
+import {
+  patchRequestsCacheAfterPeerMerge,
+  writeMergedGroupCache,
+} from '../utils/groupDetailCache';
 import {
   displayFirstName,
   isNicknameOnlyFirstMatch,
@@ -197,11 +204,22 @@ function resolvePrimaryLabel({ hasDirectory, action, submitting = false }) {
 
 /* ─── main export ────────────────────────────────────────────────────────── */
 
+function safeNewRequestsBackPath(from) {
+  if (typeof from !== 'string') return '/new-requests';
+  if (!from.startsWith('/new-requests')) return '/new-requests';
+  if (from.includes('://') || from.includes('//')) return '/new-requests';
+  return from;
+}
+
 export default function GroupResolutionView({
   group,
   directory = [],
   onResolved,
 }) {
+  const location = useLocation();
+  const backTo = safeNewRequestsBackPath(location.state?.from);
+  const backLabel = backTo === '/new-requests' ? 'Back to New Requests' : 'Back to previous request';
+  const groupPath = `/new-requests/group/${encodeURIComponent(group.id)}`;
   const { selectedPartnerId } = usePartners();
   const requestsCacheKey = selectedPartnerId ? `${REQUESTS_PAGE_CACHE_KEY}:${selectedPartnerId}` : REQUESTS_PAGE_CACHE_KEY;
   const repMember = group.members.find((m) => m.isRepresentative) || group.members[0];
@@ -283,6 +301,8 @@ export default function GroupResolutionView({
   const [markUnlinkedTarget, setMarkUnlinkedTarget] = useState(null);
   const [modalValues, setModalValues] = useState(null);
   const [mergeEditing, setMergeEditing] = useState(false);
+  const [attachLookalikeOpen, setAttachLookalikeOpen] = useState(false);
+  const [attachLookalikeId, setAttachLookalikeId] = useState(null);
 
   // When parent refreshes group detail (cache → network), sync members/form so
   // pills and history don't stay stuck on the stale cached snapshot.
@@ -349,6 +369,7 @@ export default function GroupResolutionView({
   const isFormValid = form.firstName.trim() && form.lastName.trim();
 
   const closeConfirmModal = () => {
+    if (submitting) return;
     setConfirmAction(null);
     setMergeEditing(false);
   };
@@ -430,6 +451,7 @@ export default function GroupResolutionView({
   };
 
   const startMergeEdit = () => {
+    if (submitting) return;
     setDraftForm(form);
     setMergeEditing(true);
   };
@@ -554,7 +576,7 @@ export default function GroupResolutionView({
     group.directoryPersonId,
   ]);
 
-  /* Dismiss older peers so only the current request remains — no Directory write. */
+  /* Collapse Request History to one request; group stays active — no Directory write. */
   const consolidatePeersToCurrent = async (values = form) => {
     if (submitting) return;
     const nextValues = {
@@ -571,56 +593,83 @@ export default function GroupResolutionView({
     const active = members.filter(
       (m) => !sessionUnlinkedIds.includes(m.id) && m.id !== group.directoryPersonId,
     );
-    const sorted = [...active].sort(
+    const sortedActive = [...active].sort(
       (a, b) => new Date(b.receivedAt || 0) - new Date(a.receivedAt || 0),
     );
-    const survivor = sorted[0];
-    const discardIds = sorted.slice(1).map((m) => m.id).filter(Boolean);
-
-    setForm(nextValues);
-    setModalValues(nextValues);
-
-    if (discardIds.length === 0) {
+    const sourceRequestId = sortedActive[0]?.id || group.representativeRequestId || null;
+    if (active.length <= 1) {
+      setForm(nextValues);
+      setModalValues(nextValues);
       closeConfirmModal();
       returnToCurrentRequest();
       return;
     }
+
+    setForm(nextValues);
+    setModalValues(nextValues);
     setSubmitting(true);
     try {
-      await bulkDismissRequests(discardIds);
-      suppressNewRequests({ requestIds: discardIds });
-      removeRequestsFromCache(requestsCacheKey, { requestIds: discardIds });
-      const discardSet = new Set(discardIds);
-      setMembers((prev) => prev
-        .filter((m) => !discardSet.has(m.id))
-        .map((m) => (
-          survivor && m.id === survivor.id
-            ? {
-                ...m,
-                person: {
-                  ...(m.person || {}),
-                  firstName: nextValues.firstName,
-                  lastName: nextValues.lastName,
-                  email: nextValues.email,
-                  location: nextValues.location,
-                  role: nextValues.role || null,
-                  directorFirst: nextValues.directorFirst || null,
-                  directorLast: nextValues.directorLast || null,
-                },
-                firstName: nextValues.firstName,
-                lastName: nextValues.lastName,
-                email: nextValues.email,
-                location: nextValues.location,
-                role: nextValues.role || null,
-                directorFirst: nextValues.directorFirst || null,
-                directorLast: nextValues.directorLast || null,
-              }
-            : m
-        )));
-      setSessionUnlinkedIds((prev) => prev.filter((id) => !discardSet.has(id)));
+      const result = await mergeGroupPeers(group.id, {
+        finalValues: {
+          firstName: nextValues.firstName,
+          lastName: nextValues.lastName,
+          email: nextValues.email,
+          location: nextValues.location,
+          role: nextValues.role || null,
+          directorFirst: nextValues.directorFirst || null,
+          directorLast: nextValues.directorLast || null,
+        },
+        sourceRequestId,
+      });
+      const deletedIds = Array.isArray(result?.deletedIds) ? result.deletedIds : [];
+      const survivorId = result?.survivorRequestId || sourceRequestId;
+      const priorSurvivor = sortedActive.find((m) => m.id === survivorId) || sortedActive[0];
+      const survivorMember = priorSurvivor
+        ? {
+            ...priorSurvivor,
+            id: survivorId,
+            isRepresentative: true,
+            person: {
+              ...(priorSurvivor.person || {}),
+              firstName: nextValues.firstName,
+              lastName: nextValues.lastName,
+              email: nextValues.email,
+              location: nextValues.location,
+              role: nextValues.role || null,
+              directorFirst: nextValues.directorFirst || null,
+              directorLast: nextValues.directorLast || null,
+            },
+            firstName: nextValues.firstName,
+            lastName: nextValues.lastName,
+            email: nextValues.email,
+            location: nextValues.location,
+            role: nextValues.role || null,
+            directorFirst: nextValues.directorFirst || null,
+            directorLast: nextValues.directorLast || null,
+          }
+        : null;
+
+      if (deletedIds.length > 0) {
+        suppressNewRequests({ requestIds: deletedIds });
+        removeRequestsFromCache(requestsCacheKey, { requestIds: deletedIds });
+      }
+      if (survivorMember) {
+        setMembers([survivorMember]);
+        setSessionUnlinkedIds((ids) => ids.filter((id) => id === survivorMember.id));
+      }
+      const optimisticGroup = writeMergedGroupCache(group.id, group, {
+        survivor: survivorMember,
+        deletedIds,
+      });
+      patchRequestsCacheAfterPeerMerge(requestsCacheKey, group.id, {
+        survivorId,
+        deletedIds,
+        members: survivorMember ? [survivorMember] : [],
+        classificationSummary: optimisticGroup?.classificationSummary || null,
+      });
       closeConfirmModal();
       returnToCurrentRequest();
-      onResolved('peers_merged', null);
+      onResolved('peers_merged', optimisticGroup || null);
     } catch (err) {
       onResolved('error', err.message || 'Failed to merge requests.');
     } finally {
@@ -660,6 +709,58 @@ export default function GroupResolutionView({
   const handleConfirmPeersMerge = async () => {
     const values = mergeEditing ? draftForm : (modalValues || form);
     await consolidatePeersToCurrent(values);
+  };
+
+  const openAttachLookalikeModal = () => {
+    if (submitting) return;
+    if (incomingMemberCount() !== 1) return;
+    const lookalikes = Array.isArray(group.separatedLookalikeRequests)
+      ? group.separatedLookalikeRequests
+      : [];
+    if (lookalikes.length === 0) return;
+    setAttachLookalikeId(lookalikes[0]?.id || null);
+    setAttachLookalikeOpen(true);
+  };
+
+  const closeAttachLookalikeModal = () => {
+    if (submitting) return;
+    setAttachLookalikeOpen(false);
+    setAttachLookalikeId(null);
+  };
+
+  const handleConfirmAttachLookalike = async () => {
+    if (!attachLookalikeId || submitting) return;
+    setSubmitting(true);
+    const targetId = attachLookalikeId;
+    try {
+      const result = await reattachGroupLookalike(group.id, {
+        targetRequestId: targetId,
+      });
+      const newGroupId = result?.newGroupId || null;
+      let detail = null;
+      if (newGroupId) {
+        try {
+          detail = await fetchGroupDetail(newGroupId);
+        } catch {
+          detail = null;
+        }
+      }
+      setAttachLookalikeOpen(false);
+      setAttachLookalikeId(null);
+      // Pass full payload + destination detail so the parent can upsert the list
+      // row and navigate without tombstoning survivor request IDs.
+      onResolved('reattached', {
+        newGroupId,
+        sourceRequestId: result?.sourceRequestId || null,
+        targetRequestId: result?.targetRequestId || targetId,
+        previousGroupId: result?.previousGroupId || group.id,
+        detail,
+      });
+    } catch (err) {
+      onResolved('error', err.message || 'Failed to attach to that request.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   /* Current request = newest active member (the card Merge is clicked on). */
@@ -851,6 +952,7 @@ export default function GroupResolutionView({
 
   /* ── unlink member ── */
   const handleUnlink = async (memberId, actionType, finalValues) => {
+    if (submitting) return;
     const active = members.filter((m) => !sessionUnlinkedIds.includes(m.id));
     const current = [...active].sort(
       (a, b) => new Date(b.receivedAt || 0) - new Date(a.receivedAt || 0),
@@ -876,6 +978,7 @@ export default function GroupResolutionView({
       return;
     }
     setSubmitting(true);
+    let leaveForNewRequests = false;
     try {
       await unlinkGroupMember(group.id, {
         requestId1,
@@ -893,19 +996,31 @@ export default function GroupResolutionView({
         removeRequestsFromCache(requestsCacheKey, { requestIds: [memberId] });
         const nextMembers = members.filter((m) => m.id !== memberId);
         setMembers(nextMembers);
+        setUnlinkTargetId(null);
+        setUnlinkStep(null);
+        setUnlinkActionType(null);
         onResolved(
           actionType === 'directory' ? 'unlinked_added_directory' : 'unlinked_removed_directory',
           personFullName(finalValues)
         );
       } else {
-        const nextMembers = members.filter((m) => m.id !== memberId);
-        setMembers(nextMembers);
-        onResolved('unlinked_new_requests', null);
+        // Keep the confirm modal open with its loading state until GroupDetail
+        // navigates to New Requests (this view unmounts). Clearing unlinkTargetId
+        // early made it look like the modal dismissed with no loading.
+        leaveForNewRequests = true;
+        const remainingMembers = members.filter((m) => m.id !== memberId);
+        const unlinkedMember = members.find((m) => m.id === memberId) || null;
+        onResolved('unlinked_new_requests', {
+          requestId: memberId,
+          groupId: group.id,
+          member: unlinkedMember,
+          remainingMembers,
+        });
       }
     } catch (err) {
       onResolved('error', err.message || 'Failed to unlink request.');
     } finally {
-      setSubmitting(false);
+      if (!leaveForNewRequests) setSubmitting(false);
     }
   };
 
@@ -1085,11 +1200,11 @@ export default function GroupResolutionView({
 
       {/* ── breadcrumb ── */}
       <nav aria-label="Breadcrumb" className="mb-8 flex w-full flex-wrap items-center gap-x-3 gap-y-2">
-        <HoverTip label="Back to New Requests">
+        <HoverTip label={backLabel}>
           <Link
-            to="/new-requests"
+            to={backTo}
             className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-highlight)] hover:text-[var(--color-text-primary)]"
-            aria-label="Back to New Requests"
+            aria-label={backLabel}
           >
             <ArrowLeft className="h-4 w-4" aria-hidden="true" />
           </Link>
@@ -1112,12 +1227,16 @@ export default function GroupResolutionView({
         </ol>
         <div className="ml-auto flex flex-wrap items-center gap-1.5">
           <span className="mr-1.5 hidden h-4 w-px shrink-0 self-center bg-[var(--color-border-default)] sm:block" aria-hidden="true" />
-          {/* Aggregated classification pills — × N tracks live Request History size */}
+          {/* Aggregated classification pills — peer duplicate counts only when history has 2+ */}
           {(() => {
-            const summary = alignClassificationSummaryWithMembers(
+            const peerCount = activeMembers.length;
+            const raw = alignClassificationSummaryWithMembers(
               group.classificationSummary || {},
-              members.length,
+              peerCount,
             );
+            const summary = peerCount <= 1
+              ? { ...raw, duplicateCount: 0, potentialCount: 0 }
+              : raw;
             const pills = groupClassificationPills(summary);
             if (pills.length > 0) {
               return pills.map((pill) => (
@@ -1129,7 +1248,18 @@ export default function GroupResolutionView({
                 />
               ));
             }
-            // Fallback for older API responses without classificationSummary
+            // Solo peer history: do not fall back to stale Duplicate / Potential labels.
+            if (peerCount <= 1 && !hasDirectory) return null;
+            if (peerCount <= 1 && hasDirectory) {
+              const dirTag = classificationTag(
+                group.classification?.startsWith('already_removed')
+                  ? group.classification
+                  : (group.classification?.startsWith('already_exists')
+                    ? group.classification
+                    : 'already_exists'),
+              );
+              return <Tag variant={dirTag.variant} label={dirTag.label} />;
+            }
             return <Tag variant={tag.variant} label={tag.label} />;
           })()}
         </div>
@@ -1176,10 +1306,14 @@ export default function GroupResolutionView({
                     variant={currentRep?.action === 'Add' ? 'add-action' : 'remove-action'}
                     label={currentRep?.action === 'Add' ? 'Add person' : 'Remove person'}
                   />
-                  <Users className="h-4 w-4 text-[var(--color-text-muted)]" aria-hidden="true" />
-                  <span className="text-sm text-[var(--color-text-secondary)]">
-                    Duplicate exists
-                  </span>
+                  {activeMembers.length > 1 ? (
+                    <>
+                      <Users className="h-4 w-4 text-[var(--color-text-muted)]" aria-hidden="true" />
+                      <span className="text-sm text-[var(--color-text-secondary)]">
+                        Duplicate exists
+                      </span>
+                    </>
+                  ) : null}
                 </div>
               </div>
               <div className="mt-4 border-t border-[var(--color-border-default)] pt-4">
@@ -1192,6 +1326,66 @@ export default function GroupResolutionView({
             </div>
           </div>
         </div>
+
+      {Array.isArray(group.separatedLookalikeRequests) && group.separatedLookalikeRequests.length > 0 ? (
+        <div
+          role="status"
+          className="mt-6 flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-3 text-sm text-amber-950"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />
+          <div className="min-w-0 flex-1 space-y-3">
+            <p className="leading-relaxed">
+              Also similar to{' '}
+              {group.separatedLookalikeRequests.map((lookalike, index) => {
+                const href = lookalike.duplicateGroupId
+                  ? `/new-requests/group/${encodeURIComponent(lookalike.duplicateGroupId)}`
+                  : `/new-requests/${encodeURIComponent(lookalike.id)}`;
+                const label = formatRequestDisplayId(lookalike.displayId || lookalike.id);
+                const count = group.separatedLookalikeRequests.length;
+                const sep =
+                  index === count - 1
+                    ? ''
+                    : index === count - 2
+                      ? (count === 2 ? ' and ' : ', and ')
+                      : ', ';
+                return (
+                  <span key={lookalike.id}>
+                    <Link
+                      to={href}
+                      state={{ from: groupPath }}
+                      className="font-semibold text-amber-950 underline decoration-amber-400/80 underline-offset-2 transition-colors hover:text-[var(--color-brand-primary)] hover:decoration-[var(--color-brand-primary)]"
+                    >
+                      {label}
+                    </Link>
+                    {sep}
+                  </span>
+                );
+              })}
+              . You previously chose <span className="font-semibold">Not the same person</span> for
+              these. This request was attached to the latest match only; those requests stay separate.
+            </p>
+            {(() => {
+              const needsMerge = incomingMemberCount() > 1;
+              const attachBtn = (
+                <button
+                  type="button"
+                  disabled={submitting || needsMerge}
+                  onClick={openAttachLookalikeModal}
+                  className="inline-flex items-center rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-950 shadow-[0_1px_0_rgba(26,26,46,0.04)] transition-colors hover:border-amber-400 hover:bg-amber-100/60 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Attach to a similar request
+                </button>
+              );
+              if (!needsMerge) return attachBtn;
+              return (
+                <HoverTip label="Merge Request History to one request first">
+                  <span className="inline-flex">{attachBtn}</span>
+                </HoverTip>
+              );
+            })()}
+          </div>
+        </div>
+      ) : null}
       </header>
 
       {unlinkedMembers.length > 0 ? (
@@ -1681,6 +1875,7 @@ export default function GroupResolutionView({
       <Modal
         isOpen={confirmAction === 'merge' || confirmAction === 'peers_merge'}
         onClose={closeConfirmModal}
+        closeDisabled={submitting}
         title={
           confirmAction === 'peers_merge'
             ? 'Merge requests?'
@@ -1691,7 +1886,8 @@ export default function GroupResolutionView({
             <button
               type="button"
               onClick={closeConfirmModal}
-              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer"
+              disabled={submitting}
+              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
             >
               Cancel
             </button>
@@ -1704,7 +1900,7 @@ export default function GroupResolutionView({
                 || mergeEditing
               }
               onClick={confirmAction === 'peers_merge' ? handleConfirmPeersMerge : handleConfirmMerge}
-              className="px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer disabled:opacity-60"
+              className="px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
             >
               {confirmAction === 'peers_merge'
                 ? (submitting ? 'Merging…' : 'Merge')
@@ -1738,7 +1934,8 @@ export default function GroupResolutionView({
               <button
                 type="button"
                 onClick={startMergeEdit}
-                className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-white px-2.5 py-1 text-xs font-semibold text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-panel)] hover:text-[var(--color-brand-primary)] cursor-pointer"
+                disabled={submitting}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] bg-white px-2.5 py-1 text-xs font-semibold text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-surface-panel)] hover:text-[var(--color-brand-primary)] cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
                 Edit
@@ -1747,8 +1944,8 @@ export default function GroupResolutionView({
               <button
                 type="button"
                 onClick={saveMergeEdit}
-                disabled={!draftForm.firstName.trim() || !draftForm.lastName.trim()}
-                className="inline-flex items-center gap-1.5 rounded-md bg-[var(--color-brand-primary)] px-2.5 py-1 text-xs font-semibold text-white transition-colors hover:bg-[var(--color-surface-sidebar-hover)] disabled:opacity-60 cursor-pointer"
+                disabled={submitting || !draftForm.firstName.trim() || !draftForm.lastName.trim()}
+                className="inline-flex items-center gap-1.5 rounded-md bg-[var(--color-brand-primary)] px-2.5 py-1 text-xs font-semibold text-white transition-colors hover:bg-[var(--color-surface-sidebar-hover)] disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
               >
                 <Check className="h-3.5 w-3.5" aria-hidden="true" />
                 Save
@@ -2195,10 +2392,81 @@ export default function GroupResolutionView({
         </label>
       </Modal>
 
+      {/* ── Attach to a separated lookalike ── */}
+      <Modal
+        isOpen={attachLookalikeOpen}
+        onClose={closeAttachLookalikeModal}
+        closeDisabled={submitting}
+        title="Attach to a similar request?"
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={closeAttachLookalikeModal}
+              disabled={submitting}
+              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={submitting || !attachLookalikeId}
+              onClick={handleConfirmAttachLookalike}
+              className="px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer disabled:opacity-60"
+            >
+              {submitting ? 'Attaching…' : 'Attach'}
+            </button>
+          </>
+        }
+      >
+        <p className="text-sm text-[var(--color-text-secondary)]">
+          Choose which request this one should be grouped with. Only one can be selected.
+          The current request will leave this group and join that request. Other similar
+          requests stay separate.
+        </p>
+        <fieldset className="mt-4 space-y-2">
+          <legend className="sr-only">Similar requests</legend>
+          {(group.separatedLookalikeRequests || []).map((lookalike) => {
+            const label = formatRequestDisplayId(lookalike.displayId || lookalike.id);
+            const inputId = `attach-lookalike-${lookalike.id}`;
+            return (
+              <label
+                key={lookalike.id}
+                htmlFor={inputId}
+                className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3.5 py-3 text-sm transition-colors ${
+                  attachLookalikeId === lookalike.id
+                    ? 'border-[var(--color-brand-primary)] bg-[var(--color-brand-primary)]/5'
+                    : 'border-[var(--color-border-default)] bg-white hover:bg-[var(--color-surface-highlight)]'
+                }`}
+              >
+                <input
+                  id={inputId}
+                  type="radio"
+                  name="attach-lookalike"
+                  value={lookalike.id}
+                  checked={attachLookalikeId === lookalike.id}
+                  onChange={() => setAttachLookalikeId(lookalike.id)}
+                  className="h-4 w-4 shrink-0 accent-[var(--color-brand-primary)]"
+                />
+                <span className="font-semibold tabular-nums text-[var(--color-text-primary)]">
+                  {label}
+                </span>
+              </label>
+            );
+          })}
+        </fieldset>
+      </Modal>
+
       {/* ── Unlink step-by-step modal ── */}
       <Modal
         isOpen={!!unlinkTargetId}
-        onClose={() => setUnlinkTargetId(null)}
+        onClose={() => {
+          if (submitting) return;
+          setUnlinkTargetId(null);
+          setUnlinkStep(null);
+          setUnlinkActionType(null);
+        }}
+        closeDisabled={submitting}
         confirm
         title={unlinkStep === 'review' ? "Separate Request" : "Confirm Action"}
         footer={
@@ -2210,7 +2478,7 @@ export default function GroupResolutionView({
                 return (
                   <button
                     type="button"
-                    disabled={unlinkEditing || (!unlinkForm?.firstName?.trim() || !unlinkForm?.lastName?.trim())}
+                    disabled={submitting || unlinkEditing || (!unlinkForm?.firstName?.trim() || !unlinkForm?.lastName?.trim())}
                     onClick={() => {
                       setUnlinkActionType(isRemove ? 'remove' : 'directory');
                       setUnlinkStep('confirm');
@@ -2223,7 +2491,7 @@ export default function GroupResolutionView({
               })()}
               <button
                 type="button"
-                disabled={unlinkEditing}
+                disabled={submitting || unlinkEditing}
                 onClick={() => {
                   setUnlinkActionType('new_requests');
                   setUnlinkStep('confirm');
@@ -2237,22 +2505,24 @@ export default function GroupResolutionView({
             <>
               <button
                 type="button"
+                disabled={submitting}
                 onClick={() => setUnlinkStep('review')}
-                className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer"
+                className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:opacity-60"
               >
                 Back
               </button>
               <button
                 type="button"
-                disabled={submitting}
-                onClick={() => {
-                  const target = unlinkTargetId;
-                  setUnlinkTargetId(null);
-                  handleUnlink(target, unlinkActionType, unlinkForm);
-                }}
-                className="px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer disabled:opacity-60"
+                disabled={submitting || !unlinkTargetId}
+                onClick={() => handleUnlink(unlinkTargetId, unlinkActionType, unlinkForm)}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer disabled:opacity-60"
               >
-                {submitting ? 'Processing...' : (
+                {submitting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                    <span>Processing…</span>
+                  </>
+                ) : (
                   unlinkActionType === 'directory' ? 'Add to Directory' :
                   unlinkActionType === 'remove' ? 'Mark as Removed' :
                   'Add to New Requests'

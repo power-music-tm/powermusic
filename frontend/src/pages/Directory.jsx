@@ -61,6 +61,7 @@ function buildFallbackHistory(user, terms = getPartnerTerminology()) {
 function historyIcon(type) {
   if (type === 'auto_mail') return Mail;
   if (type === 'handled') return CheckCircle2;
+  if (type === 'admin_notes_edited') return Pencil;
   return UserRound;
 }
 
@@ -380,6 +381,7 @@ function EditPersonModal({ isOpen, onClose, user, onSave }) {
     role: '',
     directorFirst: '',
     directorLast: '',
+    adminNotes: '',
   });
   const [errors, setErrors] = useState({});
   const [submitting, setSubmitting] = useState(false);
@@ -394,6 +396,7 @@ function EditPersonModal({ isOpen, onClose, user, onSave }) {
         role: user.role || user.person?.role || '',
         directorFirst: user.directorFirst || user.person?.directorFirst || '',
         directorLast: user.directorLast || user.person?.directorLast || '',
+        adminNotes: user.adminNotes || '',
       });
       setErrors({});
     }
@@ -412,6 +415,9 @@ function EditPersonModal({ isOpen, onClose, user, onSave }) {
     }
     // GLL has no location field — skip validation
     if (!isGll && !formData.location.trim()) errs.location = 'Location is required.';
+    if (formData.adminNotes.length > 5000) {
+      errs.adminNotes = 'Admin Notes must be at most 5000 characters.';
+    }
     setErrors(errs);
     return Object.keys(errs).length === 0;
   };
@@ -426,6 +432,7 @@ function EditPersonModal({ isOpen, onClose, user, onSave }) {
         lastName: formData.lastName.trim(),
         email: formData.email.trim().toLowerCase(),
         location: formData.location.trim(),
+        adminNotes: formData.adminNotes,
         ...(isJdGyms ? {
           role: formData.role.trim() || null,
         } : {}),
@@ -598,6 +605,26 @@ function EditPersonModal({ isOpen, onClose, user, onSave }) {
             </div>
           </>
         )}
+
+        <div>
+          <label htmlFor="edit-person-admin-notes" className="mb-1 block text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+            Admin Notes
+          </label>
+          <textarea
+            id="edit-person-admin-notes"
+            value={formData.adminNotes}
+            onChange={(e) => setFormData((prev) => ({ ...prev, adminNotes: e.target.value }))}
+            rows={4}
+            maxLength={5000}
+            placeholder="Add admin notes (optional)"
+            className={`w-full max-h-40 resize-y overflow-y-auto rounded-lg border px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap focus:outline-none focus:ring-2 ${
+              errors.adminNotes
+                ? 'border-red-300 focus:border-red-500 focus:ring-red-200 bg-red-50/30'
+                : 'border-[var(--color-border-default)] focus:border-[var(--color-brand-primary)] focus:ring-[var(--color-brand-primary)]/20'
+            }`}
+          />
+          {errors.adminNotes && <p className="mt-1 text-xs font-medium text-red-600">{errors.adminNotes}</p>}
+        </div>
 
       </form>
     </Modal>
@@ -1863,15 +1890,15 @@ export default function UserLedger() {
               </DrawerSection>
 
               <DrawerSection title="Notes by admin">
-                <p
-                  className={`text-sm leading-normal ${
+                <div
+                  className={`max-h-40 overflow-y-auto overscroll-contain text-sm leading-normal ${
                     personAdminNotes(selectedUser).trim()
                       ? 'whitespace-pre-wrap text-[var(--color-text-primary)]'
                       : 'italic text-[var(--color-text-muted)]'
                   }`}
                 >
                   {formatAdminNotes(selectedUser)}
-                </p>
+                </div>
               </DrawerSection>
 
               <DrawerSection title="Request history">

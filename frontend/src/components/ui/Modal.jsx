@@ -83,6 +83,8 @@ export default function Modal({
   stableHeight = false,
   flushBody = false,
   brandChrome = false,
+  /** When true, X / Escape / backdrop cannot dismiss (e.g. while submitting). */
+  closeDisabled = false,
 }) {
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -90,7 +92,7 @@ export default function Modal({
     lockBodyScroll();
 
     const handleKeyDown = (event) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape' && !closeDisabled) onClose();
     };
     document.addEventListener('keydown', handleKeyDown);
 
@@ -98,7 +100,7 @@ export default function Modal({
       unlockBodyScroll();
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, closeDisabled]);
 
   if (!isOpen || typeof document === 'undefined') return null;
 
@@ -107,8 +109,10 @@ export default function Modal({
 
   const backdrop = (
     <div
-      onClick={onClose}
-      className="absolute inset-0 bg-[var(--color-brand-primary)]/25 backdrop-blur-[2px] cursor-pointer transition-opacity duration-300"
+      onClick={closeDisabled ? undefined : onClose}
+      className={`absolute inset-0 bg-[var(--color-brand-primary)]/25 backdrop-blur-[2px] transition-opacity duration-300 ${
+        closeDisabled ? 'cursor-wait' : 'cursor-pointer'
+      }`}
       aria-hidden="true"
     />
   );
@@ -127,11 +131,12 @@ export default function Modal({
           aria-labelledby="modal-confirm-title"
           className="relative z-[1] flex w-full max-w-[400px] flex-col overflow-hidden rounded-2xl border border-[var(--color-border-default)] bg-white shadow-[var(--shadow-modal)]"
         >
-          <HoverTip label="Close" placement="right">
+          <HoverTip label={closeDisabled ? 'Please wait' : 'Close'} placement="right">
             <button
               type="button"
               onClick={onClose}
-              className={`absolute top-3 right-3 z-10 ${closeButtonClass}`}
+              disabled={closeDisabled}
+              className={`absolute top-3 right-3 z-10 ${closeButtonClass} disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-[var(--color-text-secondary)]`}
               aria-label="Close"
             >
               <X className="w-4 h-4" />
@@ -192,14 +197,15 @@ export default function Modal({
           </h3>
           <div className="flex shrink-0 items-center gap-2 sm:gap-2.5">
             {headerExtra}
-            <HoverTip label="Close" placement="right">
+            <HoverTip label={closeDisabled ? 'Please wait' : 'Close'} placement="right">
               <button
                 type="button"
                 onClick={onClose}
+                disabled={closeDisabled}
                 className={
                   brandChrome
-                    ? 'rounded-lg p-1.5 text-white/75 transition-colors hover:bg-white/10 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30'
-                    : closeButtonClass
+                    ? 'rounded-lg p-1.5 text-white/75 transition-colors hover:bg-white/10 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white/30 disabled:cursor-not-allowed disabled:opacity-40'
+                    : `${closeButtonClass} disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-[var(--color-text-secondary)]`
                 }
                 aria-label="Close"
               >

@@ -354,6 +354,9 @@ def update_person(
         if req.partner_id and req.partner_id != partner_id:
             raise HTTPException(status_code=404, detail="Directory record not found for partner")
 
+    # Manager notes are intentionally never updated here — only admin notes may change.
+    previous_manager_notes = req.manager_notes
+
     req.person_first_name = payload.firstName
     req.person_last_name = payload.lastName
     req.person_email = payload.email
@@ -368,6 +371,14 @@ def update_person(
             getattr(payload, "directorLast", None) or "",
         )
 
+    admin_notes_changed = False
+    if "adminNotes" in payload.model_fields_set:
+        previous_admin_notes = (req.admin_notes or "").strip()
+        next_admin_notes = (payload.adminNotes or "").strip() if payload.adminNotes else ""
+        # Store None for empty so directory display stays consistent with other note fields.
+        req.admin_notes = next_admin_notes or None
+        admin_notes_changed = previous_admin_notes != next_admin_notes
+
     if req.intake_persons and isinstance(req.intake_persons, dict):
         updated_dict = dict(req.intake_persons)
         new_snapshot = {
@@ -381,6 +392,26 @@ def update_person(
             if key in updated_dict and isinstance(updated_dict[key], dict):
                 updated_dict[key] = {**updated_dict[key], **new_snapshot}
         req.intake_persons = updated_dict
+
+    if admin_notes_changed:
+        from app.intake_persons import append_lifecycle_history
+        from app.request_display import parse_request_display_number
+        from app.user_display import POWER_MUSIC_ADMIN_DISPLAY_NAME
+
+        now = datetime.now(timezone.utc)
+        append_lifecycle_history(req, [{
+            "id": f"{req.id}-admin-notes-{now.timestamp()}",
+            "type": "admin_notes_edited",
+            "at": now.isoformat(),
+            "requestId": req.id,
+            "displayId": parse_request_display_number(req.id),
+            "title": "Admin notes edited",
+            "detail": f"By {POWER_MUSIC_ADMIN_DISPLAY_NAME}",
+            "handledBy": POWER_MUSIC_ADMIN_DISPLAY_NAME,
+        }])
+
+    # Hard guarantee: manager notes must never change via directory edit.
+    req.manager_notes = previous_manager_notes
 
     db.commit()
     db.refresh(req)
@@ -417,19 +448,10 @@ def archive_person(
 
     now = datetime.now(timezone.utc)
     req.archived_at = now
-    
-    admin_name = "Power Music Admin"
-    if hasattr(_admin, "id") and _admin.id != "dev-bypass":
-        try:
-            from uuid import UUID
-            admin_user = db.query(models.PowermusicUser).filter(models.PowermusicUser.id == UUID(_admin.id)).first()
-            if admin_user:
-                admin_name = f"{admin_user.first_name} {admin_user.last_name}".strip() or admin_name
-        except Exception:
-            pass
 
     from app.intake_persons import append_lifecycle_history
     from app.request_display import parse_request_display_number
+    from app.user_display import POWER_MUSIC_ADMIN_DISPLAY_NAME
     archive_event_id = f"{req.id}-archive-{now.timestamp()}"
     append_lifecycle_history(req, [{
         "id": archive_event_id,
@@ -439,8 +461,8 @@ def archive_person(
         "displayId": parse_request_display_number(req.id),
         "action": "Remove",
         "title": "Moved to archive",
-        "detail": f"By {admin_name}",
-        "handledBy": admin_name,
+        "detail": f"By {POWER_MUSIC_ADMIN_DISPLAY_NAME}",
+        "handledBy": POWER_MUSIC_ADMIN_DISPLAY_NAME,
         "outcome": "Removed",
     }])
 
@@ -468,19 +490,10 @@ def bulk_archive_persons(
         reqs = [r for r in reqs if not r.partner_id or r.partner_id == partner_id]
 
     now = datetime.now(timezone.utc)
-    
-    admin_name = "Power Music Admin"
-    if hasattr(_admin, "id") and _admin.id != "dev-bypass":
-        try:
-            from uuid import UUID
-            admin_user = db.query(models.PowermusicUser).filter(models.PowermusicUser.id == UUID(_admin.id)).first()
-            if admin_user:
-                admin_name = f"{admin_user.first_name} {admin_user.last_name}".strip() or admin_name
-        except Exception:
-            pass
 
     from app.intake_persons import append_lifecycle_history
     from app.request_display import parse_request_display_number
+    from app.user_display import POWER_MUSIC_ADMIN_DISPLAY_NAME
 
     for req in reqs:
         req.archived_at = now
@@ -493,8 +506,8 @@ def bulk_archive_persons(
             "displayId": parse_request_display_number(req.id),
             "action": "Remove",
             "title": "Moved to archive",
-            "detail": f"By {admin_name}",
-            "handledBy": admin_name,
+            "detail": f"By {POWER_MUSIC_ADMIN_DISPLAY_NAME}",
+            "handledBy": POWER_MUSIC_ADMIN_DISPLAY_NAME,
             "outcome": "Removed",
         }])
 
@@ -523,19 +536,10 @@ def restore_person(
 
     now = datetime.now(timezone.utc)
     req.archived_at = None
-    
-    admin_name = "Power Music Admin"
-    if hasattr(_admin, "id") and _admin.id != "dev-bypass":
-        try:
-            from uuid import UUID
-            admin_user = db.query(models.PowermusicUser).filter(models.PowermusicUser.id == UUID(_admin.id)).first()
-            if admin_user:
-                admin_name = f"{admin_user.first_name} {admin_user.last_name}".strip() or admin_name
-        except Exception:
-            pass
 
     from app.intake_persons import append_lifecycle_history
     from app.request_display import parse_request_display_number
+    from app.user_display import POWER_MUSIC_ADMIN_DISPLAY_NAME
     restore_event_id = f"{req.id}-restore-{now.timestamp()}"
     append_lifecycle_history(req, [{
         "id": restore_event_id,
@@ -545,8 +549,8 @@ def restore_person(
         "displayId": parse_request_display_number(req.id),
         "action": "Add",
         "title": "Restored to active",
-        "detail": f"By {admin_name}",
-        "handledBy": admin_name,
+        "detail": f"By {POWER_MUSIC_ADMIN_DISPLAY_NAME}",
+        "handledBy": POWER_MUSIC_ADMIN_DISPLAY_NAME,
         "outcome": "Added",
     }])
 
@@ -572,18 +576,9 @@ def bulk_restore_persons(
     
     now = datetime.now(timezone.utc)
 
-    admin_name = "Power Music Admin"
-    if _admin and _admin.id and _admin.id != "dev-bypass":
-        try:
-            from uuid import UUID
-            admin_user = db.query(models.PowermusicUser).filter(models.PowermusicUser.id == UUID(_admin.id)).first()
-            if admin_user:
-                admin_name = f"{admin_user.first_name} {admin_user.last_name}".strip() or admin_name
-        except Exception:
-            pass
-
     from app.intake_persons import append_lifecycle_history
     from app.request_display import parse_request_display_number
+    from app.user_display import POWER_MUSIC_ADMIN_DISPLAY_NAME
 
     for req in reqs:
         if partner_id and req.partner_id and req.partner_id != partner_id:
@@ -598,8 +593,8 @@ def bulk_restore_persons(
             "displayId": parse_request_display_number(req.id),
             "action": "Add",
             "title": "Restored to active",
-            "detail": f"By {admin_name}",
-            "handledBy": admin_name,
+            "detail": f"By {POWER_MUSIC_ADMIN_DISPLAY_NAME}",
+            "handledBy": POWER_MUSIC_ADMIN_DISPLAY_NAME,
             "outcome": "Added",
         }])
 
@@ -1756,14 +1751,19 @@ def get_duplicate_group_details(
 
     classification_summary = compute_group_classification_summary(db, group, members=members)
 
-    from app.duplicate_group_service import find_all_directory_matches_for_requests
+    from app.duplicate_group_service import (
+        find_all_directory_matches_for_requests,
+        find_separated_lookalike_requests,
+    )
     from app.duplicate_matching import get_all_dismissed_pairs
+
+    dismissed_pairs = get_all_dismissed_pairs(db)
 
     # Live re-scan: every Directory row that still matches any group member.
     matched_dir_rows = find_all_directory_matches_for_requests(
         db,
         members,
-        dismissed_set=get_all_dismissed_pairs(db),
+        dismissed_set=dismissed_pairs,
     )
     # Ensure the group's primary directory_person_id is included even if a
     # live re-scan misses it (e.g. fields edited after grouping).
@@ -1796,6 +1796,30 @@ def get_duplicate_group_details(
     elif directory_persons:
         directory_person = directory_persons[0]
 
+    from app.request_display import parse_request_display_number
+
+    lookalike_rows = find_separated_lookalike_requests(
+        db, group, members, dismissed_set=dismissed_pairs
+    )
+    if lookalike_rows:
+        hydrate_request_display(lookalike_rows)
+    separated_lookalikes = [
+        {
+            "id": row.id,
+            "displayId": getattr(row, "display_id", None) or parse_request_display_number(row.id),
+            "duplicateGroupId": row.duplicate_group_id,
+            "person": {
+                "firstName": row.person_first_name or "",
+                "lastName": row.person_last_name or "",
+                "email": row.person_email or "",
+                "location": row.person_location or "",
+            },
+            "action": row.action,
+            "receivedAt": row.received_at,
+        }
+        for row in lookalike_rows
+    ]
+
     return {
         "id": group.id,
         "partnerId": group.partner_id,
@@ -1808,6 +1832,7 @@ def get_duplicate_group_details(
         ),
         "directoryPerson": directory_person,
         "directoryPersons": directory_persons,
+        "separatedLookalikeRequests": separated_lookalikes,
         "representativeRequestId": group.representative_request_id or (
             members[-1].id if members else None
         ),
@@ -1842,6 +1867,90 @@ def unlink_duplicate_group_members_api(
         "status": "unlinked",
         "unlinkedIds": result.get("unlinkedIds") or [payload.requestId2],
         "newGroupId": result.get("newGroupId"),
+    }
+
+
+@router.post("/api/duplicate-groups/{group_id}/reattach-lookalike")
+def reattach_lookalike_api(
+    group_id: str,
+    payload: schemas.ReattachLookalikeIn,
+    db: Session = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    """Move this group's sole open request onto a separated lookalike.
+
+    Requires Request History to already be merged to one request. Clears the
+    Not-the-Same-Person dismissal only for the chosen pair.
+    """
+    from app.duplicate_group_service import reattach_to_lookalike
+
+    admin_id = str(admin.id) if getattr(admin, "id", None) else None
+    result = reattach_to_lookalike(
+        db,
+        group_id,
+        payload.targetRequestId,
+        admin_id=admin_id,
+    )
+    if not result:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Cannot attach to that request. Merge Request History to one "
+                "request first, then choose a similar request marked Not the same person."
+            ),
+        )
+
+    db.commit()
+    notify_admin_requests_changed("reattach_lookalike")
+    return {
+        "status": "reattached",
+        "sourceRequestId": result["sourceRequestId"],
+        "targetRequestId": result["targetRequestId"],
+        "newGroupId": result["newGroupId"],
+        "previousGroupId": result["previousGroupId"],
+    }
+
+
+@router.post("/api/duplicate-groups/{group_id}/merge-peers")
+def merge_group_peers_api(
+    group_id: str,
+    payload: schemas.MergePeersIn,
+    db: Session = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    """Collapse Request History to one request; keep the group active.
+
+    Does not resolve Directory. After this, admin continues with Keep Existing /
+    Add / Update / Attach on the same group screen.
+    """
+    from app.duplicate_group_service import merge_group_peers
+
+    admin_id = str(admin.id) if getattr(admin, "id", None) else None
+    try:
+        result = merge_group_peers(
+            db,
+            group_id,
+            payload.finalValues,
+            source_request_id=payload.sourceRequestId,
+            admin_id=admin_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not result:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not merge Request History for this group.",
+        )
+
+    db.commit()
+    notify_admin_requests_changed("merge_peers")
+    return {
+        "status": "peers_merged",
+        "groupId": result["groupId"],
+        "survivorRequestId": result["survivorRequestId"],
+        "deletedIds": result["deletedIds"],
+        "memberCount": result["memberCount"],
     }
 
 

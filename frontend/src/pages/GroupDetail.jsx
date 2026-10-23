@@ -13,13 +13,16 @@ import {
   clearCache,
   writeCache,
   suppressNewRequests,
+  clearNewRequestsSuppressions,
   removeRequestsFromCache,
+  detachRequestFromGroupInCache,
   REQUESTS_PAGE_CACHE_KEY,
 } from '../utils/pilot2Api';
 import { fetchGroupDetail } from '../utils/duplicateGroupApi';
 import {
   applyListSeed,
   groupDetailCacheKey,
+  patchRequestsCacheAfterReattach,
   readCachedGroup,
 } from '../utils/groupDetailCache';
 
@@ -70,6 +73,11 @@ export default function GroupDetail() {
   const refreshInFlightRef = useRef(false);
   const showToastRef = useRef(showToast);
   showToastRef.current = showToast;
+  const groupRef = useRef(group);
+  groupRef.current = group;
+  const droppedMemberIdsRef = useRef(
+    Array.isArray(group?.droppedMemberIds) ? group.droppedMemberIds : [],
+  );
 
   const goBack = useCallback(() => navigate('/new-requests'), [navigate]);
 
@@ -80,26 +88,68 @@ export default function GroupDetail() {
       return;
     }
 
-    const nextIds = memberIdsFromGroup(data);
+    // refreshCache writes the API payload first and would wipe merge tombstones —
+    // restore them from the in-memory group / prior cache so list warmers stay blocked.
+    const prevCached = readCachedGroup(data.id || groupId);
     const prevIds = memberIdsRef.current;
-    const added = nextIds.filter((id) => !prevIds.has(id));
+    const rawApiIds = memberIdsFromGroup(data);
+    const shrinkDropped = [...prevIds].filter((id) => id && !rawApiIds.includes(id));
+    const cachedIds = memberIdsFromGroup(prevCached);
+    const cachedShrinkDropped = cachedIds.filter((id) => id && !rawApiIds.includes(id));
+    const droppedMemberIds = Array.from(new Set([
+      ...(droppedMemberIdsRef.current || []),
+      ...(Array.isArray(groupRef.current?.droppedMemberIds) ? groupRef.current.droppedMemberIds : []),
+      ...(Array.isArray(prevCached?.droppedMemberIds) ? prevCached.droppedMemberIds : []),
+      ...(Array.isArray(data.droppedMemberIds) ? data.droppedMemberIds : []),
+      ...shrinkDropped,
+      ...cachedShrinkDropped,
+    ].filter(Boolean)));
+    droppedMemberIdsRef.current = droppedMemberIds;
 
-    setGroup(data);
+    // Drop merged-away peers that a stale in-flight poll may still return.
+    const droppedSet = new Set(droppedMemberIds);
+    const liveMembers = (Array.isArray(data.members) ? data.members : [])
+      .filter((m) => m?.id && !droppedSet.has(m.id));
+    const filtered = {
+      ...data,
+      members: liveMembers,
+      droppedMemberIds,
+    };
+    writeCache(groupDetailCacheKey(filtered.id || groupId), filtered);
+
+    const nextIds = memberIdsFromGroup(filtered);
+
+    // Active members must stay list-visible. Clear stale request-id tombstones
+    // (e.g. a prior attach that wrongly suppressed survivors).
+    if (nextIds.length) {
+      clearNewRequestsSuppressions({ requestIds: nextIds });
+    }
+
+    // Only treat as arrivals when we already had a baseline — empty→full after
+    // remount/seed is not a new request joining.
+    const added = nextIds.filter((id) => !prevIds.has(id) && !droppedSet.has(id));
+
+    setGroup(filtered);
     setNotFound(false);
     memberIdsRef.current = new Set(nextIds);
 
-    if (alertNewMembers && liveReadyRef.current && added.length > 0) {
-      const addedMembers = (data.members || []).filter((m) => added.includes(m.id));
+    if (
+      alertNewMembers
+      && liveReadyRef.current
+      && prevIds.size > 0
+      && added.length > 0
+    ) {
+      const addedMembers = liveMembers.filter((m) => added.includes(m.id));
       const label = addedMembers.length === 1
         ? personLabel(addedMembers[0])
         : `${added.length} new requests`;
       const hero = [
-        data.directoryPerson?.firstName || data.directoryPerson?.person?.firstName,
-        data.directoryPerson?.lastName || data.directoryPerson?.person?.lastName,
+        filtered.directoryPerson?.firstName || filtered.directoryPerson?.person?.firstName,
+        filtered.directoryPerson?.lastName || filtered.directoryPerson?.person?.lastName,
       ].filter(Boolean).join(' ').trim()
         || [
-          data.members?.find((m) => m.isRepresentative)?.person?.firstName,
-          data.members?.find((m) => m.isRepresentative)?.person?.lastName,
+          liveMembers.find((m) => m.isRepresentative)?.person?.firstName,
+          liveMembers.find((m) => m.isRepresentative)?.person?.lastName,
         ].filter(Boolean).join(' ').trim()
         || 'this group';
 
@@ -114,10 +164,13 @@ export default function GroupDetail() {
       });
       showToastRef.current(message, 'warning');
     }
-  }, []);
+  }, [groupId]);
 
   const refreshGroupDetail = useCallback(({ alertNewMembers = true, bustCache = false } = {}) => {
-    if (!groupId || refreshInFlightRef.current) return Promise.resolve();
+    if (!groupId) return Promise.resolve();
+    // Allow post-merge / post-attach busts to preempt a poll that would otherwise
+    // apply a stale multi-member payload after Request History Merge.
+    if (refreshInFlightRef.current && !bustCache) return Promise.resolve();
     refreshInFlightRef.current = true;
     // Do NOT bump epoch on live polls — that races in-flight GETs and drops apply().
     if (bustCache) bumpCacheEpoch(groupCacheKey);
@@ -155,12 +208,22 @@ export default function GroupDetail() {
     liveReadyRef.current = false;
     refreshInFlightRef.current = false;
 
-    const seeded = applyListSeed(groupId, readCachedGroup(groupId), listSeed);
-    memberIdsRef.current = new Set(memberIdsFromGroup(seeded));
-    if (seeded) {
-      setGroup(seeded);
+    const cached = readCachedGroup(groupId);
+    const seeded = applyListSeed(groupId, cached, listSeed);
+    // Prefer the post-merge detail cache when list seed would re-expand history.
+    const paint = (
+      cached
+      && Array.isArray(cached.members)
+      && seeded
+      && Array.isArray(seeded.members)
+      && cached.members.length > 0
+      && cached.members.length < seeded.members.length
+    ) ? cached : seeded;
+    memberIdsRef.current = new Set(memberIdsFromGroup(paint));
+    if (paint) {
+      setGroup(paint);
       setLoading(false);
-      writeCache(groupCacheKey, seeded);
+      writeCache(groupCacheKey, paint);
     } else {
       setGroup(null);
       setLoading(true);
@@ -227,7 +290,9 @@ export default function GroupDetail() {
 
       const groupMemberIds = group?.members?.map((m) => m.id) || [];
 
-      // If resolving/removing the group entirely, suppress group and member IDs
+      // If resolving/removing the group entirely, suppress group and member IDs.
+      // reattached is handled separately — the survivor request must stay visible
+      // under its new group (tombstoning its requestId hid the whole group row).
       if (
         type === 'add' ||
         type === 'add_as_new' ||
@@ -244,8 +309,47 @@ export default function GroupDetail() {
         clearCache(groupCacheKey);
       }
 
-      // Bust the requests page cache so the list reflects the resolved group
-      bumpCacheEpoch(requestsCacheKey);
+      if (type === 'reattached') {
+        // Source group is dismissed server-side (won't appear in the list query).
+        // Never tombstone survivor request IDs — that hid the whole destination row.
+        const payload = name && typeof name === 'object' ? name : null;
+        const newGroupId = payload?.newGroupId || null;
+        const movedIds = [
+          payload?.sourceRequestId,
+          payload?.targetRequestId,
+          ...(groupMemberIds || []),
+        ].filter(Boolean);
+        removeRequestsFromCache(requestsCacheKey, {
+          groupIds: [groupId],
+          requestIds: movedIds,
+        });
+        clearCache(groupCacheKey);
+        clearNewRequestsSuppressions({
+          requestIds: movedIds,
+          groupIds: [groupId, newGroupId].filter(Boolean),
+        });
+        // Brief shell hide only — destination is upserted below / on navigate.
+        suppressNewRequests({ groupIds: [groupId] });
+        if (payload?.detail) {
+          patchRequestsCacheAfterReattach(requestsCacheKey, {
+            previousGroupId: groupId,
+            newGroupId,
+            detail: payload.detail,
+            sourceRequestId: payload.sourceRequestId,
+            targetRequestId: payload.targetRequestId,
+          });
+          writeCache(groupDetailCacheKey(newGroupId), {
+            ...payload.detail,
+            droppedMemberIds: [],
+          });
+        }
+      }
+
+      // Bust in-flight list GETs so they cannot overwrite optimistic patches.
+      // unlinked_new_requests bumps *after* its cache split (see below).
+      if (type !== 'unlinked_new_requests') {
+        bumpCacheEpoch(requestsCacheKey);
+      }
 
       let toastMsg = '';
       switch (type) {
@@ -289,7 +393,7 @@ export default function GroupDetail() {
           toastMsg = 'Person marked as removed in Directory.';
           break;
         case 'unlinked_new_requests':
-          toastMsg = 'Request moved to New Requests.';
+          toastMsg = 'Request separated. Opening New Requests…';
           break;
         case 'unlinked_handled':
           toastMsg = name
@@ -309,9 +413,20 @@ export default function GroupDetail() {
           break;
         case 'peers_merged':
           toastMsg = 'Combined into one request. Choose Keep Existing or continue on the current request.';
+          if (name && typeof name === 'object' && Array.isArray(name.members)) {
+            droppedMemberIdsRef.current = Array.isArray(name.droppedMemberIds)
+              ? name.droppedMemberIds
+              : [];
+            setGroup(name);
+            memberIdsRef.current = new Set(memberIdsFromGroup(name));
+            writeCache(groupCacheKey, name);
+          }
           break;
         case 'unlinked_dissolved':
           toastMsg = 'Group dissolved successfully.';
+          break;
+        case 'reattached':
+          toastMsg = 'Attached to the similar request. Find it on New Requests.';
           break;
         default:
           toastMsg = 'Group resolved successfully.';
@@ -333,6 +448,14 @@ export default function GroupDetail() {
         return;
       }
 
+      if (type === 'reattached') {
+        // Leave the dissolved source group immediately. Opening the destination
+        // group URL races dismissed→active transitions and flashes "Group not found".
+        // List cache already has the combined row — admin opens it from New Requests.
+        navigate('/new-requests', { replace: true });
+        return;
+      }
+
       // Refresh directory cache in the background for Directory page consistency
       if (type === 'add' || type === 'add_as_new' || type === 'update') {
         refreshCache(
@@ -349,8 +472,29 @@ export default function GroupDetail() {
       }
 
       if (type === 'unlinked_new_requests') {
-        clearCache(requestsCacheKey);
+        // Keep the New Requests list cache so the page does not flash empty while
+        // the (often slow) /api/admin/requests/page refetch runs. Split the
+        // unlinked member out of the group shell for correct click-through.
+        const payload = name && typeof name === 'object' ? name : null;
+        const unlinkedRequestId = payload?.requestId || null;
+        detachRequestFromGroupInCache(requestsCacheKey, {
+          requestId: unlinkedRequestId,
+          groupId,
+          member: payload?.member || null,
+          remainingMembers: Array.isArray(payload?.remainingMembers)
+            ? payload.remainingMembers
+            : null,
+        });
+        // Invalidate in-flight list GETs *after* the optimistic patch so they
+        // cannot overwrite with pre-unlink data.
+        bumpCacheEpoch(requestsCacheKey);
         clearCache(groupCacheKey);
+        clearNewRequestsSuppressions({
+          requestIds: [unlinkedRequestId].filter(Boolean),
+          groupIds: [groupId],
+        });
+        navigate('/new-requests', { replace: true });
+        return;
       }
 
       navigate('/new-requests');

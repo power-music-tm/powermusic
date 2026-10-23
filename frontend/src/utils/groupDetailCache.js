@@ -5,6 +5,193 @@ export function groupDetailCacheKey(groupId) {
   return `duplicate_group:${groupId}`;
 }
 
+/**
+ * After Request History Merge: write survivor-only group detail so reload / paint
+ * never flashes deleted peers from a stale session cache.
+ */
+export function writeMergedGroupCache(groupId, previousGroup, {
+  survivor,
+  deletedIds = [],
+  classification = null,
+} = {}) {
+  if (!groupId || !survivor?.id || !previousGroup) return null;
+  const deleted = new Set((deletedIds || []).filter(Boolean));
+  const members = [survivor].filter((m) => m?.id && !deleted.has(m.id));
+  const hasDirectory = Boolean(
+    previousGroup.directoryPersonId || previousGroup.directoryPerson,
+  );
+  const prevSummary = previousGroup.classificationSummary || {};
+  const nextClassification = classification
+    || (hasDirectory
+      ? (
+        previousGroup.classification?.startsWith('already_removed')
+          ? previousGroup.classification
+          : (previousGroup.classification?.startsWith('already_exists')
+            ? previousGroup.classification
+            : 'already_exists')
+      )
+      : previousGroup.classification);
+  const summary = alignClassificationSummaryWithMembers(
+    {
+      alreadyExists: Boolean(
+        prevSummary.alreadyExists ?? prevSummary.already_exists ?? hasDirectory,
+      ),
+      alreadyRemoved: Boolean(
+        prevSummary.alreadyRemoved ?? prevSummary.already_removed,
+      ),
+      duplicateCount: 0,
+      potentialCount: 0,
+    },
+    members.length,
+  );
+  const dropped = Array.from(
+    new Set([
+      ...(Array.isArray(previousGroup.droppedMemberIds) ? previousGroup.droppedMemberIds : []),
+      ...(deletedIds || []),
+    ].filter(Boolean)),
+  );
+  const next = {
+    ...previousGroup,
+    id: groupId,
+    status: 'active',
+    classification: nextClassification,
+    representativeRequestId: survivor.id,
+    members,
+    droppedMemberIds: dropped,
+    peersMergedAt: Date.now(),
+    classificationSummary: summary,
+  };
+  writeCache(groupDetailCacheKey(groupId), next);
+  return next;
+}
+
+/** Keep New Requests list previews in sync so warm/seed cannot resurrect deleted peers. */
+export function patchRequestsCacheAfterPeerMerge(requestsCacheKey, groupId, {
+  survivorId,
+  deletedIds = [],
+  members = [],
+  classificationSummary = null,
+} = {}) {
+  if (!requestsCacheKey || !groupId || !survivorId) return;
+  const deleted = new Set((deletedIds || []).filter(Boolean));
+  try {
+    const raw = sessionStorage.getItem(`pm_cache_${requestsCacheKey}`);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.requests)) return;
+    const nextRequests = parsed.requests
+      .filter((r) => r && !deleted.has(r.id))
+      .map((r) => {
+        if (r.duplicateGroupId !== groupId && r.id !== survivorId) return r;
+        const preview = r.groupPreview && typeof r.groupPreview === 'object'
+          ? { ...r.groupPreview }
+          : {};
+        preview.members = members;
+        preview.representativeRequestId = survivorId;
+        if (classificationSummary) {
+          preview.classificationSummary = classificationSummary;
+        }
+        return {
+          ...r,
+          duplicateGroupId: groupId,
+          groupMembers: members,
+          groupPreview: preview,
+          groupClassificationSummary:
+            classificationSummary || r.groupClassificationSummary || null,
+        };
+      });
+    sessionStorage.setItem(
+      `pm_cache_${requestsCacheKey}`,
+      JSON.stringify({ ...parsed, requests: nextRequests }),
+    );
+  } catch { /* quota */ }
+}
+
+/**
+ * After Attach-to-lookalike: drop the dissolved source group shell and upsert the
+ * destination group so New Requests does not stay empty until a slow refetch.
+ */
+export function patchRequestsCacheAfterReattach(requestsCacheKey, {
+  previousGroupId,
+  newGroupId,
+  detail = null,
+  sourceRequestId = null,
+  targetRequestId = null,
+} = {}) {
+  if (!requestsCacheKey || !newGroupId) return;
+  try {
+    const raw = sessionStorage.getItem(`pm_cache_${requestsCacheKey}`);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.requests)) return;
+
+    const dropGroupIds = new Set([previousGroupId].filter(Boolean));
+    const dropRequestIds = new Set(
+      [sourceRequestId, targetRequestId].filter(Boolean),
+    );
+    // Source/target may still appear as solo or old-group rows — remove those
+    // shells; the destination representative row replaces them.
+    let nextRequests = parsed.requests.filter(
+      (r) =>
+        r
+        && !dropGroupIds.has(r.duplicateGroupId)
+        && !dropRequestIds.has(r.id),
+    );
+
+    const members = Array.isArray(detail?.members)
+      ? detail.members.filter((m) => m?.id)
+      : [];
+    const repId =
+      detail?.representativeRequestId
+      || members.find((m) => m.isRepresentative)?.id
+      || members[0]?.id
+      || sourceRequestId
+      || targetRequestId;
+    const rep =
+      members.find((m) => m.id === repId)
+      || members[0]
+      || null;
+
+    if (rep?.id) {
+      const preview = {
+        members,
+        representativeRequestId: repId,
+        classification: detail.classification || null,
+        status: detail.status || 'active',
+        directoryPersonId: detail.directoryPersonId || null,
+        directoryPerson: detail.directoryPerson || null,
+        classificationSummary: detail.classificationSummary || null,
+      };
+      const row = {
+        id: rep.id,
+        displayId: rep.displayId || 0,
+        receivedAt: rep.receivedAt || null,
+        person: rep.person || {},
+        action: rep.action || 'Add',
+        status: rep.status || 'new',
+        tags: rep.tags || [],
+        submittedBy: rep.submittedBy || null,
+        notes: rep.notes || '',
+        createdBy: rep.createdBy || null,
+        directorFirst: rep.directorFirst || rep.person?.directorFirst || null,
+        directorLast: rep.directorLast || rep.person?.directorLast || null,
+        duplicateGroupId: newGroupId,
+        groupMembers: members,
+        groupPreview: preview,
+        groupClassificationSummary: detail.classificationSummary || null,
+        groupDirectoryPersonId: detail.directoryPersonId || null,
+        groupDirectoryPerson: detail.directoryPerson || null,
+      };
+      nextRequests = [row, ...nextRequests];
+    }
+
+    sessionStorage.setItem(
+      `pm_cache_${requestsCacheKey}`,
+      JSON.stringify({ ...parsed, requests: nextRequests }),
+    );
+  } catch { /* quota */ }
+}
+
 export function readCachedGroup(groupId) {
   if (!groupId) return null;
   try {
@@ -41,7 +228,10 @@ function normalizeMemberStub(member, { forceRepresentativeId = null } = {}) {
   };
 }
 
-/** Prefer full list stubs so Request History is complete on first paint. */
+/**
+ * Prefer full list stubs on first paint, but never resurrect Request History rows
+ * that peers-merge already removed from the group-detail cache.
+ */
 export function applyListSeed(groupId, cached, seed) {
   if (!seed?.id && !(Array.isArray(seed?.groupMembers) && seed.groupMembers.length)) {
     return cached;
@@ -52,19 +242,41 @@ export function applyListSeed(groupId, cached, seed) {
     seed.groupClassificationSummary
     || preview?.classificationSummary
     || null;
-  const repId = seed.id || preview?.representativeRequestId || null;
+  const repId = seed.id || preview?.representativeRequestId || cached?.representativeRequestId || null;
 
   const fromList = Array.isArray(seed.groupMembers) && seed.groupMembers.length
     ? seed.groupMembers
     : (Array.isArray(preview?.members) && preview.members.length ? preview.members : null);
 
+  const cachedMembers = Array.isArray(cached?.members) ? cached.members.filter((m) => m?.id) : [];
+  const dropped = new Set(
+    Array.isArray(cached?.droppedMemberIds) ? cached.droppedMemberIds.filter(Boolean) : [],
+  );
+
   let members;
   if (fromList) {
-    members = fromList
+    let listMembers = fromList
       .map((m) => normalizeMemberStub(m, { forceRepresentativeId: repId }))
       .filter(Boolean);
+    if (dropped.size > 0) {
+      listMembers = listMembers.filter((m) => !dropped.has(m.id));
+    }
+    // Stale New Requests previews often still include deleted peers after Merge.
+    // If the detail cache is already a smaller active set, keep it.
+    if (
+      cachedMembers.length > 0
+      && listMembers.length > cachedMembers.length
+      && (cached?.status === 'active' || !cached?.status)
+    ) {
+      members = cachedMembers.map((m) => ({
+        ...m,
+        isRepresentative: m.id === (cached.representativeRequestId || repId),
+      }));
+    } else {
+      members = listMembers;
+    }
   } else {
-    members = Array.isArray(cached?.members) ? [...cached.members] : [];
+    members = [...cachedMembers];
     const seedMember = normalizeMemberStub(
       {
         id: seed.id,
@@ -82,7 +294,7 @@ export function applyListSeed(groupId, cached, seed) {
       },
       { forceRepresentativeId: repId },
     );
-    if (seedMember) {
+    if (seedMember && !dropped.has(seedMember.id)) {
       const idx = members.findIndex((m) => m.id === seedMember.id);
       if (idx >= 0) members[idx] = { ...members[idx], ...seedMember };
       else members.push(seedMember);
@@ -93,14 +305,28 @@ export function applyListSeed(groupId, cached, seed) {
   }
 
   if (!members.length && !cached) return null;
+  if (!members.length && cachedMembers.length) {
+    members = cachedMembers;
+  }
 
   const prev = cached?.classificationSummary || {};
   const next = listSummary || prev;
+  // After peers-merge the detail cache owns zero peer counts — do not let a
+  // stale list summary re-inflate Duplicate × N.
+  const useCachedPeerCounts = Boolean(
+    cachedMembers.length > 0
+    && members.length <= cachedMembers.length
+    && (cached?.droppedMemberIds?.length || members.length === 1),
+  );
   const merged = {
     alreadyExists: Boolean(next.alreadyExists ?? prev.alreadyExists),
     alreadyRemoved: Boolean(next.alreadyRemoved ?? prev.alreadyRemoved),
-    duplicateCount: next.duplicateCount || prev.duplicateCount || 0,
-    potentialCount: Math.max(prev.potentialCount || 0, next.potentialCount || 0),
+    duplicateCount: useCachedPeerCounts
+      ? (Number(prev.duplicateCount) || 0)
+      : (next.duplicateCount || prev.duplicateCount || 0),
+    potentialCount: useCachedPeerCounts
+      ? (Number(prev.potentialCount) || 0)
+      : Math.max(prev.potentialCount || 0, next.potentialCount || 0),
   };
 
   return {
@@ -130,8 +356,9 @@ export function applyListSeed(groupId, cached, seed) {
         ? cached.directoryPersons
         : null)
       || null,
-    representativeRequestId: repId || cached?.representativeRequestId || null,
+    representativeRequestId: cached?.representativeRequestId || repId || null,
     members,
+    droppedMemberIds: Array.isArray(cached?.droppedMemberIds) ? cached.droppedMemberIds : [],
     classificationSummary: alignClassificationSummaryWithMembers(merged, members.length),
   };
 }
@@ -145,7 +372,13 @@ export function warmGroupCachesFromRequests(requests = []) {
     const preview = row.groupPreview;
     const members = row.groupMembers || preview?.members;
     if (!Array.isArray(members) || members.length === 0) continue;
-    const seeded = applyListSeed(gid, readCachedGroup(gid), {
+    const existing = readCachedGroup(gid);
+    const existingCount = Array.isArray(existing?.members) ? existing.members.length : 0;
+    // Never let a stale list preview re-expand a post-merge group detail cache.
+    if (existingCount > 0 && members.length > existingCount) {
+      continue;
+    }
+    const seeded = applyListSeed(gid, existing, {
       id: row.id,
       displayId: row.displayId,
       receivedAt: row.receivedAt,
