@@ -23,7 +23,7 @@ from typing import Callable, List, Optional, Set, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
 
-from app import models, schemas
+from app import models, read_cache, schemas
 
 
 import re
@@ -150,24 +150,31 @@ def jaro_winkler(s1: str, s2: str) -> float:
 
 def get_all_dismissed_pairs(db: Session) -> Set[Tuple[str, str]]:
     """Fetch all dismissed duplicate match pairs as a set of (id1, id2) tuples."""
-    rows = db.query(models.DismissedDuplicateMatch).all()
-    pairs = set()
-    for r in rows:
-        pairs.add((r.request_id_1, r.request_id_2))
-        pairs.add((r.request_id_2, r.request_id_1))
-    return pairs
+
+    def load() -> Set[Tuple[str, str]]:
+        pairs = set()
+        for r in db.query(models.DismissedDuplicateMatch).all():
+            pairs.add((r.request_id_1, r.request_id_2))
+            pairs.add((r.request_id_2, r.request_id_1))
+        return pairs
+
+    return set(read_cache.cached(("dismissed_pairs",), load))
 
 
 def get_all_rejected_nickname_pairs(db: Session) -> Set[Tuple[str, str]]:
     """Ordered (name_a, name_b) pairs admin marked as different nicknames."""
-    # Use a SAVEPOINT so a missing table (pre-migration) does not poison the
-    # outer transaction — critical for SQLite in-memory tests and mid-deploy.
-    try:
-        with db.begin_nested():
-            rows = db.query(models.RejectedNicknamePair).all()
-            return {(r.name_a, r.name_b) for r in rows if r.name_a and r.name_b}
-    except Exception:
-        return set()
+
+    def load() -> Set[Tuple[str, str]]:
+        # Use a SAVEPOINT so a missing table (pre-migration) does not poison the
+        # outer transaction — critical for SQLite in-memory tests and mid-deploy.
+        try:
+            with db.begin_nested():
+                rows = db.query(models.RejectedNicknamePair).all()
+                return {(r.name_a, r.name_b) for r in rows if r.name_a and r.name_b}
+        except Exception:
+            return set()
+
+    return set(read_cache.cached(("rejected_nickname_pairs",), load))
 
 
 def get_all_confirmed_nickname_pairs(db: Session) -> Set[Tuple[str, str]]:
@@ -309,6 +316,8 @@ def are_requests_dismissed(
     """True if admin previously unlinked/dismissed a match between these two requests."""
     if not req_id_1 or not req_id_2:
         return False
+    if dismissed_set is None and read_cache.is_active():
+        dismissed_set = get_all_dismissed_pairs(db)
     if dismissed_set is not None:
         return (req_id_1, req_id_2) in dismissed_set
     existing = (

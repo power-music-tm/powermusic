@@ -89,10 +89,11 @@ def test_request_detail_awaits_mutation_before_navigation():
     # Must import suppression and cache scrubbing utilities
     assert "suppressNewRequests" in content
     assert "removeRequestsFromCache" in content
-    assert "bumpCacheEpoch" in content
+    # List GETs that overlap the mark-handled POST must not repaint the row.
+    assert "beginCacheMutation(requestsCacheKey)" in content
 
     # The fetchJson call to mark-handled must appear BEFORE navigate('/new-requests')
-    fetch_pos = content.find("fetchJson(`/api/admin/requests/${req.id}/mark-handled`")
+    fetch_pos = content.find("fetchJson(`/api/admin/requests/${handledId}/mark-handled`")
     nav_pos = content.find("navigate('/new-requests')", fetch_pos)
     assert fetch_pos != -1, "fetchJson mark-handled not found in RequestDetail.jsx"
     assert nav_pos != -1, "navigate('/new-requests') must be called after fetchJson in RequestDetail.jsx"

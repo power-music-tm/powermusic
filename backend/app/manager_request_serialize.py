@@ -12,11 +12,16 @@ from app import models
 from app.directory_person_match import (
     _probe_handled_rows,
     find_directory_conflict,
+    prefetch_probe_handled_rows,
     request_person_for_match,
 )
 from app.duplicate_matching import is_gll_partner, is_healthtech_partner
-from app.duplicate_group_service import compute_group_classification_summary
+from app.duplicate_group_service import (
+    compute_group_classification_summary,
+    seed_group_members_cache,
+)
 from app.manager_request_views import is_request_unread
+from app.read_cache import read_cache_scope
 from app.request_visibility import admin_visible_filter, manager_visible_status
 from app.manager_request_tags import (
     TAG_ALREADY_EXISTS,
@@ -586,6 +591,51 @@ def request_to_api_dict(
 
 
 def requests_to_api_dicts(db: Session, requests: List[models.ManagerRequest]) -> List[Dict[str, Any]]:
+    with read_cache_scope():
+        return _requests_to_api_dicts(db, requests)
+
+
+def _first_group_by_directory_id(
+    db: Session,
+    directory_ids: List[str],
+) -> Dict[str, models.DuplicateGroup]:
+    """One query for "a group linked to this Directory row" across many rows."""
+    linked: Dict[str, models.DuplicateGroup] = {}
+    if not directory_ids:
+        return linked
+    for group in (
+        db.query(models.DuplicateGroup)
+        .filter(models.DuplicateGroup.directory_person_id.in_(directory_ids))
+        .all()
+    ):
+        if group.directory_person_id and group.directory_person_id not in linked:
+            linked[group.directory_person_id] = group
+    return linked
+
+
+def _members_for_groups(
+    db: Session,
+    group_ids: List[str],
+) -> Dict[str, List[models.ManagerRequest]]:
+    """Active members of many groups in one query (users hydrated), keyed by group."""
+    members_by_group: Dict[str, List[models.ManagerRequest]] = {gid: [] for gid in group_ids}
+    if not group_ids:
+        return members_by_group
+    members = (
+        db.query(models.ManagerRequest)
+        .filter(
+            models.ManagerRequest.duplicate_group_id.in_(group_ids),
+            models.ManagerRequest.status == "new",
+        )
+        .all()
+    )
+    hydrate_request_users(db, members)
+    for member in members:
+        members_by_group.setdefault(member.duplicate_group_id, []).append(member)
+    return members_by_group
+
+
+def _requests_to_api_dicts(db: Session, requests: List[models.ManagerRequest]) -> List[Dict[str, Any]]:
     rows = list(requests)
     hydrate_request_users(db, rows)
     from app import models as _models
@@ -626,6 +676,7 @@ def requests_to_api_dicts(db: Session, requests: List[models.ManagerRequest]) ->
         for m in all_members_raw:
             if m.duplicate_group_id:
                 members_by_group[m.duplicate_group_id].append(m)
+        seed_group_members_cache({gid: members_by_group.get(gid, []) for gid in groups_by_id})
 
         dir_ids = [
             g.directory_person_id
@@ -633,6 +684,7 @@ def requests_to_api_dicts(db: Session, requests: List[models.ManagerRequest]) ->
             if g.directory_person_id
         ]
         dir_rows_by_id: Dict[str, _models.ManagerRequest] = {}
+        linked_group_by_directory_id: Dict[str, _models.DuplicateGroup] = {}
         if dir_ids:
             dir_rows = (
                 db.query(_models.ManagerRequest)
@@ -640,6 +692,17 @@ def requests_to_api_dicts(db: Session, requests: List[models.ManagerRequest]) ->
                 .all()
             )
             dir_rows_by_id = {r.id: r for r in dir_rows}
+            linked_group_by_directory_id = _first_group_by_directory_id(db, dir_ids)
+            seed_group_members_cache(
+                _members_for_groups(
+                    db,
+                    [
+                        g.id
+                        for g in linked_group_by_directory_id.values()
+                        if g.id not in groups_by_id
+                    ],
+                )
+            )
 
         for gid, group in groups_by_id.items():
             members = members_by_group.get(gid, [])
@@ -652,7 +715,16 @@ def requests_to_api_dicts(db: Session, requests: List[models.ManagerRequest]) ->
             )
             dir_row = dir_rows_by_id.get(group.directory_person_id or "")
             if dir_row is not None:
-                directory_person_by_group[gid] = directory_person_to_api_dict(dir_row, db=db)
+                directory_person_by_group[gid] = directory_person_to_api_dict(
+                    dir_row,
+                    db=db,
+                    group_by_directory_id=linked_group_by_directory_id,
+                )
+
+    prefetch_probe_handled_rows(
+        db,
+        [(request_person_for_match(req), req.partner_id) for req in rows],
+    )
 
     results: List[Dict[str, Any]] = []
     for req in rows:
@@ -748,7 +820,7 @@ def _manager_source_for_directory_person(
 
         members = get_group_members(db, group.id)
         if members:
-            hydrate_request_users(db, members)
+            hydrate_request_users(db, [m for m in members if not hasattr(m, "_manager_user")])
             source = _current_request_member(
                 members,
                 representative_request_id=group.representative_request_id,
@@ -811,15 +883,22 @@ def directory_person_to_api_dict(
                 or manager_name
             )
 
+    source_lookup: Dict[str, Optional[models.ManagerRequest]] = {}
+
+    def manager_source() -> Optional[models.ManagerRequest]:
+        if "row" not in source_lookup:
+            source_lookup["row"] = _manager_source_for_directory_person(
+                req,
+                db=db,
+                related_rows=related_rows,
+                group_by_directory_id=group_by_directory_id,
+            )
+        return source_lookup["row"]
+
     # Previously merged Directory rows often lack manager fields — recover from
     # the current/representative request of the linked group.
     if not (manager_name or "").strip() and not (manager_fields.get("email") or "").strip():
-        source = _manager_source_for_directory_person(
-            req,
-            db=db,
-            related_rows=related_rows,
-            group_by_directory_id=group_by_directory_id,
-        )
+        source = manager_source()
         if source is not None:
             source_user = getattr(source, "_manager_user", None)
             manager_fields = resolve_manager_fields(source, manager_user=source_user)
@@ -848,12 +927,7 @@ def directory_person_to_api_dict(
     from app.intake_persons import get_director_fields
     director = get_director_fields(req)
     if not (director["firstName"] or director["lastName"]):
-        source = _manager_source_for_directory_person(
-            req,
-            db=db,
-            related_rows=related_rows,
-            group_by_directory_id=group_by_directory_id,
-        )
+        source = manager_source()
         if source is not None:
             source_director = get_director_fields(source)
             if source_director["firstName"] or source_director["lastName"]:
@@ -1131,6 +1205,11 @@ def manager_requests_list_to_api_dicts(
 
 
 def directory_rows_to_api_dicts(db: Session, rows: List[models.ManagerRequest]) -> List[Dict[str, Any]]:
+    with read_cache_scope():
+        return _directory_rows_to_api_dicts(db, rows)
+
+
+def _directory_rows_to_api_dicts(db: Session, rows: List[models.ManagerRequest]) -> List[Dict[str, Any]]:
     from collections import defaultdict
 
     from sqlalchemy import func
@@ -1172,6 +1251,9 @@ def directory_rows_to_api_dicts(db: Session, rows: List[models.ManagerRequest]) 
         group_by_directory_id = {
             g.directory_person_id: g for g in groups if g.directory_person_id
         }
+        seed_group_members_cache(
+            _members_for_groups(db, list({g.id for g in group_by_directory_id.values()}))
+        )
 
     return [
         directory_person_to_api_dict(

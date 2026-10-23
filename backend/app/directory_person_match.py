@@ -8,7 +8,7 @@ from typing import List, Optional
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
-from app import models, schemas
+from app import models, read_cache, schemas
 from app.intake_persons import bootstrap_intake_persons, get_auto_mail_snapshot, get_partner_snapshot
 from app.manager_request_tags import TAG_ALREADY_EXISTS
 from app.person_match import person_from_model, same_person, same_person_for_partner
@@ -159,6 +159,69 @@ def _is_gll(db: Optional[Session], partner_id: Optional[str]) -> bool:
     return is_gll_partner(db, partner_id) if db and partner_id else False
 
 
+_PROBE_ROSTER_LIMIT = 80
+_PROBE_EMAIL_LIMIT = 25
+
+
+def _probe_clause_specs(
+    email: str,
+    first: str,
+    last: str,
+    location: str,
+    *,
+    is_gll: bool,
+) -> List[dict[str, str]]:
+    """Person-probe match rules. Each spec is an AND of ``lower(column) == value``;
+    a handled row is a candidate when any spec matches."""
+    specs: List[dict[str, str]] = []
+    if email:
+        specs.append({"person_email": email})
+    if first and last:
+        specs.append({"person_first_name": first, "person_last_name": last})
+    if email and first:
+        specs.append({"person_email": email, "person_first_name": first})
+    if email and last:
+        specs.append({"person_email": email, "person_last_name": last})
+    # Location-based clauses are omitted for GLL (no location field)
+    if not is_gll:
+        if email and location:
+            specs.append({"person_email": email, "person_location": location})
+        if first and last and location:
+            specs.append({
+                "person_first_name": first,
+                "person_last_name": last,
+                "person_location": location,
+            })
+        if first and location:
+            specs.append({"person_first_name": first, "person_location": location})
+        if last and location:
+            specs.append({"person_last_name": last, "person_location": location})
+    return specs
+
+
+def _probe_spec_sql(spec: dict[str, str]):
+    return and_(*[
+        func.lower(getattr(models.ManagerRequest, column)) == value
+        for column, value in spec.items()
+    ])
+
+
+def _row_matches_probe_spec(row: models.ManagerRequest, spec: dict[str, str]) -> bool:
+    return all((getattr(row, column) or "").lower() == value for column, value in spec.items())
+
+
+def _handled_ledger_query(db: Session, *, partner_id: Optional[str], include_archived: bool):
+    query = db.query(models.ManagerRequest).filter(
+        models.ManagerRequest.status == "handled",
+        models.ManagerRequest.outcome.in_(DIRECTORY_LEDGER_OUTCOMES),
+    )
+    if not include_archived:
+        query = query.filter(models.ManagerRequest.archived_at.is_(None))
+    if partner_id:
+        query = query.filter(models.ManagerRequest.partner_id == partner_id)
+    return query
+
+
 def _roster_sql_candidates(
     db: Session,
     *,
@@ -167,82 +230,81 @@ def _roster_sql_candidates(
     last: str = "",
     location: str = "",
     partner_id: Optional[str] = None,
-    limit: int = 80,
+    limit: int = _PROBE_ROSTER_LIMIT,
     is_gll: bool = False,
     include_archived: bool = True,
 ) -> List[models.ManagerRequest]:
     """Fetch a small set of handled rows that may match a person probe."""
-    clauses = []
-    if email:
-        clauses.append(func.lower(models.ManagerRequest.person_email) == email)
-    if first and last:
-        clauses.append(
-            and_(
-                func.lower(models.ManagerRequest.person_first_name) == first,
-                func.lower(models.ManagerRequest.person_last_name) == last,
-            )
-        )
-    if email and first:
-        clauses.append(
-            and_(
-                func.lower(models.ManagerRequest.person_email) == email,
-                func.lower(models.ManagerRequest.person_first_name) == first,
-            )
-        )
-    if email and last:
-        clauses.append(
-            and_(
-                func.lower(models.ManagerRequest.person_email) == email,
-                func.lower(models.ManagerRequest.person_last_name) == last,
-            )
-        )
-    # Location-based clauses are omitted for GLL (no location field)
-    if not is_gll:
-        if email and location:
-            clauses.append(
-                and_(
-                    func.lower(models.ManagerRequest.person_email) == email,
-                    func.lower(models.ManagerRequest.person_location) == location,
-                )
-            )
-        if first and last and location:
-            clauses.append(
-                and_(
-                    func.lower(models.ManagerRequest.person_first_name) == first,
-                    func.lower(models.ManagerRequest.person_last_name) == last,
-                    func.lower(models.ManagerRequest.person_location) == location,
-                )
-            )
-        if first and location:
-            clauses.append(
-                and_(
-                    func.lower(models.ManagerRequest.person_first_name) == first,
-                    func.lower(models.ManagerRequest.person_location) == location,
-                )
-            )
-        if last and location:
-            clauses.append(
-                and_(
-                    func.lower(models.ManagerRequest.person_last_name) == last,
-                    func.lower(models.ManagerRequest.person_location) == location,
-                )
-            )
-
-    if not clauses:
+    specs = _probe_clause_specs(email, first, last, location, is_gll=is_gll)
+    if not specs:
         return []
+    query = _handled_ledger_query(db, partner_id=partner_id, include_archived=include_archived)
+    return (
+        query.filter(or_(*[_probe_spec_sql(spec) for spec in specs]))
+        .order_by(models.ManagerRequest.handled_at.desc())
+        .limit(limit)
+        .all()
+    )
 
-    filters = [
-        models.ManagerRequest.status == "handled",
-        models.ManagerRequest.outcome.in_(DIRECTORY_LEDGER_OUTCOMES),
-        or_(*clauses),
-    ]
-    if not include_archived:
-        filters.append(models.ManagerRequest.archived_at.is_(None))
 
-    query = db.query(models.ManagerRequest).filter(*filters)
-    if partner_id:
-        query = query.filter(models.ManagerRequest.partner_id == partner_id)
-    return query.order_by(models.ManagerRequest.handled_at.desc()).limit(limit).all()
+def _probe_cache_key(
+    fields: tuple[str, str, str, str],
+    partner_id: Optional[str],
+    include_archived: bool,
+) -> tuple:
+    return ("probe_handled_rows", *fields, partner_id or "", include_archived)
+
+
+def prefetch_probe_handled_rows(
+    db: Session,
+    probes: List[tuple[schemas.PersonInfo, Optional[str]]],
+    *,
+    include_archived: bool = False,
+) -> None:
+    """Answer many ``_probe_handled_rows`` calls with one query per partner.
+
+    Only effective inside ``read_cache_scope()``; results match the per-person
+    queries (same rules, order, and limits), filtered in Python.
+    """
+    if not read_cache.is_active():
+        return
+    wanted_by_partner: dict[str, dict[tuple, tuple[str, List[dict[str, str]]]]] = {}
+    for person, partner_id in probes:
+        fields = _person_probe_fields(person)
+        key = _probe_cache_key(fields, partner_id, include_archived)
+        if read_cache.peek(key) is not None:
+            continue
+        specs = _probe_clause_specs(*fields, is_gll=_is_gll(db, partner_id))
+        wanted_by_partner.setdefault(partner_id or "", {})[key] = (fields[0], specs)
+
+    for partner_id, wanted in wanted_by_partner.items():
+        all_specs = [spec for _, specs in wanted.values() for spec in specs]
+        rows: List[models.ManagerRequest] = []
+        if all_specs:
+            rows = (
+                _handled_ledger_query(db, partner_id=partner_id or None, include_archived=include_archived)
+                .filter(or_(*[_probe_spec_sql(spec) for spec in all_specs]))
+                .order_by(models.ManagerRequest.handled_at.desc())
+                .all()
+            )
+        for key, (email, specs) in wanted.items():
+            read_cache.seed(key, _select_probe_rows(rows, email, specs))
+
+
+def _select_probe_rows(
+    rows: List[models.ManagerRequest],
+    email: str,
+    specs: List[dict[str, str]],
+) -> List[models.ManagerRequest]:
+    matches = [row for row in rows if any(_row_matches_probe_spec(row, spec) for spec in specs)]
+    by_id: dict[str, models.ManagerRequest] = {}
+    for row in matches[:_PROBE_ROSTER_LIMIT]:
+        by_id[row.id] = row
+    if email:
+        email_rows = [row for row in matches if (row.person_email or "").lower() == email]
+        for row in email_rows[:_PROBE_EMAIL_LIMIT]:
+            by_id[row.id] = row
+    return list(by_id.values())
 
 
 def _probe_handled_rows(
@@ -253,7 +315,13 @@ def _probe_handled_rows(
     include_archived: bool = False,
 ) -> List[models.ManagerRequest]:
     """Handled rows relevant to one person for conflict and roster checks."""
-    email, first, last, location = _person_probe_fields(person)
+    fields = _person_probe_fields(person)
+    cache_key = _probe_cache_key(fields, partner_id, include_archived)
+    cached_rows = read_cache.peek(cache_key)
+    if cached_rows is not None:
+        return list(cached_rows)
+
+    email, first, last, location = fields
     gll = _is_gll(db, partner_id)
     by_id: dict[str, models.ManagerRequest] = {}
 
@@ -270,19 +338,15 @@ def _probe_handled_rows(
         by_id[row.id] = row
 
     if email:
-        query = db.query(models.ManagerRequest).filter(
-            models.ManagerRequest.status == "handled",
-            models.ManagerRequest.outcome.in_(DIRECTORY_LEDGER_OUTCOMES),
+        query = _handled_ledger_query(db, partner_id=partner_id, include_archived=include_archived).filter(
             func.lower(models.ManagerRequest.person_email) == email,
         )
-        if not include_archived:
-            query = query.filter(models.ManagerRequest.archived_at.is_(None))
-        if partner_id:
-            query = query.filter(models.ManagerRequest.partner_id == partner_id)
-        for row in query.order_by(models.ManagerRequest.handled_at.desc()).limit(25).all():
+        for row in query.order_by(models.ManagerRequest.handled_at.desc()).limit(_PROBE_EMAIL_LIMIT).all():
             by_id[row.id] = row
 
-    return list(by_id.values())
+    rows = list(by_id.values())
+    read_cache.seed(cache_key, rows)
+    return list(rows)
 
 
 def _directory_location_key(row: models.ManagerRequest) -> str:

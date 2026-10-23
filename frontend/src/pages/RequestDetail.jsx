@@ -10,12 +10,13 @@ import {
   getAdminRequest,
   getNewRequestsPage,
   loadWithCache,
+  readCache,
   patchCache,
   refreshCache,
   writeCache,
   suppressNewRequests,
   removeRequestsFromCache,
-  bumpCacheEpoch,
+  beginCacheMutation,
   REQUESTS_PAGE_CACHE_KEY,
 } from '../utils/pilot2Api';
 import { fetchGroupDetail } from '../utils/duplicateGroupApi';
@@ -253,14 +254,9 @@ export default function RequestDetail() {
     setConfirmAction(null);
     removeRequestHighlight(handledId);
 
-    const cached = await new Promise((resolve) => {
-      loadWithCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data) => resolve(data)).catch(() => resolve(null));
-    });
-
-    const currentRequests = Array.isArray(cached?.requests) ? cached.requests : [];
+    const cached = readCache(requestsCacheKey);
     const currentDirectory = Array.isArray(cached?.persons) ? cached.persons : directory;
 
-    const nextRequests = currentRequests.filter((r) => r.id !== handledId);
     const existingPerson = currentDirectory.find((p) => p.id === handledId || p.sourceRequestId === handledId);
     const directoryPersonPayload = {
       id: existingPerson?.id || `temp-${handledId}`,
@@ -297,6 +293,7 @@ export default function RequestDetail() {
           )
         : [directoryPersonPayload, ...currentDirectory];
 
+    const settleMutation = beginCacheMutation(requestsCacheKey);
     try {
       await fetchJson(`/api/admin/requests/${handledId}/mark-handled`, {
         method: 'POST',
@@ -306,8 +303,8 @@ export default function RequestDetail() {
 
       suppressNewRequests({ requestIds: [handledId], hard: true });
       removeRequestsFromCache(requestsCacheKey, { requestIds: [handledId] });
-      patchCache(requestsCacheKey, { requests: nextRequests, persons: nextDirectory });
-      bumpCacheEpoch(requestsCacheKey);
+      patchCache(requestsCacheKey, { persons: nextDirectory });
+      settleMutation();
       writeCache(directoryCacheKey, nextDirectory);
       // Active Directory only — archive/Removed must not bump the Directory badge.
       if (outcome === 'Added' && req.person?.email) {
@@ -325,6 +322,7 @@ export default function RequestDetail() {
       );
       navigate('/new-requests');
     } catch (err) {
+      settleMutation();
       console.error(err);
       showToast(err.message || 'Failed to save request.', 'error');
     }

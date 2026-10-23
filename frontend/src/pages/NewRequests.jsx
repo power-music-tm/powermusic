@@ -7,7 +7,8 @@ import { DataTable, Tag, Modal, Toast, useToast, SelectDropdown, StackedTextCell
 import DuplicateStatusHint, { StatusColumnPlainLabel } from '../components/ui/DuplicateStatusHint';
 import PageHeader from '../components/layout/PageHeader';
 import { getManagerColumnContent, getManagerDisplayName, isManualEntry, isAdminEntry } from '../utils/manualEntry';
-import { loadWithCache, patchCache, writeCache, refreshCache, bumpCacheEpoch, getNewRequestsPage, dismissRequest, getDismissImpact, bulkDismissRequests, suppressNewRequests, clearNewRequestsSuppressions, removeRequestsFromCache, applyNewRequestsSuppressions, REQUESTS_PAGE_CACHE_KEY } from '../utils/pilot2Api';
+import { readCache, patchCache, writeCache, refreshCache, beginCacheMutation, dismissRequest, getDismissImpact, bulkDismissRequests, suppressNewRequests, clearNewRequestsSuppressions, removeRequestsFromCache, applyNewRequestsSuppressions, REQUESTS_PAGE_CACHE_KEY } from '../utils/pilot2Api';
+import { fetchRequestsPage, scheduleRequestsPageRefetch, subscribeRequestsPage } from '../utils/requestsPageStore';
 import { warmGroupCachesFromRequests } from '../utils/groupDetailCache';
 import { fetchJson } from '../utils/api';
 import { useRealtimeBroadcast } from '../hooks/useRealtimeBroadcast';
@@ -21,7 +22,6 @@ import {
   flushViewedRequestHighlights,
   recordNewRequestsPageDeparted,
   syncAdminNewRequestHighlights,
-  syncPendingRequestIdsForBadge,
   ADMIN_NEW_ROW_HIGHLIGHT_CLASS,
 } from '../utils/adminUiHighlights';
 import { useAuth } from '../context/AuthContext';
@@ -746,64 +746,55 @@ export default function Requests() {
     }
   }, []);
 
-  const refreshRequestsPage = useCallback((options = {}) => {
-    const { networkOnly = false } = options;
+  // Every server snapshot (ours or the sidebar's GET) lands through one apply path.
+  useEffect(() => subscribeRequestsPage(({ partnerId, data }) => {
+    applyRequestsPage(data, false, partnerId);
+  }), [applyRequestsPage]);
+
+  const refreshRequestsPage = useCallback(() => {
     const partnerId = selectedPartnerId || '';
-    const fetcher = () => getNewRequestsPage(partnerId);
-    const apply = (data, isStale) => applyRequestsPage(data, isStale, partnerId);
-    if (networkOnly) {
-      return refreshCache(requestsCacheKey, fetcher, apply).catch((err) => {
-        console.error(err);
-        if (String(selectedPartnerIdRef.current || '') === String(partnerId)) {
-          setTableLoading(false);
-        }
-      });
-    }
-    // Cache key bumped to drop stale sessionStorage rows (deleted duplicates, etc.).
-    return loadWithCache(requestsCacheKey, fetcher, apply).catch((err) => {
+    return fetchRequestsPage(partnerId).catch((err) => {
       console.error(err);
       if (String(selectedPartnerIdRef.current || '') === String(partnerId)) {
         setTableLoading(false);
       }
     });
-  }, [applyRequestsPage, requestsCacheKey, selectedPartnerId]);
+  }, [selectedPartnerId]);
 
   useEffect(() => {
     pendingCreatedIdsRef.current.clear();
     // Re-apply warm cache when the gym key changes; never wipe rows to [] while
     // a prior partner's list is still on screen (avoids empty flash on back-nav).
-    let hadCache = false;
-    try {
-      const raw = sessionStorage.getItem(`pm_cache_${requestsCacheKey}`);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && Array.isArray(parsed.requests)) {
-          hadCache = true;
-          applyRequestsPage(parsed, true, selectedPartnerId || '');
-        }
-      }
-    } catch { /* ignore */ }
-    if (!hadCache) {
+    const cached = readCache(requestsCacheKey);
+    if (cached && Array.isArray(cached.requests)) {
+      applyRequestsPage(cached, true, selectedPartnerId || '');
+    } else {
       // Only clear when we truly have nothing to show for this gym.
       setTableLoading(true);
     }
     refreshRequestsPage();
 
-    // Industry pattern: Realtime nudge (below) + visible-tab poll + focus/visible refetch.
-    const refreshIfVisible = () => {
-      if (!document.hidden) refreshRequestsPage({ networkOnly: true });
+    // Realtime nudge (below) is primary; poll + focus are the fallback.
+    const partnerId = selectedPartnerId || '';
+    const onFocus = () => {
+      if (!document.hidden) scheduleRequestsPageRefetch(partnerId);
     };
-    window.addEventListener('focus', refreshIfVisible);
-    const poll = window.setInterval(refreshIfVisible, REQUESTS_POLL_MS);
+    const onPoll = () => {
+      if (!document.hidden) {
+        scheduleRequestsPageRefetch(partnerId, { minAgeMs: REQUESTS_POLL_MS - 1000 });
+      }
+    };
+    window.addEventListener('focus', onFocus);
+    const poll = window.setInterval(onPoll, REQUESTS_POLL_MS);
     return () => {
-      window.removeEventListener('focus', refreshIfVisible);
+      window.removeEventListener('focus', onFocus);
       window.clearInterval(poll);
     };
   }, [applyRequestsPage, refreshRequestsPage, requestsCacheKey, selectedPartnerId]);
 
   useRealtimeBroadcast('requests-changed', () => {
     if (document.hidden) return;
-    refreshRequestsPage({ networkOnly: true });
+    scheduleRequestsPageRefetch(selectedPartnerIdRef.current || '', { invalidate: true });
   });
 
   useEffect(() => {
@@ -815,7 +806,7 @@ export default function Requests() {
         return;
       }
       // Returning to the tab — pull fresh queue (same as GitHub Notifications).
-      refreshRequestsPage({ networkOnly: true });
+      scheduleRequestsPageRefetch(selectedPartnerIdRef.current || '');
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
@@ -1136,7 +1127,7 @@ export default function Requests() {
         }
       }
       sessionStorage.setItem('pm_directory_pending_tab', outcome);
-      refreshRequestsPage({ networkOnly: true });
+      refreshRequestsPage();
     } catch (err) {
       console.error(err);
       showToast('Failed to add to Directory.', 'error');
@@ -1157,7 +1148,6 @@ export default function Requests() {
     pendingCreatedIdsRef.current.delete(handledId);
     bumpHighlights();
 
-    const nextRequests = newRequests.filter((r) => r.id !== handledId);
     const existingPerson = liveDirectory.find((p) => p.id === handledId || p.sourceRequestId === handledId);
     const directoryPersonPayload = {
       id: existingPerson?.id || `temp-${handledId}`,
@@ -1195,13 +1185,12 @@ export default function Requests() {
           )
         : [directoryPersonPayload, ...liveDirectory];
 
+    const settleMutation = beginCacheMutation(requestsCacheKey);
     suppressNewRequests({ requestIds: [handledId], hard: true });
     removeRequestsFromCache(requestsCacheKey, { requestIds: [handledId] });
-    bumpCacheEpoch(requestsCacheKey);
-    setNewRequests(nextRequests);
-    syncPendingRequestIdsForBadge(nextRequests.map((r) => r.id), { fetchedAt: Date.now() });
+    setNewRequests((prev) => prev.filter((r) => r.id !== handledId));
     setLiveDirectory(nextDirectory);
-    patchCache(requestsCacheKey, { requests: nextRequests, persons: nextDirectory });
+    patchCache(requestsCacheKey, { persons: nextDirectory });
     writeCache(directoryCacheKey, nextDirectory);
     // Active Directory only — archive/Removed must not bump the Directory badge.
     if (outcome === 'Added' && req.person?.email) {
@@ -1215,6 +1204,7 @@ export default function Requests() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ adminNote: adminNote || null }),
       });
+      settleMutation();
       showToast(
         outcome === 'Removed'
           ? `${personName} marked as Removed. They are now moved to archive in Directory.`
@@ -1222,21 +1212,16 @@ export default function Requests() {
         'success',
       );
       // Pull rematched late arrivals (Already Exists / Already Removed) into the list.
-      refreshRequestsPage({ networkOnly: true });
+      refreshRequestsPage();
       refreshCache(directoryCacheKey, () => fetchJson(`/api/persons${selectedPartnerId ? `?partner_id=${encodeURIComponent(selectedPartnerId)}` : ''}`), (data) => {
         setLiveDirectory(Array.isArray(data) ? data : []);
       }).catch(() => {});
     } catch (err) {
+      settleMutation();
       console.error(err);
       clearNewRequestsSuppressions({ requestIds: [handledId] });
       showToast(err.message || 'Failed to save. Refreshing list.', 'error');
-      loadWithCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data, isStale) => {
-        if (!isStale && Array.isArray(data.requests)) {
-          syncAdminNewRequestHighlights(data.requests, { isManualEntry, fetchedAt: data.fetchedAt });
-        }
-        setNewRequests(data.requests);
-        setLiveDirectory(data.persons);
-      }).catch(() => {});
+      refreshRequestsPage();
     }
   };
 
@@ -1283,17 +1268,15 @@ export default function Requests() {
 
     const removeIds = [req.id, ...alsoIds];
     const removeSet = new Set(removeIds);
-    const nextRequests = newRequests.filter((r) => !removeSet.has(r.id));
 
+    const settleMutation = beginCacheMutation(requestsCacheKey);
     suppressNewRequests({ requestIds: removeIds, hard: true });
     removeRequestsFromCache(requestsCacheKey, { requestIds: removeIds });
-    bumpCacheEpoch(requestsCacheKey);
-    setNewRequests(nextRequests);
-    syncPendingRequestIdsForBadge(nextRequests.map((r) => r.id), { fetchedAt: Date.now() });
-    patchCache(requestsCacheKey, { requests: nextRequests });
+    setNewRequests((prev) => prev.filter((r) => !removeSet.has(r.id)));
 
     try {
       await dismissRequest(req.id, { alsoDeleteIds: alsoIds });
+      settleMutation();
       const confirmedCount = impact?.confirmedSiblingCount || 0;
       showToast(
         confirmedCount > 0
@@ -1302,27 +1285,13 @@ export default function Requests() {
         'success',
       );
       // Survivors (potential duplicates) may reappear as their own group/card.
-      if ((impact?.potentialSiblingCount || 0) > 0 || req.duplicateGroupId) {
-        refreshCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data, isStale) => {
-          if (!isStale && Array.isArray(data.requests)) {
-            const server = applyNewRequestsSuppressions(data.requests);
-            syncAdminNewRequestHighlights(server, { isManualEntry, fetchedAt: data.fetchedAt });
-            setNewRequests(server);
-            setLiveDirectory(data.persons);
-          }
-        }).catch(() => {});
-      }
+      refreshRequestsPage();
     } catch (err) {
+      settleMutation();
       console.error(err);
       clearNewRequestsSuppressions({ requestIds: removeIds });
       showToast(err.message || 'Failed to delete. Refreshing list.', 'error');
-      loadWithCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data, isStale) => {
-        if (!isStale && Array.isArray(data.requests)) {
-          syncAdminNewRequestHighlights(data.requests, { isManualEntry, fetchedAt: data.fetchedAt });
-        }
-        setNewRequests(data.requests);
-        setLiveDirectory(data.persons);
-      }).catch(() => {});
+      refreshRequestsPage();
     }
   };
 
@@ -1403,39 +1372,24 @@ export default function Requests() {
     });
     bumpHighlights();
 
-    const nextRequests = newRequests.filter((r) => !removeSet.has(r.id));
-
+    const settleMutation = beginCacheMutation(requestsCacheKey);
     suppressNewRequests({ requestIds: removeIds, hard: true });
     removeRequestsFromCache(requestsCacheKey, { requestIds: removeIds });
-    bumpCacheEpoch(requestsCacheKey);
-    setNewRequests(nextRequests);
-    syncPendingRequestIdsForBadge(nextRequests.map((r) => r.id), { fetchedAt: Date.now() });
-    patchCache(requestsCacheKey, { requests: nextRequests });
+    setNewRequests((prev) => prev.filter((r) => !removeSet.has(r.id)));
     setSelectedIds(new Set());
 
     try {
       await bulkDismissRequests(ids, { alsoDeleteIds });
+      settleMutation();
       showToast(`Deleted ${ids.length} request${ids.length === 1 ? '' : 's'}.`, 'success');
       // Survivors (late arrivals / potentials) may need a list refresh.
-      refreshCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data, isStale) => {
-        if (!isStale && Array.isArray(data.requests)) {
-          const server = applyNewRequestsSuppressions(data.requests);
-          syncAdminNewRequestHighlights(server, { isManualEntry, fetchedAt: data.fetchedAt });
-          setNewRequests(server);
-          setLiveDirectory(data.persons);
-        }
-      }).catch(() => {});
+      refreshRequestsPage();
     } catch (err) {
+      settleMutation();
       console.error(err);
       clearNewRequestsSuppressions({ requestIds: removeIds });
       showToast(err.message || 'Failed to bulk delete. Refreshing list.', 'error');
-      loadWithCache(requestsCacheKey, () => getNewRequestsPage(selectedPartnerId || ''), (data, isStale) => {
-        if (!isStale && Array.isArray(data.requests)) {
-          syncAdminNewRequestHighlights(data.requests, { isManualEntry, fetchedAt: data.fetchedAt });
-        }
-        setNewRequests(data.requests);
-        setLiveDirectory(data.persons);
-      }).catch(() => {});
+      refreshRequestsPage();
     }
   };
 

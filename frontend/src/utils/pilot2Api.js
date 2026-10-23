@@ -42,11 +42,17 @@ function readSessionCache(key) {
   }
 }
 
+/** Synchronous cache read — never triggers a network GET. */
+export function readCache(key) {
+  return readSessionCache(key);
+}
+
 export const REQUESTS_PAGE_CACHE_KEY = 'requests_page_v3';
 
 const inFlightFreshByKey = new Map();
 /** Bumped on local mutations so in-flight GETs cannot overwrite newer cache/UI. */
 const cacheEpochByKey = new Map();
+const pendingMutationsByKey = new Map();
 
 export function bumpCacheEpoch(key) {
   cacheEpochByKey.set(key, (cacheEpochByKey.get(key) || 0) + 1);
@@ -55,6 +61,30 @@ export function bumpCacheEpoch(key) {
 
 function currentCacheEpoch(key) {
   return cacheEpochByKey.get(key) || 0;
+}
+
+function hasPendingMutation(key) {
+  return (pendingMutationsByKey.get(key) || 0) > 0;
+}
+
+/**
+ * Open an optimistic-write window for `key`. Until the returned `settle()` runs,
+ * no GET result is applied — a GET that started before the server committed
+ * would otherwise repaint pre-mutation rows. `settle()` bumps the epoch again so
+ * GETs that started inside the window are discarded too; refetch after it.
+ */
+export function beginCacheMutation(key) {
+  pendingMutationsByKey.set(key, (pendingMutationsByKey.get(key) || 0) + 1);
+  bumpCacheEpoch(key);
+  let settled = false;
+  return () => {
+    if (settled) return;
+    settled = true;
+    const left = (pendingMutationsByKey.get(key) || 1) - 1;
+    if (left > 0) pendingMutationsByKey.set(key, left);
+    else pendingMutationsByKey.delete(key);
+    bumpCacheEpoch(key);
+  };
 }
 
 async function fetchFreshWithRateLimitRetry(fetcher, cacheKey) {
@@ -89,6 +119,10 @@ async function fetchFreshWithRateLimitRetry(fetcher, cacheKey) {
 
 async function resolveFreshPayload(key, fetcher, { depth = 0 } = {}) {
   const { data, startedEpoch } = await fetchFreshWithRateLimitRetry(fetcher, key);
+  // The mutation's settle() path refetches; applying now would undo optimistic UI.
+  if (hasPendingMutation(key)) {
+    return { data: null, stale: true };
+  }
   if (currentCacheEpoch(key) !== startedEpoch) {
     if (depth >= 3) {
       return { data: readSessionCache(key), stale: true };

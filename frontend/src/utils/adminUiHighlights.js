@@ -166,7 +166,9 @@ export function syncPendingRequestIdsForBadge(requestIds, { fetchedAt } = {}) {
 
 /**
  * Instant badge drop for merge / delete / Directory — do not wait for the next
- * list GET. Bumps fetchedAt so an in-flight older response cannot resurrect ids.
+ * list GET. Leaves fetchedAt alone (it orders server GETs only): a local clock
+ * stamp would make an in-flight, newer GET look older and drop new arrivals.
+ * Suppression tombstones keep removed ids from coming back.
  */
 export function removePendingRequestIdsFromBadge(requestIds) {
   const drop = new Set(
@@ -178,7 +180,6 @@ export function removePendingRequestIdsFromBadge(requestIds) {
   const next = pending.filter((id) => id && !drop.has(normalizeHighlightId(id)));
   if (next.length === pending.length) return false;
   writeJson(PENDING_REQUEST_IDS_BADGE_KEY, next);
-  writeJson(PENDING_REQUEST_IDS_FETCHED_AT_KEY, Date.now());
   notifyNewRequestsBadgeChanged();
   return true;
 }
@@ -207,7 +208,6 @@ export function addPendingRequestIdsToBadge(requestIds) {
   }
   if (!changed) return false;
   writeJson(PENDING_REQUEST_IDS_BADGE_KEY, merged);
-  writeJson(PENDING_REQUEST_IDS_FETCHED_AT_KEY, Date.now());
   notifyNewRequestsBadgeChanged();
   return true;
 }
@@ -384,8 +384,7 @@ export function removeRequestHighlight(requestId) {
   if (opened.delete(id)) {
     writeSet(OPENED_REQUEST_IDS_BADGE_KEY, opened);
   }
-  // Always go through the badge helper so fetchedAt is bumped and the sidebar
-  // re-reads even when the id was already absent from pending.
+  // Sidebar must re-read even when the id was already absent from pending.
   if (!removePendingRequestIdsFromBadge([id])) {
     notifyNewRequestsBadgeChanged();
   }

@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { applyNewRequestsSuppressions, getNewRequestsPage } from '../utils/pilot2Api';
+import { applyNewRequestsSuppressions } from '../utils/pilot2Api';
+import {
+  fetchRequestsPage,
+  scheduleRequestsPageRefetch,
+  subscribeRequestsPage,
+} from '../utils/requestsPageStore';
 import {
   ADMIN_NEW_REQUESTS_BADGE_EVENT,
   countUnopenedNewRequests,
@@ -13,7 +18,7 @@ const POLL_MS = 15_000;
 /**
  * Sidebar badge: queue rows not opened this session.
  * Drops instantly on open; rises when new requests arrive.
- * NewRequests also pushes pending ids via syncPendingRequestIdsForBadge.
+ * Shares New Requests' GETs via requestsPageStore, so both show one snapshot.
  */
 export function useUnopenedNewRequestsCount(partnerId) {
   const [count, setCount] = useState(() => countUnopenedNewRequests());
@@ -24,25 +29,20 @@ export function useUnopenedNewRequestsCount(partnerId) {
     setCount(countUnopenedNewRequests());
   }, []);
 
-  const refreshFromNetwork = useCallback(async () => {
-    const id = partnerRef.current;
-    try {
-      const data = await getNewRequestsPage(id || '');
-      const requests = applyNewRequestsSuppressions(
-        Array.isArray(data?.requests) ? data.requests : [],
-      );
-      // Only refresh pending ids for the badge — do not re-run highlight bootstrap here.
-      syncPendingRequestIdsForBadge(requests.map((row) => row.id), { fetchedAt: data?.fetchedAt });
-      setCount(countUnopenedNewRequests());
-    } catch {
-      readLocal();
-    }
-  }, [readLocal]);
+  useEffect(() => subscribeRequestsPage(({ partnerId: forPartnerId, data }) => {
+    if (String(forPartnerId || '') !== String(partnerRef.current || '')) return;
+    const requests = applyNewRequestsSuppressions(
+      Array.isArray(data?.requests) ? data.requests : [],
+    );
+    // Only refresh pending ids for the badge — do not re-run highlight bootstrap here.
+    syncPendingRequestIdsForBadge(requests.map((row) => row.id), { fetchedAt: data?.fetchedAt });
+    setCount(countUnopenedNewRequests());
+  }), []);
 
   useEffect(() => {
     // Partner switch: re-fetch that gym's queue for the badge.
-    void refreshFromNetwork();
-  }, [partnerId, refreshFromNetwork]);
+    fetchRequestsPage(partnerId || '').catch(() => readLocal());
+  }, [partnerId, readLocal]);
 
   useEffect(() => {
     const onBadge = () => readLocal();
@@ -52,23 +52,27 @@ export function useUnopenedNewRequestsCount(partnerId) {
 
   useRealtimeBroadcast('requests-changed', () => {
     if (document.hidden) return;
-    void refreshFromNetwork();
+    scheduleRequestsPageRefetch(partnerRef.current || '', { invalidate: true });
   });
 
   useEffect(() => {
     const onFocusOrVisible = () => {
       if (document.hidden) return;
-      void refreshFromNetwork();
+      scheduleRequestsPageRefetch(partnerRef.current || '');
+    };
+    const onPoll = () => {
+      if (document.hidden) return;
+      scheduleRequestsPageRefetch(partnerRef.current || '', { minAgeMs: POLL_MS - 1000 });
     };
     window.addEventListener('focus', onFocusOrVisible);
     document.addEventListener('visibilitychange', onFocusOrVisible);
-    const poll = window.setInterval(onFocusOrVisible, POLL_MS);
+    const poll = window.setInterval(onPoll, POLL_MS);
     return () => {
       window.removeEventListener('focus', onFocusOrVisible);
       document.removeEventListener('visibilitychange', onFocusOrVisible);
       window.clearInterval(poll);
     };
-  }, [refreshFromNetwork]);
+  }, []);
 
   return count;
 }

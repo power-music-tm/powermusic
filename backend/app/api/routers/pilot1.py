@@ -55,6 +55,7 @@ from app.request_visibility import (
     manager_visible_status,
 )
 from app.partner_requests_realtime import notify_admin_requests_changed
+from app.read_cache import read_cache_scope
 from app.dashboard_insights import build_dashboard_insights
 from app.partner_allowlists import (
     assert_manager_email_allowed,
@@ -1028,10 +1029,11 @@ def get_new_requests_page(
     db_requests = query.order_by(request_id_numeric_desc()).all()
     hydrate_request_display(db_requests)
     directory = directory_ledger_rows(db, limit=2000, partner_id=partner_id)
-    return {
-        "requests": requests_to_api_dicts(db, db_requests),
-        "persons": directory_rows_to_api_dicts(db, directory),
-    }
+    with read_cache_scope():
+        return {
+            "requests": requests_to_api_dicts(db, db_requests),
+            "persons": directory_rows_to_api_dicts(db, directory),
+        }
 
 @router.get("/api/admin/requests/{request_id}", response_model=schemas.RequestOut)
 def get_admin_request(

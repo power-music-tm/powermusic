@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -27,7 +27,7 @@ def _norm_dt(dt: Optional[datetime]) -> datetime:
         return dt.replace(tzinfo=timezone.utc)
     return dt
 
-from app import models, schemas
+from app import models, read_cache, schemas
 from app.duplicate_matching import (
     are_requests_dismissed,
     get_all_dismissed_pairs,
@@ -1646,15 +1646,35 @@ def get_group_members(
     group_id: str,
 ) -> List[models.ManagerRequest]:
     """Chronologically ordered list of all active requests in a group."""
-    return (
-        db.query(models.ManagerRequest)
-        .filter(
-            models.ManagerRequest.duplicate_group_id == group_id,
-            models.ManagerRequest.status == "new",
-        )
-        .order_by(models.ManagerRequest.received_at.asc(), models.ManagerRequest.id.asc())
-        .all()
+    members = read_cache.cached(
+        group_members_cache_key(group_id),
+        lambda: (
+            db.query(models.ManagerRequest)
+            .filter(
+                models.ManagerRequest.duplicate_group_id == group_id,
+                models.ManagerRequest.status == "new",
+            )
+            .order_by(models.ManagerRequest.received_at.asc(), models.ManagerRequest.id.asc())
+            .all()
+        ),
     )
+    return list(members)
+
+
+def group_members_cache_key(group_id: str) -> tuple:
+    return ("group_members", group_id)
+
+
+def seed_group_members_cache(members_by_group: Dict[str, List[models.ManagerRequest]]) -> None:
+    """Prime get_group_members for a read pass from members already loaded in bulk."""
+    if not read_cache.is_active():
+        return
+    for group_id, members in members_by_group.items():
+        ordered = sorted(
+            members,
+            key=lambda m: (m.received_at is None, _norm_dt(m.received_at), m.id or ""),
+        )
+        read_cache.seed(group_members_cache_key(group_id), ordered)
 
 
 def _members_for_resolve_snapshot(
@@ -1840,7 +1860,11 @@ def _compute_group_classification_summary_impl(
     already_removed = False
     dir_person = None
     if group.directory_person_id:
-        dir_person = db.query(models.ManagerRequest).filter_by(id=group.directory_person_id).first()
+        # Read passes reuse the row the serializer already loaded (no pending writes).
+        if read_cache.is_active():
+            dir_person = db.get(models.ManagerRequest, group.directory_person_id)
+        else:
+            dir_person = db.query(models.ManagerRequest).filter_by(id=group.directory_person_id).first()
         if dir_person and _directory_is_off_roster(dir_person):
             already_removed = True
         elif dir_person:
