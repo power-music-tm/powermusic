@@ -16,6 +16,7 @@ import {
 } from '../src/utils/managerAuthBranding.js';
 import {
   formatAttributedManagerFields,
+  getDirectoryManagerColumnContent,
   getManagerDisplayName,
   isAdminEntry,
   isManualEntry,
@@ -71,6 +72,27 @@ test('partner branding terminology', () => {
   assert.equal(getPartnerTerminology('GLL', 'gll').requiresLocation, false);
   assert.equal(getPartnerTerminology('Health Fitness', 'health-fitness').locationTerm, 'Client');
   assert.equal(partnerDisplayNameFromSlug('jd-gyms'), 'Jd Gyms');
+});
+
+test('directory manager column prefers update manager over auto-email hybrid', () => {
+  const autoOnly = getDirectoryManagerColumnContent({
+    tags: ['auto mail'],
+    sourceGmailMessageId: 'msg-1',
+    submittedBy: { club: 'Auto email' },
+  });
+  assert.equal(autoOnly.primary, AWAITING_MANAGER_LABEL);
+
+  const afterManagerUpdate = getDirectoryManagerColumnContent({
+    tags: ['auto mail', 'partner request', 'verified'],
+    sourceGmailMessageId: 'msg-1',
+    managerName: 'Nabeeha Manager',
+    managerEmail: 'nabeeha@example.com',
+    club: 'Testing Club',
+    submittedBy: { firstName: 'Nabeeha', lastName: 'Manager', email: 'nabeeha@example.com', club: 'Testing Club' },
+  });
+  assert.equal(afterManagerUpdate.primary, 'Nabeeha Manager');
+  assert.equal(afterManagerUpdate.secondary, 'nabeeha@example.com');
+  assert.equal(afterManagerUpdate.tertiary, 'Testing Club');
 });
 
 test('manual entry / admin attribution helpers', () => {

@@ -150,6 +150,13 @@ export function getDirectoryManagerColumnContent(row, options = {}) {
   const terms = getPartnerTerminology(pName, pSlug);
   const tags = row?.tags || [];
 
+  const name = (row?.managerName || row?.addedBy || '').trim();
+  const email = (row?.managerEmail || '').trim();
+  const club = (row?.club || row?.submittedBy?.club || '').trim();
+  // After Add/Remove-and-Update from a manager request, prefer that manager —
+  // never show a hybrid "Auto Email Request" + manager club.
+  const hasManagerDetails = Boolean(name || email);
+
   const isAutoMail = (
     tags.includes('auto mail')
     || Boolean(row?.sourceGmailMessageId)
@@ -160,7 +167,7 @@ export function getDirectoryManagerColumnContent(row, options = {}) {
     || (Array.isArray(row?.requestHistory) && row.requestHistory.some((e) => e.type === 'auto_mail'))
   );
 
-  if (isAutoMail) {
+  if (isAutoMail && !hasManagerDetails) {
     return {
       primary: AWAITING_MANAGER_LABEL,
       secondary: AWAITING_MANAGER_HINT,
@@ -171,10 +178,7 @@ export function getDirectoryManagerColumnContent(row, options = {}) {
     };
   }
 
-  const name = (row?.managerName || row?.addedBy || '').trim();
-  const email = (row?.managerEmail || '').trim();
-  const club = (row?.club || '').trim();
-  if (!name && !email) {
+  if (!hasManagerDetails) {
     return {
       primary: `No ${terms.managerTermLower} details`,
       secondary: '',

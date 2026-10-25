@@ -1807,25 +1807,58 @@ def _current_request_member(
     )
 
 
+def _snapshot_source_manager_fields(source: models.ManagerRequest) -> Dict[str, str]:
+    """Name/email/club for the request that drove Add / Update / Archive."""
+    from app.intake_persons import get_admin_submitted_by, get_submitted_by_attribution
+    from app.user_display import resolve_manager_fields, user_manager_fields
+    from sqlalchemy.orm import object_session
+
+    attributed = get_submitted_by_attribution(source)
+    if any(attributed.values()):
+        return attributed
+
+    admin_submitted = get_admin_submitted_by(source)
+    if any(admin_submitted.values()):
+        return admin_submitted
+
+    manager_user = getattr(source, "_manager_user", None)
+    if manager_user is None and source.manager_id:
+        session = object_session(source)
+        if session is not None:
+            manager_user = (
+                session.query(models.PowermusicUser)
+                .filter(models.PowermusicUser.id == source.manager_id)
+                .first()
+            )
+            source._manager_user = manager_user
+    if manager_user is not None:
+        return user_manager_fields(manager_user)
+
+    return resolve_manager_fields(source, manager_user=manager_user)
+
+
 def _apply_merge_manager_provenance(
     dir_row: models.ManagerRequest,
     source: Optional[models.ManagerRequest],
     *,
     final_values: schemas.PersonInfo,
 ) -> None:
-    """Copy manager attribution onto the single Directory row created by merge.
+    """Replace Directory manager attribution with the updating request's manager.
 
-    Without this, Directory falls back to "Auto Email Request" because the merge
-    row has no manager_id / submittedBy.
+    Used for Add to Directory, Add/Remove-and-Update, archive removes, and
+    mark-removed — so the Manager column always reflects the latest request,
+    not a hybrid of prior auto-mail / older manager fields.
     """
     from app.intake_persons import get_admin_submitted_by, get_submitted_by_attribution
     from app.manager_request_tags import (
+        TAG_AUTO_MAIL,
         TAG_PARTNER_REQUEST,
         TAG_SENT_BY_ADMIN,
         TAG_VERIFIED,
         has_tag,
     )
     from app.person_compare import person_to_mapping
+    from sqlalchemy.orm.attributes import flag_modified
 
     intake = dict(dir_row.intake_persons or {})
     intake["admin"] = person_to_mapping(final_values)
@@ -1864,9 +1897,22 @@ def _apply_merge_manager_provenance(
         elif msg_id:
             dir_row.source_gmail_message_id = msg_id
 
-        attributed = get_submitted_by_attribution(source)
-        if any(attributed.values()):
-            intake["submittedBy"] = attributed
+        source_tags = source.tags or []
+
+        # Always overwrite Directory manager display with this request's manager.
+        manager_fields = _snapshot_source_manager_fields(source)
+        has_named_manager = bool(
+            (manager_fields.get("firstName") or "").strip()
+            or (manager_fields.get("lastName") or "").strip()
+            or (manager_fields.get("email") or "").strip()
+        )
+        if any(manager_fields.values()):
+            intake["submittedBy"] = {
+                "firstName": manager_fields.get("firstName") or "",
+                "lastName": manager_fields.get("lastName") or "",
+                "email": manager_fields.get("email") or "",
+                "club": manager_fields.get("club") or "",
+            }
         else:
             intake.pop("submittedBy", None)
 
@@ -1876,12 +1922,32 @@ def _apply_merge_manager_provenance(
         else:
             intake.pop("adminSubmittedBy", None)
 
-        source_tags = source.tags or []
-        if has_tag(source_tags, TAG_PARTNER_REQUEST) or source.manager_id:
+        source_is_pure_auto = (
+            has_tag(source_tags, TAG_AUTO_MAIL)
+            and not source.manager_id
+            and not has_tag(source_tags, TAG_PARTNER_REQUEST)
+            and not has_named_manager
+        )
+        manager_owns_update = not source_is_pure_auto and (
+            bool(source.manager_id)
+            or has_tag(source_tags, TAG_PARTNER_REQUEST)
+            or has_tag(source_tags, TAG_SENT_BY_ADMIN)
+            or has_named_manager
+        )
+
+        if manager_owns_update:
+            # Replace auto-mail column attribution entirely.
+            tags = [t for t in tags if str(t).strip().lower() != TAG_AUTO_MAIL]
+            if not msg_id:
+                dir_row.source_gmail_message_id = None
+            # Stale auto-mail meta must not keep the Auto Email Request label.
+            intake.pop("autoMailMeta", None)
             if TAG_PARTNER_REQUEST not in tags:
                 tags.append(TAG_PARTNER_REQUEST)
         if has_tag(source_tags, TAG_SENT_BY_ADMIN) or (
-            not source.manager_id and any(attributed.values())
+            not source.manager_id
+            and has_named_manager
+            and not has_tag(source_tags, TAG_AUTO_MAIL)
         ):
             if TAG_SENT_BY_ADMIN not in tags:
                 tags.append(TAG_SENT_BY_ADMIN)
@@ -1893,7 +1959,9 @@ def _apply_merge_manager_provenance(
             tags.append(TAG_SENT_BY_ADMIN)
 
     dir_row.intake_persons = intake
+    flag_modified(dir_row, "intake_persons")
     dir_row.tags = tags
+    flag_modified(dir_row, "tags")
 
 
 def _apply_final_values_to_request(
@@ -2454,6 +2522,9 @@ def resolve_group_add(
             reverse=True,
         )
         retained_req = members_sorted[0]
+
+    from app.user_display import hydrate_request_users
+    hydrate_request_users(db, members + late_arrivals)
 
     admin_uuid = None
     if admin_id and admin_id != "dev-bypass":
@@ -3275,6 +3346,9 @@ def resolve_group_mark_removed(
             reverse=True,
         )
         retained_req = members_sorted[0]
+
+    from app.user_display import hydrate_request_users
+    hydrate_request_users(db, members + late_arrivals)
 
     admin_uuid = None
     if admin_id and admin_id != "dev-bypass":
