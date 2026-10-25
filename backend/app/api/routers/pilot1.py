@@ -921,7 +921,7 @@ def create_request(
     hydrate_request_users(db, [new_request])
     invalidate_manager_request_summary(manager.id)
     notify_admin_requests_changed("manager_submit")
-    return request_to_api_dict(new_request)
+    return request_to_api_dict(new_request, db=db)
 
 
 @router.post(
@@ -1047,7 +1047,9 @@ def get_admin_request(
         raise HTTPException(status_code=404, detail="Request not found")
     hydrate_request_display([req])
     hydrate_request_users(db, [req])
-    return request_to_api_dict(req)
+    # Pass db so automatedEmail (from/inbox/subject) is included — without it the
+    # detail page seeds correct values then overwrites them with empty dashes.
+    return request_to_api_dict(req, db=db)
 
 
 @router.post("/api/admin/requests/{request_id}/mark-handled", response_model=schemas.RequestOut)
@@ -1063,7 +1065,7 @@ def mark_request_handled(
         
     if req.status == "handled":
         hydrate_request_users(db, [req])
-        return request_to_api_dict(req)
+        return request_to_api_dict(req, db=db)
         
     outcome = "Added" if req.action == "Add" else "Removed"
     was_new = req.status == "new"
@@ -1118,7 +1120,7 @@ def mark_request_handled(
         invalidate_manager_request_summary(str(req.manager_id))
     if was_new:
         notify_admin_requests_changed("mark_handled")
-    return request_to_api_dict(req)
+    return request_to_api_dict(req, db=db)
 
 @router.get(
     "/api/admin/requests/{request_id}/dismiss-impact",
@@ -1149,7 +1151,7 @@ def dismiss_request(
 
     hydrate_request_display([req])
     hydrate_request_users(db, [req])
-    out_dict = request_to_api_dict(req)
+    out_dict = request_to_api_dict(req, db=db)
 
     was_new = req.status == "new"
     group_id = req.duplicate_group_id
