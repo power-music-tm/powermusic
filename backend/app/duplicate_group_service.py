@@ -880,16 +880,91 @@ def find_separated_lookalike_requests(
     dismissed_set: Optional[Set[Tuple[str, str]]] = None,
     limit: int = 20,
 ) -> List[models.ManagerRequest]:
-    """Do not surface Not-the-Same-Person peers as attach suggestions.
+    """Open requests that match this group's newest member but stay outside the group.
 
-    Pairwise / group dismissals from unlink still block automatic regrouping.
-    Returning candidates here previously powered an amber banner and
-    "Attach to a similar request" CTA; that undo path is intentionally disabled
-    so an explicit Not-the-Same-Person decision stays respected in both
-    directions. Keep the hook so call sites and tests stay stable.
+    Typical case: previously unlinked ("Not the Same Person") lookalikes that a
+    *new* request also matches. Used for the admin warning with hyperlinks.
+
+    A candidate counts when it matches the probe (newest member) AND is blocked
+    from this group by:
+      * a pairwise dismissal vs an older current member, or
+      * a group-level dismissal for this group id, or
+      * a pairwise dismissal vs another open request that also matches the probe
+        (sibling lookalike cohort), or
+      * (sole open member only) a pairwise dismissal vs the probe itself —
+        covers Merge inheriting Denver→survivor Not-the-Same-Person barriers.
+
+    Hide when dismissed against the probe while older members remain — that is
+    the "just unlinked from this group" case and must not offer Attach back.
     """
-    del db, group, members, dismissed_set, limit
-    return []
+    if not members:
+        return []
+
+    probe = max(members, key=lambda m: _norm_dt(m.received_at))
+    probe_person = person_from_model(probe)
+    is_ht = is_healthtech_from_request(db, probe)
+    is_gll = is_gll_from_request(db, probe)
+    member_ids = {m.id for m in members if m.id}
+    older_ids = member_ids - {probe.id}
+
+    q = db.query(models.ManagerRequest).filter(
+        models.ManagerRequest.status == "new",
+    )
+    if member_ids:
+        q = q.filter(models.ManagerRequest.id.notin_(list(member_ids)))
+    if group.partner_id:
+        q = q.filter(models.ManagerRequest.partner_id == group.partner_id)
+    candidates = q.order_by(models.ManagerRequest.received_at.desc()).limit(80).all()
+
+    if dismissed_set is None:
+        dismissed_set = get_all_dismissed_pairs(db)
+
+    matching: List[models.ManagerRequest] = []
+    for cand in candidates:
+        if not cand.id or cand.id in member_ids:
+            continue
+        classification, _ = match_classification_for_partner(
+            probe_person,
+            person_from_model(cand),
+            is_healthtech=is_ht,
+            is_gll=is_gll,
+        )
+        if classification:
+            matching.append(cand)
+
+    matching_ids = {c.id for c in matching}
+
+    out: List[models.ManagerRequest] = []
+    for cand in matching:
+        dismissed_vs_probe = are_requests_dismissed(
+            db, cand.id, probe.id, dismissed_set=dismissed_set
+        )
+        # Just separated from this group's newest peer while older members remain
+        # — do not offer "attach back" on the same group.
+        if dismissed_vs_probe and older_ids:
+            continue
+
+        blocked = any(
+            are_requests_dismissed(db, cand.id, mid, dismissed_set=dismissed_set)
+            for mid in older_ids
+        ) or is_request_dismissed_from_group(db, cand.id, group.id)
+        if not blocked:
+            # Sibling lookalike: dismissed against another open match outside this group.
+            blocked = any(
+                are_requests_dismissed(db, cand.id, other_id, dismissed_set=dismissed_set)
+                for other_id in matching_ids
+                if other_id != cand.id
+            )
+        if not blocked and dismissed_vs_probe and not older_ids:
+            # Sole open member (post-Merge): inherited Not-the-Same-Person vs probe
+            # still counts as the attachable lookalike barrier.
+            blocked = True
+        if not blocked:
+            continue
+        out.append(cand)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _clear_dismissed_pair(db: Session, request_id_a: str, request_id_b: str) -> None:
@@ -927,15 +1002,134 @@ def reattach_to_lookalike(
     *,
     admin_id: Optional[str] = None,
 ) -> Optional[dict]:
-    """Disabled: Not-the-Same-Person dismissals must not be undone via attach.
+    """Move this group's sole open request onto a separated lookalike request.
 
-    Automatic regrouping still respects ``DismissedDuplicateMatch`` /
-    ``DismissedGroupMatch``. This entry point previously cleared a pair dismissal
-    and moved the sole open member onto a separated lookalike; that undo path is
-    no longer offered. Always returns None.
+    Preconditions:
+      * Source group is active and has exactly one status=new member (admin must
+        Merge peer history first when multiple requests share the group).
+      * target_request_id is an open lookalike that was separated via Not the
+        same person (returned by find_separated_lookalike_requests).
+
+    Effects:
+      * Clears pairwise dismissal only between the source member and the target.
+      * Leaves dismissals vs other lookalikes intact.
+      * Joins the target's existing group, or creates a new two-member group.
+      * Dismisses the emptied source group.
+
+    Returns ``{sourceRequestId, targetRequestId, newGroupId, previousGroupId}``
+    or None when the operation is not allowed.
     """
-    del db, group_id, target_request_id, admin_id
-    return None
+    del admin_id  # reserved for audit; dismissals cleared without admin stamp
+
+    group = (
+        db.query(models.DuplicateGroup)
+        .filter(models.DuplicateGroup.id == group_id)
+        .first()
+    )
+    if not group or group.status != "active":
+        return None
+
+    members = (
+        db.query(models.ManagerRequest)
+        .filter(
+            models.ManagerRequest.duplicate_group_id == group.id,
+            models.ManagerRequest.status == "new",
+        )
+        .all()
+    )
+    if len(members) != 1:
+        return None
+
+    source = members[0]
+    if not source.id or source.id == target_request_id:
+        return None
+
+    target = (
+        db.query(models.ManagerRequest)
+        .filter(models.ManagerRequest.id == target_request_id)
+        .first()
+    )
+    if not target or target.status != "new":
+        return None
+    if group.partner_id and target.partner_id and target.partner_id != group.partner_id:
+        return None
+
+    lookalikes = find_separated_lookalike_requests(db, group, members)
+    if not any(r.id == target.id for r in lookalikes):
+        return None
+
+    is_ht = is_healthtech_from_request(db, source)
+    is_gll = is_gll_from_request(db, source)
+    classification, _ = match_classification_for_partner(
+        person_from_model(source),
+        person_from_model(target),
+        is_healthtech=is_ht,
+        is_gll=is_gll,
+    )
+    if not classification:
+        return None
+
+    now = datetime.now(timezone.utc)
+
+    # Allow this pair to share a group again; leave other lookalike dismissals.
+    _clear_dismissed_pair(db, source.id, target.id)
+
+    destination: Optional[models.DuplicateGroup] = None
+    if target.duplicate_group_id:
+        destination = (
+            db.query(models.DuplicateGroup)
+            .filter(
+                models.DuplicateGroup.id == target.duplicate_group_id,
+                models.DuplicateGroup.status == "active",
+            )
+            .first()
+        )
+
+    if destination is None:
+        destination = models.DuplicateGroup(
+            id=_new_group_id(),
+            partner_id=group.partner_id or target.partner_id,
+            classification=classification,
+            status="active",
+            created_at=now,
+            directory_person_id=None,
+            representative_request_id=None,
+        )
+        db.add(destination)
+        db.flush()
+        target.duplicate_group_id = destination.id
+    else:
+        upgraded = _best_classification(destination.classification, classification)
+        if upgraded != destination.classification:
+            destination.classification = upgraded
+
+    _clear_dismissed_group(db, source.id, destination.id)
+    _clear_dismissed_group(db, target.id, group.id)
+
+    source.duplicate_group_id = destination.id
+    db.flush()
+
+    # Empty source group — mark dismissed so it leaves New Requests.
+    group.status = "dismissed"
+    group.resolved_at = now
+    group.representative_request_id = None
+
+    dest_members = (
+        db.query(models.ManagerRequest)
+        .filter(
+            models.ManagerRequest.duplicate_group_id == destination.id,
+            models.ManagerRequest.status == "new",
+        )
+        .all()
+    )
+    _sync_group_representative_and_tags(db, destination, member_requests=dest_members)
+
+    return {
+        "sourceRequestId": source.id,
+        "targetRequestId": target.id,
+        "newGroupId": destination.id,
+        "previousGroupId": group_id,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ import { readManagerNotesWithLeaveDate } from '../utils/managerNotes';
 import { fetchJson } from '../utils/api';
 import { dismissRequest, getDismissImpact, suppressNewRequests, removeRequestsFromCache, bumpCacheEpoch, REQUESTS_PAGE_CACHE_KEY } from '../utils/pilot2Api';
 import {
+  fetchGroupDetail,
   learnNicknamePair,
   resolveGroupAdd,
   resolveGroupAddAsNew,
@@ -20,6 +21,7 @@ import {
   resolveGroupKeepExisting,
   resolveGroupKeepExistingAndArchive,
   unlinkGroupMember,
+  reattachGroupLookalike,
   mergeGroupPeers,
   resolveGroupDeleteFromDirectory,
   resolveGroupMarkRemoved,
@@ -354,6 +356,8 @@ export default function GroupResolutionView({
   const [markUnlinkedTarget, setMarkUnlinkedTarget] = useState(null);
   const [modalValues, setModalValues] = useState(null);
   const [mergeEditing, setMergeEditing] = useState(false);
+  const [attachLookalikeOpen, setAttachLookalikeOpen] = useState(false);
+  const [attachLookalikeId, setAttachLookalikeId] = useState(null);
   // Explicit Directory target for Add/Remove-and-Update (never auto-picked after choose).
   const [selectedDirectoryId, setSelectedDirectoryId] = useState(null);
   // Peer IDs frozen when peers_merge / Add-to-Directory confirm opens —
@@ -1021,6 +1025,58 @@ export default function GroupResolutionView({
     await consolidatePeersToCurrent(values);
   };
 
+  const openAttachLookalikeModal = () => {
+    if (submitting) return;
+    if (incomingMemberCount() !== 1) return;
+    const lookalikes = Array.isArray(group.separatedLookalikeRequests)
+      ? group.separatedLookalikeRequests
+      : [];
+    if (lookalikes.length === 0) return;
+    setAttachLookalikeId(lookalikes[0]?.id || null);
+    setAttachLookalikeOpen(true);
+  };
+
+  const closeAttachLookalikeModal = () => {
+    if (submitting) return;
+    setAttachLookalikeOpen(false);
+    setAttachLookalikeId(null);
+  };
+
+  const handleConfirmAttachLookalike = async () => {
+    if (!attachLookalikeId || submitting) return;
+    setSubmitting(true);
+    const targetId = attachLookalikeId;
+    try {
+      const result = await reattachGroupLookalike(group.id, {
+        targetRequestId: targetId,
+      });
+      const newGroupId = result?.newGroupId || null;
+      let detail = null;
+      if (newGroupId) {
+        try {
+          detail = await fetchGroupDetail(newGroupId);
+        } catch {
+          detail = null;
+        }
+      }
+      setAttachLookalikeOpen(false);
+      setAttachLookalikeId(null);
+      // Pass full payload + destination detail so the parent can upsert the list
+      // row and navigate without tombstoning survivor request IDs.
+      onResolved('reattached', {
+        newGroupId,
+        sourceRequestId: result?.sourceRequestId || null,
+        targetRequestId: result?.targetRequestId || targetId,
+        previousGroupId: result?.previousGroupId || group.id,
+        detail,
+      });
+    } catch (err) {
+      onResolved('error', err.message || 'Failed to attach to that request.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   /* Current request = newest active member (the card Merge is clicked on). */
   const currentSourceRequestId = (() => {
     const active = members.filter((m) => !sessionUnlinkedIds.includes(m.id));
@@ -1660,6 +1716,65 @@ export default function GroupResolutionView({
           </div>
         </div>
 
+      {Array.isArray(group.separatedLookalikeRequests) && group.separatedLookalikeRequests.length > 0 ? (
+        <div
+          role="status"
+          className="mt-6 flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-3 text-sm text-amber-950"
+        >
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />
+          <div className="min-w-0 flex-1 space-y-3">
+            <p className="leading-relaxed">
+              Also similar to{' '}
+              {group.separatedLookalikeRequests.map((lookalike, index) => {
+                const href = lookalike.duplicateGroupId
+                  ? `/new-requests/group/${encodeURIComponent(lookalike.duplicateGroupId)}`
+                  : `/new-requests/${encodeURIComponent(lookalike.id)}`;
+                const label = formatRequestDisplayId(lookalike.displayId || lookalike.id);
+                const count = group.separatedLookalikeRequests.length;
+                const sep =
+                  index === count - 1
+                    ? ''
+                    : index === count - 2
+                      ? (count === 2 ? ' and ' : ', and ')
+                      : ', ';
+                return (
+                  <span key={lookalike.id}>
+                    <Link
+                      to={href}
+                      state={{ from: groupPath }}
+                      className="font-semibold text-amber-950 underline decoration-amber-400/80 underline-offset-2 transition-colors hover:text-[var(--color-brand-primary)] hover:decoration-[var(--color-brand-primary)]"
+                    >
+                      {label}
+                    </Link>
+                    {sep}
+                  </span>
+                );
+              })}
+              . You previously chose <span className="font-semibold">Not the same person</span> for
+              these. This request was attached to the latest match only; those requests stay separate.
+            </p>
+            {(() => {
+              const needsMerge = incomingMemberCount() > 1;
+              const attachBtn = (
+                <button
+                  type="button"
+                  disabled={submitting || needsMerge}
+                  onClick={openAttachLookalikeModal}
+                  className="inline-flex items-center rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-950 shadow-[0_1px_0_rgba(26,26,46,0.04)] transition-colors hover:border-amber-400 hover:bg-amber-100/60 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Attach to a similar request
+                </button>
+              );
+              if (!needsMerge) return attachBtn;
+              return (
+                <HoverTip label="Merge Request History to one request first">
+                  <span className="inline-flex">{attachBtn}</span>
+                </HoverTip>
+              );
+            })()}
+          </div>
+        </div>
+      ) : null}
       </header>
 
       {unlinkedMembers.length > 0 ? (
@@ -2787,6 +2902,71 @@ export default function GroupResolutionView({
             className="mt-2 w-full resize-none rounded-lg border border-[var(--color-border-default)] bg-white px-3.5 py-2.5 text-sm text-[var(--color-text-primary)] placeholder-[var(--color-text-muted)] transition-colors focus:border-[var(--color-brand-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-brand-secondary)]/15"
           />
         </label>
+      </Modal>
+
+      {/* ── Attach to a separated lookalike ── */}
+      <Modal
+        isOpen={attachLookalikeOpen}
+        onClose={closeAttachLookalikeModal}
+        closeDisabled={submitting}
+        title="Attach to a similar request?"
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={closeAttachLookalikeModal}
+              disabled={submitting}
+              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={submitting || !attachLookalikeId}
+              onClick={handleConfirmAttachLookalike}
+              className="px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer disabled:opacity-60"
+            >
+              {submitting ? 'Attaching…' : 'Attach'}
+            </button>
+          </>
+        }
+      >
+        <p className="text-sm text-[var(--color-text-secondary)]">
+          Choose which request this one should be grouped with. Only one can be selected.
+          The current request will leave this group and join that request. Other similar
+          requests stay separate.
+        </p>
+        <fieldset className="mt-4 space-y-2">
+          <legend className="sr-only">Similar requests</legend>
+          {(group.separatedLookalikeRequests || []).map((lookalike) => {
+            const label = formatRequestDisplayId(lookalike.displayId || lookalike.id);
+            const inputId = `attach-lookalike-${lookalike.id}`;
+            return (
+              <label
+                key={lookalike.id}
+                htmlFor={inputId}
+                className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3.5 py-3 text-sm transition-colors ${
+                  attachLookalikeId === lookalike.id
+                    ? 'border-[var(--color-brand-primary)] bg-[var(--color-brand-primary)]/5'
+                    : 'border-[var(--color-border-default)] bg-white hover:bg-[var(--color-surface-highlight)]'
+                }`}
+              >
+                <input
+                  id={inputId}
+                  type="radio"
+                  name="attach-lookalike"
+                  value={lookalike.id}
+                  checked={attachLookalikeId === lookalike.id}
+                  onChange={() => setAttachLookalikeId(lookalike.id)}
+                  className="h-4 w-4 shrink-0 accent-[var(--color-brand-primary)]"
+                />
+                <span className="font-semibold tabular-nums text-[var(--color-text-primary)]">
+                  {label}
+                </span>
+              </label>
+            );
+          })}
+        </fieldset>
       </Modal>
 
       {/* ── Unlink step-by-step modal ── */}

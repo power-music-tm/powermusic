@@ -137,6 +137,17 @@ export const unlinkGroupMember = (groupId, { requestId1, requestId2, strictSingl
   });
 
 /**
+ * POST /api/duplicate-groups/{groupId}/reattach-lookalike
+ * Move this group's sole open request onto a separated lookalike (Not the same person).
+ * Requires peer history already merged to one request.
+ */
+export const reattachGroupLookalike = (groupId, { targetRequestId }) =>
+  groupRequest(`/api/duplicate-groups/${groupId}/reattach-lookalike`, {
+    method: 'POST',
+    body: JSON.stringify({ targetRequestId }),
+  });
+
+/**
  * POST /api/duplicate-groups/{groupId}/merge-peers
  * Collapse Request History to one open request. Group stays active; Directory unchanged.
  */
