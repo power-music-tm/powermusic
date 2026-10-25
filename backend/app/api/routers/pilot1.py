@@ -113,14 +113,22 @@ from app.partner_logo_storage import (
 
 router = APIRouter()
 
-_limit_submit = rate_limit("manager_submit", max_requests=20, window_seconds=3600, user_dep=require_manager)
-_limit_duplicate = rate_limit("manager_duplicate", max_requests=120, window_seconds=60, user_dep=require_manager)
-_limit_search = rate_limit("manager_search", max_requests=60, window_seconds=60, user_dep=require_manager)
-_limit_match = rate_limit("manager_match", max_requests=120, window_seconds=60, user_dep=require_manager)
-# One directory snapshot per page visit — generous so managers never see throttle errors.
-_limit_directory = rate_limit("manager_directory", max_requests=30, window_seconds=60, user_dep=require_manager)
+# Manager-portal throttles — sized for sustained multi-person data entry so a
+# busy club manager is not blocked during normal/real-world use. Keys are
+# per authenticated manager (see rate_limit user_dep).
+_limit_submit = rate_limit("manager_submit", max_requests=500, window_seconds=3600, user_dep=require_manager)
+_limit_duplicate = rate_limit("manager_duplicate", max_requests=600, window_seconds=60, user_dep=require_manager)
+_limit_search = rate_limit("manager_search", max_requests=300, window_seconds=60, user_dep=require_manager)
+_limit_match = rate_limit("manager_match", max_requests=600, window_seconds=60, user_dep=require_manager)
+# Directory snapshot / refresh while the form is open.
+_limit_directory = rate_limit("manager_directory", max_requests=120, window_seconds=60, user_dep=require_manager)
 # Full history list only (summary is cached server-side and not rate-limited).
-_limit_requests_list = rate_limit("manager_requests_list", max_requests=60, window_seconds=60, user_dep=require_manager)
+_limit_requests_list = rate_limit("manager_requests_list", max_requests=300, window_seconds=60, user_dep=require_manager)
+
+# Soft caps on how many directory rows a single search/match call may return.
+MANAGER_SEARCH_RESULT_CAP = 100
+MANAGER_MATCH_RESULT_CAP = 50
+MANAGER_DIRECTORY_SNAPSHOT_CAP = 5000
 
 _REASON_RANK = {
     "Email": 6,
@@ -1325,7 +1333,7 @@ def match_person_candidates(
     payload: schemas.DuplicateCheckIn,
     partner_id: Optional[str] = None,
     partner_slug: Optional[str] = None,
-    limit: int = 10,
+    limit: int = 50,
     db: Session = Depends(get_db),
     manager=Depends(_limit_match),
     x_partner_id: Optional[str] = Header(None, alias="X-Partner-Id"),
@@ -1348,7 +1356,7 @@ def match_person_candidates(
     if not _form_has_match_criteria(p_email, p_first, p_last, p_location):
         return []
 
-    capped = min(max(limit, 1), 15)
+    capped = min(max(limit, 1), MANAGER_MATCH_RESULT_CAP)
     outcome = (payload.outcome or "Added").strip()
     if outcome not in {"Added", "Removed"}:
         raise HTTPException(status_code=422, detail="outcome must be Added or Removed")
@@ -1520,9 +1528,13 @@ def manager_person_directory(
     if outcome not in {"Added", "Removed"}:
         raise HTTPException(status_code=422, detail="outcome must be Added or Removed")
     if outcome == "Removed":
-        rows = removed_snapshot_rows(db, limit=1000, partner_id=resolved_partner_id)
+        rows = removed_snapshot_rows(
+            db, limit=MANAGER_DIRECTORY_SNAPSHOT_CAP, partner_id=resolved_partner_id
+        )
     else:
-        rows = roster_snapshot_rows(db, limit=1000, partner_id=resolved_partner_id)
+        rows = roster_snapshot_rows(
+            db, limit=MANAGER_DIRECTORY_SNAPSHOT_CAP, partner_id=resolved_partner_id
+        )
     return [_person_search_row(row) for row in rows]
 
 
@@ -1532,7 +1544,7 @@ def search_persons_for_manager(
     partner_id: Optional[str] = None,
     partner_slug: Optional[str] = None,
     outcome: str = "Added",
-    limit: int = 25,
+    limit: int = 100,
     db: Session = Depends(get_db),
     manager=Depends(_limit_search),
     x_partner_id: Optional[str] = Header(None, alias="X-Partner-Id"),
@@ -1560,7 +1572,7 @@ def search_persons_for_manager(
     if len(query) < 2:
         return []
 
-    capped = min(max(limit, 1), 25)
+    capped = min(max(limit, 1), MANAGER_SEARCH_RESULT_CAP)
     people = _search_people(
         db,
         query,

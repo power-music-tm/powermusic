@@ -237,8 +237,11 @@ function normalizeMemberStub(member, { forceRepresentativeId = null } = {}) {
         : Boolean(member.isRepresentative),
     submittedBy: member.submittedBy || null,
     notes: member.notes || '',
+    managerNotes: member.managerNotes || member.notes || '',
     tags: member.tags || [],
     createdBy: member.createdBy || null,
+    // Keep Leave date available in Request History after cache/list seed.
+    ...(member.automatedEmail ? { automatedEmail: member.automatedEmail } : {}),
   };
 }
 

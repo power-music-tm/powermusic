@@ -51,7 +51,8 @@ export const EMPTY_PERSON_FORM = {
   notes: '',
 };
 
-export const MAX_MANAGER_PERSON_ROWS = 10;
+/** Max people per manager/admin batch submit (must match backend schema cap). */
+export const MAX_MANAGER_PERSON_ROWS = 50;
 
 export function isPersonFormComplete(personForm, options = {}) {
   const requiresLocation = options.requiresLocation ?? true;

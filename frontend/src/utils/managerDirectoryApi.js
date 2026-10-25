@@ -3,7 +3,7 @@ import { normalizeDirectoryPerson } from './managerDirectory';
 
 export async function searchManagerDirectory(
   query,
-  limit = 25,
+  limit = 100,
   partnerId = null,
   outcome = 'Added',
 ) {
@@ -19,7 +19,7 @@ export async function searchManagerDirectory(
 
 export async function fetchFormMatchCandidates(
   person,
-  limit = 15,
+  limit = 50,
   partnerId = null,
   outcome = 'Added',
 ) {

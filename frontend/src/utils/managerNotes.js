@@ -86,6 +86,21 @@ export function readManagerNotes(source) {
   return stripAutomatedManagerNotes(raw);
 }
 
+/**
+ * Manager-entered notes plus Leave date from automated Remove emails when present.
+ * Used in Request History / group views where the separate Leave date metadata
+ * row is not shown (leave date is static display-only).
+ */
+export function readManagerNotesWithLeaveDate(source) {
+  const notes = readManagerNotes(source);
+  const leave = readLeaveDate(source);
+  if (!leave) return notes;
+  const leaveLine = `Leave date: ${leave}`;
+  if (!notes) return leaveLine;
+  if (/(?:^|\n)\s*Leave date:\s*/i.test(notes)) return notes;
+  return `${notes}\n${leaveLine}`;
+}
+
 export function formatManagerNotes(source) {
   return readManagerNotes(source) || MANAGER_NOTES_EMPTY_LABEL;
 }

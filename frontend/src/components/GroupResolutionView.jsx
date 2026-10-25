@@ -9,7 +9,7 @@ import { usePartners } from '../context/PartnerContext';
 import { getPartnerTerminology } from '../utils/managerAuthBranding';
 import { formatAdminDateTime, formatRequestDisplayId } from '../utils/requestDisplayId';
 import { getManagerDisplayName, isManualEntry, MANUAL_ENTRY_CLUB } from '../utils/manualEntry';
-import { readManagerNotes } from '../utils/managerNotes';
+import { readManagerNotesWithLeaveDate } from '../utils/managerNotes';
 import { fetchJson } from '../utils/api';
 import { dismissRequest, getDismissImpact, suppressNewRequests, removeRequestsFromCache, bumpCacheEpoch, REQUESTS_PAGE_CACHE_KEY } from '../utils/pilot2Api';
 import {
@@ -109,7 +109,7 @@ function managerFieldsFromMember(member) {
     clubRaw && clubRaw !== MANUAL_ENTRY_CLUB && !isManualEntry(member?.submittedBy)
       ? clubRaw
       : (clubRaw === MANUAL_ENTRY_CLUB ? MANUAL_ENTRY_CLUB : '');
-  const notesText = readManagerNotes(member);
+  const notesText = readManagerNotesWithLeaveDate(member);
   return { managerName, managerEmail, managerClub, notesText };
 }
 
@@ -1708,11 +1708,13 @@ export default function GroupResolutionView({
                     const role = isLatest
                       ? { variant: 'new-person', label: 'Current request' }
                       : { variant: 'neutral', label: 'Older' };
-                    // Unlink when this row is a potential duplicate of any other
-                    // active history member (pairwise), not only vs current.
-                    // Confirmed-only edges do not unlock the button.
+                    // Unlink on older rows that are a potential duplicate of any
+                    // other active history member (pairwise), not only vs current.
+                    // Never on the current (newest) request. Confirmed-only edges
+                    // do not unlock the button.
                     const showUnlink = (
                       !unlinked
+                      && !isLatest
                       && activeMembers.length > 1
                       && hasPotentialDuplicatePeer(
                         member.person,

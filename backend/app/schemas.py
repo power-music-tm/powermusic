@@ -161,7 +161,7 @@ def _validate_unique_person_emails(people: List[PersonInfo]) -> None:
 
 class ManualRequestIn(BaseModel):
     submittedBy: SubmittedBy
-    people: List[PersonInfo] = Field(min_length=1, max_length=10)
+    people: List[PersonInfo] = Field(min_length=1, max_length=50)
     action: Literal["Add", "Remove"]
     notes: Optional[str] = Field(default=None, max_length=5000)
     partnerId: Optional[str] = None
@@ -179,7 +179,7 @@ class ManualRequestIn(BaseModel):
 
 class ManagerBatchRequestIn(BaseModel):
     submittedBy: SubmittedBy
-    people: List[PersonInfo] = Field(min_length=1, max_length=10)
+    people: List[PersonInfo] = Field(min_length=1, max_length=50)
     action: Literal["Add", "Remove"]
     notes: Optional[str] = Field(default=None, max_length=5000)
     partnerId: Optional[str] = None

@@ -9,6 +9,7 @@ import {
   readAutomatedSubject,
   readLeaveDate,
   readManagerNotes,
+  readManagerNotesWithLeaveDate,
   stripAutomatedManagerNotes,
 } from '../src/utils/managerNotes.js';
 
@@ -60,4 +61,30 @@ test('format / empty helpers', () => {
   assert.equal(formatManagerNotes({ notes: 'Hello team' }), 'Hello team');
   assert.equal(managerNotesIsEmpty({ notes: 'Automated roster email\nx' }), true);
   assert.equal(readManagerNotes({ notes: 'Hello\n\nSeed: x' }), 'Hello');
+});
+
+test('readManagerNotesWithLeaveDate surfaces Leave date in notes display', () => {
+  assert.equal(
+    readManagerNotesWithLeaveDate({
+      managerNotes: 'Automated roster email. Remove\nSubject: Leaver\nLeave date: 2024-08-14',
+    }),
+    'Leave date: 2024-08-14',
+  );
+  assert.equal(
+    readManagerNotesWithLeaveDate({
+      notes: 'Please archive',
+      automatedEmail: {
+        details: 'Automated roster email. Remove\nSubject: X\nLeave date: 2026-01-02',
+      },
+    }),
+    'Please archive\nLeave date: 2026-01-02',
+  );
+  assert.equal(
+    readManagerNotesWithLeaveDate({
+      notes: 'Leave date: 2026-01-02',
+      automatedEmail: { details: 'Leave date: 2026-01-02' },
+    }),
+    'Leave date: 2026-01-02',
+  );
+  assert.equal(readManagerNotesWithLeaveDate({ notes: 'Only manager' }), 'Only manager');
 });

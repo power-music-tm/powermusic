@@ -75,7 +75,11 @@ def serialize_duplicate_group_member_stub(
                 created_by = "Admin"
 
     director = get_director_fields(req)
-    return {
+    # Keep Leave date visible in Request History: manager_notes strip the
+    # automated block, so attach the light auto-mail snapshot (details hold
+    # "Leave date: …" for Remove roster emails).
+    automated = _light_auto_mail_snapshot(req)
+    payload = {
         "id": req.id,
         "displayId": getattr(req, "displayId", None) or parse_request_display_number(req.id),
         "receivedAt": req.received_at,
@@ -95,9 +99,13 @@ def serialize_duplicate_group_member_stub(
         "isRepresentative": bool(is_representative),
         "submittedBy": submitted_by,
         "notes": manager_notes,
+        "managerNotes": manager_notes,
         "tags": tags,
         "createdBy": created_by,
     }
+    if automated is not None:
+        payload["automatedEmail"] = automated
+    return payload
 
 
 def serialize_group_member_stubs(

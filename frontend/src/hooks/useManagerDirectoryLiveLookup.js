@@ -9,8 +9,9 @@ import {
 import { fetchFormMatchCandidates, searchManagerDirectory } from '../utils/managerDirectoryApi';
 import { isRateLimitError } from '../utils/pilot2Api';
 
-const SEARCH_LIMIT = 25;
-const MATCH_LIMIT = 15;
+/** Keep in sync with backend MANAGER_SEARCH_RESULT_CAP / MANAGER_MATCH_RESULT_CAP. */
+const SEARCH_LIMIT = 100;
+const MATCH_LIMIT = 50;
 
 function personFormsMatchKey(personForms) {
   return JSON.stringify(

@@ -205,7 +205,7 @@ export function personMatchesQuery(person, query) {
   return emailMatchesSearch(email, q);
 }
 
-export function filterDirectorySearch(people, query, limit = 25) {
+export function filterDirectorySearch(people, query, limit = 100) {
   if (!isUsableSearchQuery(query)) return [];
 
   return people
@@ -244,7 +244,7 @@ export function mergeFormMatchRows(rowsByFormIndex) {
   };
 }
 
-export function findFormMatchCandidates(people, personForm, limit = 15, { isGll = false } = {}) {
+export function findFormMatchCandidates(people, personForm, limit = 50, { isGll = false } = {}) {
   const form = {
     email: personForm.email.trim().toLowerCase(),
     first: personForm.firstName.trim().toLowerCase(),
