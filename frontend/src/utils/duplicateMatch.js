@@ -143,3 +143,19 @@ export function matchClassification(left, right, options = {}) {
 
   return null;
 }
+
+/**
+ * True when `person` is a potential_duplicate of at least one other person in
+ * `others` (Request History "Not the same person" eligibility). Confirmed-only
+ * or non-matching peers do not count.
+ *
+ * @param {object} person
+ * @param {object[]} others - person objects (not member wrappers)
+ * @param {object} [options] - e.g. { isGll: boolean }
+ */
+export function hasPotentialDuplicatePeer(person, others, options = {}) {
+  if (!person || !Array.isArray(others) || others.length === 0) return false;
+  return others.some(
+    (other) => other && matchClassification(person, other, options) === 'potential_duplicate',
+  );
+}

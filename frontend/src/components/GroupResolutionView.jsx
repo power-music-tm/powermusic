@@ -32,6 +32,7 @@ import { markDirectoryPersonHighlight } from '../utils/adminUiHighlights';
 import {
   displayFirstName,
   isNicknameOnlyFirstMatch,
+  hasPotentialDuplicatePeer,
   matchClassification,
   normalizeFirstName,
   orderedNicknamePairKey,
@@ -1257,17 +1258,19 @@ export default function GroupResolutionView({
   const handleUnlink = async (memberId, actionType, finalValues) => {
     if (submitting) return;
     const active = members.filter((m) => !sessionUnlinkedIds.includes(m.id));
+    const target = active.find((m) => m.id === memberId)
+      || members.find((m) => m.id === memberId);
     const current = [...active].sort(
       (a, b) => new Date(b.receivedAt || 0) - new Date(a.receivedAt || 0),
     )[0] || null;
-    let peer = null;
-    if (current && memberId === current.id) {
-      peer = active.find(
-        (m) =>
-          m.id !== memberId
-          && matchClassification(current.person, m.person, { isGll }) !== 'confirmed_duplicate',
-      );
-    } else if (current && current.id !== memberId) {
+    // Prefer a pairwise potential peer (the edge that justified the tag), then
+    // current, then any other active member.
+    let peer = active.find(
+      (m) =>
+        m.id !== memberId
+        && matchClassification(target?.person, m.person, { isGll }) === 'potential_duplicate',
+    );
+    if (!peer && current && current.id !== memberId) {
       peer = current;
     }
     if (!peer) {
@@ -1705,15 +1708,19 @@ export default function GroupResolutionView({
                     const role = isLatest
                       ? { variant: 'new-person', label: 'Current request' }
                       : { variant: 'neutral', label: 'Older' };
-                    // Unlink only on older rows that are potential matches vs current.
-                    const vsCurrent = currentRequest && member.id !== currentRequest.id
-                      ? matchClassification(currentRequest.person, member.person, { isGll })
-                      : null;
+                    // Unlink when this row is a potential duplicate of any other
+                    // active history member (pairwise), not only vs current.
+                    // Confirmed-only edges do not unlock the button.
                     const showUnlink = (
                       !unlinked
-                      && !isLatest
                       && activeMembers.length > 1
-                      && vsCurrent === 'potential_duplicate'
+                      && hasPotentialDuplicatePeer(
+                        member.person,
+                        activeMembers
+                          .filter((m) => m.id !== member.id)
+                          .map((m) => m.person),
+                        { isGll },
+                      )
                     );
                     const {
                       managerName,
