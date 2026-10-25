@@ -444,6 +444,60 @@ class TestMultiDirectoryMatches:
         )
         assert {p.id for p, _ in collapsed} == {london.id, england.id}
 
+    def test_collapse_keeps_same_name_location_different_emails(self, db: Session):
+        """Name+location same_person must not hide two differently emailed Directory rows."""
+        from app.duplicate_group_service import (
+            _collapse_directory_matches_to_representatives,
+            _find_all_directory_matches,
+        )
+        from app.person_match import person_from_model
+
+        now = datetime.now(timezone.utc)
+        partner = _partner(db)
+        a = _dir_row(
+            partner_id=partner.id,
+            first="Harry",
+            last="Whitmore",
+            email="harry.a@example.com",
+            location="Witney",
+            handled_at=now - timedelta(days=10),
+        )
+        b = _dir_row(
+            partner_id=partner.id,
+            first="Harry",
+            last="Whitmore",
+            email="harry.b@example.com",
+            location="Witney",
+            handled_at=now - timedelta(days=5),
+        )
+        db.add_all([a, b])
+        db.flush()
+
+        collapsed = _collapse_directory_matches_to_representatives(
+            [(a, "potential_duplicate"), (b, "potential_duplicate")],
+            is_ht=False,
+            is_gll=False,
+        )
+        assert {p.id for p, _ in collapsed} == {a.id, b.id}
+
+        incoming = schemas.PersonInfo(
+            firstName="Harry",
+            lastName="Whitmore",
+            email="harry.new@example.com",
+            location="Witney",
+        )
+        live = _find_all_directory_matches(
+            db,
+            incoming,
+            [a, b],
+            req_id="req-harry-new",
+            is_ht=False,
+            is_gll=False,
+        )
+        assert {p.id for p, _ in live} == {a.id, b.id}
+        # person_from_model unused guard against import churn
+        assert person_from_model(a).email == "harry.a@example.com"
+
     def test_other_partner_directory_never_included(self, db: Session):
         now = datetime.now(timezone.utc)
         pg = _partner(db, "PureGym")

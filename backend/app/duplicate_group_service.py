@@ -215,6 +215,10 @@ def _directory_location_key(row: models.ManagerRequest) -> str:
     return (row.person_location or "").strip().lower()
 
 
+def _directory_email_key(row: models.ManagerRequest) -> str:
+    return (row.person_email or "").strip().lower()
+
+
 def _is_duplicate_directory_update_target(
     left: models.ManagerRequest,
     right: models.ManagerRequest,
@@ -224,13 +228,18 @@ def _is_duplicate_directory_update_target(
 ) -> bool:
     """True when two Directory rows are stacked copies of the same update target.
 
-    Collapses accidental Add User duplicates (same identity + same location).
-    Keeps separately selectable rows when location differs (e.g. London vs England
-    with the same email) so the admin radio step can choose which to update.
+    Collapses accidental Add User duplicates (same identity fields).
+    Keeps separately selectable rows when location differs OR email differs
+    (e.g. two Harry Whitmores at Witney with different emails) so the admin
+    radio step can choose which record to update.
     """
     if not same_person_for_partner(
         left, right, is_healthtech=is_ht, is_gll=is_gll
     ):
+        return False
+    email_l = _directory_email_key(left)
+    email_r = _directory_email_key(right)
+    if email_l and email_r and email_l != email_r:
         return False
     if is_gll:
         return True
