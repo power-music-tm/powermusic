@@ -473,6 +473,7 @@ export default function GroupResolutionView({
     setSelectedDirectoryId(null);
     setPeersMergeMemberIds(null);
     setNicknameModalPair(null);
+    setPendingConfirmAction(null);
   };
 
   const incomingMemberCount = () =>
@@ -599,33 +600,29 @@ export default function GroupResolutionView({
 
   const openConfirmOrNicknameCheck = (nextAction) => {
     // Nickname modal first — including before Request History when peers exist.
+    // Remember which button opened this so Yes/No cannot switch Keep Delete → Add New.
     const pair = nicknameCheckPair();
     if (pair) {
       setNicknameModalPair(pair);
+      setPendingConfirmAction(nextAction);
       setConfirmAction('nickname_check');
       return;
     }
     proceedKeepOrAddAsNew(nextAction);
   };
 
-  const continueAfterNicknameYes = () => {
+  /** Nickname Yes/No only learns the pair; the originating button always proceeds. */
+  const continueAfterNicknameAnswer = (decision) => {
     const pair = nicknameModalPair || nicknameCheckPair();
     setNicknameModalPair(null);
-    // Record once — skip this nickname modal next time.
-    rememberNicknameAnswer(pair, 'same');
-    // Existing next step: Keep Existing confirm (not a new modal).
-    proceedKeepOrAddAsNew('keep');
+    rememberNicknameAnswer(pair, decision);
+    setModalValues((prev) => prev || { ...form });
+    const intended = pendingConfirmAction === 'add_as_new' ? 'add_as_new' : 'keep';
+    proceedKeepOrAddAsNew(intended);
   };
 
-  const continueAfterNicknameNo = () => {
-    const pair = nicknameModalPair || nicknameCheckPair();
-    setNicknameModalPair(null);
-    // Record once — skip this nickname modal next time (and stop nickname match).
-    rememberNicknameAnswer(pair, 'different');
-    setModalValues((prev) => prev || { ...form });
-    // Existing next step: Add New confirm (not a new modal).
-    proceedKeepOrAddAsNew('add_as_new');
-  };
+  const continueAfterNicknameYes = () => continueAfterNicknameAnswer('same');
+  const continueAfterNicknameNo = () => continueAfterNicknameAnswer('different');
 
   const startMergeEdit = () => {
     if (submitting) return;
@@ -2510,9 +2507,13 @@ export default function GroupResolutionView({
                 )}
               </p>
               <p className="mt-3 text-xs text-[var(--color-text-muted)]">
-                {isNickname
-                  ? 'Keeping them linked leaves the Directory unchanged. Separating them adds a new Directory person and stops these first names matching as nicknames.'
-                  : 'Keeping them linked leaves the Directory unchanged. Separating them adds a new Directory person.'}
+                {pendingConfirmAction === 'add_as_new'
+                  ? (isNickname
+                    ? 'Your Yes or No only updates nickname matching. Either way, the Directory stays unchanged and this request is added as a new Directory person.'
+                    : 'Your Yes or No only records whether these first names are the same person for matching. Either way, the Directory stays unchanged and this request is added as a new Directory person.')
+                  : (isNickname
+                    ? 'Your Yes or No only updates nickname matching. Either way, the Directory stays unchanged and the new request is deleted.'
+                    : 'Your Yes or No only records whether these first names are the same person for matching. Either way, the Directory stays unchanged and the new request is deleted.')}
               </p>
             </>
           );
