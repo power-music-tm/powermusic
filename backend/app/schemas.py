@@ -678,8 +678,8 @@ class DuplicateGroupDetailOut(BaseModel):
     # directoryPerson / directoryPersonId remain the primary (stable) match for
     # resolution endpoints; directoryPersons is the full multi-match set for display.
     directoryPersons: List[Any] = []
-    # Open requests that also match this group but stay outside because of a
-    # prior Not-the-Same-Person dismissal (for the admin warning + hyperlinks).
+    # Always empty: Not-the-Same-Person peers are not suggested for re-attach.
+    # Field kept for API compatibility with older clients.
     separatedLookalikeRequests: List[Any] = []
     representativeRequestId: Optional[str] = None
     members: List[DuplicateGroupMemberOut] = []
@@ -722,11 +722,7 @@ class UnlinkDuplicateIn(BaseModel):
 
 
 class ReattachLookalikeIn(BaseModel):
-    """Payload for POST /api/duplicate-groups/{id}/reattach-lookalike.
-
-    Moves this group's sole open request onto targetRequestId (a separated
-    lookalike). Requires peer history to already be merged down to one request.
-    """
+    """Payload for the disabled reattach-lookalike endpoint (always rejected)."""
 
     targetRequestId: str
 

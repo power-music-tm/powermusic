@@ -185,20 +185,20 @@ export default function Modal({
         }`}
       >
         <div
-          className={`flex shrink-0 items-center justify-between gap-3 border-b px-4 py-3 sm:gap-4 sm:px-5 sm:py-4 ${
+          className={`flex shrink-0 items-start justify-between gap-3 border-b px-4 py-3 sm:gap-4 sm:px-5 sm:py-4 ${
             brandChrome
               ? 'border-[var(--color-brand-primary)] bg-[var(--color-brand-primary)]'
               : 'border-[var(--color-border-default)] bg-[var(--color-surface-panel)]/60'
           }`}
         >
           <h3
-            className={`min-w-0 truncate text-sm font-semibold tracking-tight sm:text-base ${
+            className={`min-w-0 flex-1 whitespace-normal break-words text-sm font-semibold leading-snug tracking-tight sm:text-base ${
               brandChrome ? 'text-white' : 'text-[var(--color-text-primary)]'
             }`}
           >
             {title}
           </h3>
-          <div className="flex shrink-0 items-center gap-2 sm:gap-2.5">
+          <div className="flex shrink-0 items-center gap-2 pt-0.5 sm:gap-2.5">
             {headerExtra}
             <HoverTip label={closeDisabled ? 'Please wait' : 'Close'} placement="right">
               <button

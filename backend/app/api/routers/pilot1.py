@@ -1879,10 +1879,7 @@ def get_duplicate_group_details(
 
     classification_summary = compute_group_classification_summary(db, group, members=members)
 
-    from app.duplicate_group_service import (
-        find_all_directory_matches_for_requests,
-        find_separated_lookalike_requests,
-    )
+    from app.duplicate_group_service import find_all_directory_matches_for_requests
     from app.duplicate_matching import get_all_dismissed_pairs
 
     dismissed_pairs = get_all_dismissed_pairs(db)
@@ -1942,30 +1939,6 @@ def get_duplicate_group_details(
     elif directory_persons:
         directory_person = directory_persons[0]
 
-    from app.request_display import parse_request_display_number
-
-    lookalike_rows = find_separated_lookalike_requests(
-        db, group, members, dismissed_set=dismissed_pairs
-    )
-    if lookalike_rows:
-        hydrate_request_display(lookalike_rows)
-    separated_lookalikes = [
-        {
-            "id": row.id,
-            "displayId": getattr(row, "display_id", None) or parse_request_display_number(row.id),
-            "duplicateGroupId": row.duplicate_group_id,
-            "person": {
-                "firstName": row.person_first_name or "",
-                "lastName": row.person_last_name or "",
-                "email": row.person_email or "",
-                "location": row.person_location or "",
-            },
-            "action": row.action,
-            "receivedAt": row.received_at,
-        }
-        for row in lookalike_rows
-    ]
-
     return {
         "id": group.id,
         "partnerId": group.partner_id,
@@ -1978,7 +1951,8 @@ def get_duplicate_group_details(
         ),
         "directoryPerson": directory_person,
         "directoryPersons": directory_persons,
-        "separatedLookalikeRequests": separated_lookalikes,
+        # Not-the-Same-Person peers must not be suggested for re-attach.
+        "separatedLookalikeRequests": [],
         "representativeRequestId": group.representative_request_id or (
             members[-1].id if members else None
         ),
@@ -2087,11 +2061,7 @@ def reattach_lookalike_api(
     db: Session = Depends(get_db),
     admin=Depends(require_admin),
 ):
-    """Move this group's sole open request onto a separated lookalike.
-
-    Requires Request History to already be merged to one request. Clears the
-    Not-the-Same-Person dismissal only for the chosen pair.
-    """
+    """Disabled: Not-the-Same-Person dismissals cannot be undone via attach."""
     from app.duplicate_group_service import reattach_to_lookalike
 
     admin_id = str(admin.id) if getattr(admin, "id", None) else None
@@ -2105,8 +2075,8 @@ def reattach_lookalike_api(
         raise HTTPException(
             status_code=400,
             detail=(
-                "Cannot attach to that request. Merge Request History to one "
-                "request first, then choose a similar request marked Not the same person."
+                "Cannot attach to that request. Not the same person decisions "
+                "keep those requests separate."
             ),
         )
 
@@ -2131,7 +2101,7 @@ def merge_group_peers_api(
     """Collapse Request History to one request; keep the group active.
 
     Does not resolve Directory. After this, admin continues with Keep Existing /
-    Add / Update / Attach on the same group screen.
+    Add / Update on the same group screen.
     """
     from app.duplicate_group_service import merge_group_peers
 
