@@ -120,6 +120,55 @@ class TestAutomatedPersonIntake:
         assert person.email == "wellnesswithjess@gmail.com"
         assert person.location == "Witney"
 
+    def test_parses_remove_without_leave_date(self):
+        body = """\
+Name: Jess Randle
+Email: wellnesswithjess@gmail.com
+Club: Witney
+"""
+        parsed = parse_puregym_roster_email(
+            "PureGym Leaver",
+            body,
+            sender_email=PUREGYM_LEAVER_SENDER,
+            sources=DEFAULT_SOURCES,
+        )
+        assert parsed is not None
+        person, action = parsed
+        assert action == "Remove"
+        assert person.location == "Witney"
+
+    def test_rejects_add_without_club(self):
+        body = """\
+Name: Nik Hall
+Email: nik1285@hotmail.co.uk
+"""
+        assert (
+            parse_puregym_roster_email(
+                "PureGym Joinee",
+                body,
+                sender_email="notifications@puregym.com",
+                sources=DEFAULT_SOURCES,
+            )
+            is None
+        )
+
+    def test_rejects_remove_with_blank_club(self):
+        body = """\
+Name: Jess Randle
+Email: wellnesswithjess@gmail.com
+Club:
+Leave date: 2024-08-14
+"""
+        assert (
+            parse_puregym_roster_email(
+                "PureGym Leaver",
+                body,
+                sender_email=PUREGYM_LEAVER_SENDER,
+                sources=DEFAULT_SOURCES,
+            )
+            is None
+        )
+
     # ── Rejection / allowlist ──────────────────────────────────────────────
 
     def test_ignores_unrelated_puregym_mail(self):

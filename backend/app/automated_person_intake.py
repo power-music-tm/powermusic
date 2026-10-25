@@ -8,10 +8,10 @@ Supported subject patterns (case-insensitive):
   Remove / Leaver: "PureGym Leaver", "Remove user"
 
 Body format (labelled lines):
-  Name: <First Last>
-  Email: <email>
-  Club: <club name>
-  Leave date: <YYYY-MM-DD>   (Leaver emails only)
+  Name: <First Last>          (required)
+  Email: <email>              (required)
+  Club: <club name>           (required → person location; no Club → no request)
+  Leave date: <YYYY-MM-DD>    (optional; Leaver/Remove notes only)
 """
 
 from __future__ import annotations
@@ -34,10 +34,12 @@ PUREGYM_LEAVER_SENDER = "em@myptzone.co"
 ADD_SUBJECT = "new puregym user"
 REMOVE_SUBJECT = "puregym leaver"
 
-_NAME_RE = re.compile(r"^Name:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
-_EMAIL_RE = re.compile(r"^Email:\s*(\S+)", re.MULTILINE | re.IGNORECASE)
-_CLUB_RE = re.compile(r"^Club:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
-_LEAVE_DATE_RE = re.compile(r"^Leave date:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
+# Values must stay on the same line — `\s*` must not pull the next labelled line
+# into Club/Name (e.g. blank `Club:` + `Leave date:`).
+_NAME_RE = re.compile(r"^Name:[ \t]*([^\r\n]+?)[ \t]*$", re.MULTILINE | re.IGNORECASE)
+_EMAIL_RE = re.compile(r"^Email:[ \t]*(\S+)", re.MULTILINE | re.IGNORECASE)
+_CLUB_RE = re.compile(r"^Club:[ \t]*([^\r\n]+?)[ \t]*$", re.MULTILINE | re.IGNORECASE)
+_LEAVE_DATE_RE = re.compile(r"^Leave date:[ \t]*([^\r\n]+?)[ \t]*$", re.MULTILINE | re.IGNORECASE)
 
 
 def _normalize_body(body: str) -> str:
@@ -120,19 +122,25 @@ def parse_labelled_roster_body(
     *,
     action: Literal["Add", "Remove"],
 ) -> Optional[schemas.PersonInfo]:
+    """Extract person fields from labelled roster body.
+
+    Name, Email, and Club (location) are all required. Missing/blank Club means
+    the email is not a valid roster request — do not create a manager_request.
+    Leave date is parsed separately and is optional.
+    """
     del action
     text = _normalize_body(body)
     name_match = _NAME_RE.search(text)
     email_match = _EMAIL_RE.search(text)
     club_match = _CLUB_RE.search(text)
-    if not name_match or not email_match:
+    if not name_match or not email_match or not club_match:
         return None
 
     first, last = _split_full_name(_clean_field(name_match.group(1)))
     person_email = _clean_field(email_match.group(1))
-    club = _clean_field(club_match.group(1)) if club_match else ""
+    club = _clean_field(club_match.group(1))
 
-    if not person_email:
+    if not person_email or not club:
         return None
 
     try:
@@ -140,7 +148,7 @@ def parse_labelled_roster_body(
             firstName=first or None,
             lastName=last or None,
             email=person_email,
-            location=club or None,
+            location=club,
         )
     except Exception:
         logger.warning("Labelled roster body failed PersonInfo validation", exc_info=True)
