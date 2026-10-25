@@ -31,7 +31,7 @@ import { formatRequestDisplayId } from '../utils/requestDisplayId';
 import { formatTimestampSplit, isTodayInTimeZone, isYesterdayInTimeZone } from '../utils/dateTime';
 import { formatManagerNotes, readManagerNotes } from '../utils/managerNotes';
 import { formatPersonFields, formatPersonName, formatPersonEmail, formatPersonLocation } from '../utils/personDisplay';
-import { TAG_AUTO_MAIL, TAG_PARTNER_REQUEST, requestTagVariant, sentViaTableRequestTags, requestTagLabel, isAwaitingManagerSubmission, requestStatusTag, requestStatusTags, matchesSentViaFilter, SENT_VIA_BOTH, groupDirectoryStatusPills, groupDuplicateStatusIndicator, requestDirectoryStatusTags, requestDuplicateStatusIndicator } from '../utils/requestTags';
+import { TAG_AUTO_MAIL, TAG_PARTNER_REQUEST, requestTagVariant, sentViaTableRequestTags, requestTagLabel, isAwaitingManagerSubmission, requestStatusTag, requestStatusTags, matchesSentViaFilter, groupDirectoryStatusPills, groupDuplicateStatusIndicator, requestDirectoryStatusTags, requestDuplicateStatusIndicator } from '../utils/requestTags';
 import { hasAnyDataDiffs } from '../utils/requestComparison';
 import { MAX_MANAGER_PERSON_ROWS } from '../utils/managerFormDraft';
 import { writeDirectoryCache } from '../utils/managerDirectoryCache';
@@ -686,7 +686,6 @@ export default function Requests() {
     if (
       sentViaDeepLink !== TAG_PARTNER_REQUEST
       && sentViaDeepLink !== TAG_AUTO_MAIL
-      && sentViaDeepLink !== SENT_VIA_BOTH
     ) return;
     setFilterSentVia(sentViaDeepLink);
     setFilterOpen(true);
@@ -1763,7 +1762,6 @@ export default function Requests() {
               { value: 'All', label: 'All' },
               { value: TAG_PARTNER_REQUEST, label: `${terms.managerTerm} Form` },
               { value: TAG_AUTO_MAIL, label: 'Automated email' },
-              { value: SENT_VIA_BOTH, label: `${terms.managerTerm} +Auto Mail` },
             ]
           },
           {
