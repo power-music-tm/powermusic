@@ -27,4 +27,19 @@ describe('Already Removed: Keep Existing actions', () => {
       /showKeepExistingAddOrArchive && incomingMemberCount\(\) === 1 && currentRep\?\.action === 'Remove'/,
     );
   });
+
+  it('labels Remove without active Directory as Remove User', async () => {
+    const src = await readFile(
+      path.join(root, 'src/components/GroupResolutionView.jsx'),
+      'utf8',
+    );
+    assert.match(
+      src,
+      /return isRemove \? 'Remove User' : 'Add to Directory'/,
+    );
+    assert.doesNotMatch(
+      src,
+      /return isRemove \? 'Remove from Directory' : 'Add to Directory'/,
+    );
+  });
 });

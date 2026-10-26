@@ -223,7 +223,9 @@ function resolvePrimaryLabel({ hasDirectory, action, submitting = false }) {
   if (hasDirectory) {
     return isRemove ? 'Remove and Update Directory' : 'Add and Update Directory';
   }
-  return isRemove ? 'Remove from Directory' : 'Add to Directory';
+  // No active Directory target (including Already Removed / archived-only): this
+  // path is mark-removed, not "archive / remove the existing Directory row".
+  return isRemove ? 'Remove User' : 'Add to Directory';
 }
 
 function isDirectoryPersonArchived(person) {
@@ -2400,7 +2402,9 @@ export default function GroupResolutionView({
             : hasDirectory
             ? (dirScenario?.body || 'The selected Directory record will be updated with the final resolved values below, and the requests in this group will be closed.')
             : currentRep?.action === 'Remove'
-            ? 'The final resolved values will be used, and the person will be marked as removed in the Directory. The requests in this group will be closed.'
+            ? (directoryIsArchived
+              ? 'The request will be completed as Remove User. The existing archived Directory record stays unchanged, and the requests in this group will be closed.'
+              : 'The final resolved values will be used, and the person will be marked as removed in the Directory. The requests in this group will be closed.')
             : 'A new Directory record will be created from the final resolved values, and the requests in this group will be closed.'}
         </p>
         {hasDirectory && selectedDirPerson && confirmAction === 'merge' ? (
