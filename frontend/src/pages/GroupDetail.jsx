@@ -378,30 +378,40 @@ export default function GroupDetail() {
       }
 
       if (type === 'reattached') {
-        // Source group is dismissed server-side (won't appear in the list query).
-        // Never tombstone survivor request IDs — that hid the whole destination row.
+        // Never tombstone destination request IDs — that hid the whole destination row.
+        // When peers remain, only the moved current request leaves the source group.
         const payload = name && typeof name === 'object' ? name : null;
         const newGroupId = payload?.newGroupId || null;
-        const movedIds = [
-          payload?.sourceRequestId,
-          payload?.targetRequestId,
-          ...(groupMemberIds || []),
-        ].filter(Boolean);
-        removeRequestsFromCache(requestsCacheKey, {
-          groupIds: [groupId],
-          requestIds: movedIds,
-        });
-        clearCache(groupCacheKey);
+        const movedSourceId = payload?.sourceRequestId || null;
+        const previousDismissed = Boolean(payload?.previousGroupDismissed);
+        const movedIds = [movedSourceId, payload?.targetRequestId].filter(Boolean);
+        if (previousDismissed) {
+          removeRequestsFromCache(requestsCacheKey, {
+            groupIds: [groupId],
+            requestIds: movedIds,
+          });
+          clearCache(groupCacheKey);
+          suppressNewRequests({ groupIds: [groupId], requestIds: movedIds });
+        } else if (movedSourceId) {
+          const remainingMembers = (groupMemberIds || [])
+            .filter((id) => id && id !== movedSourceId)
+            .map((id) => (group?.members || []).find((m) => m.id === id))
+            .filter(Boolean);
+          detachRequestFromGroupInCache(requestsCacheKey, {
+            requestId: movedSourceId,
+            groupId,
+            remainingMembers,
+          });
+          clearCache(groupCacheKey);
+        }
         clearNewRequestsSuppressions({
           requestIds: movedIds,
           groupIds: [groupId, newGroupId].filter(Boolean),
           includeHard: false,
         });
-        // Brief shell hide only — destination is upserted below / on navigate.
-        suppressNewRequests({ groupIds: [groupId], requestIds: movedIds });
         if (payload?.detail) {
           patchRequestsCacheAfterReattach(requestsCacheKey, {
-            previousGroupId: groupId,
+            previousGroupId: previousDismissed ? groupId : null,
             newGroupId,
             detail: payload.detail,
             sourceRequestId: payload.sourceRequestId,
@@ -498,9 +508,13 @@ export default function GroupDetail() {
         case 'unlinked_dissolved':
           toastMsg = 'Group dissolved successfully.';
           break;
-        case 'reattached':
-          toastMsg = 'Transferred to the similar request. Find it on New Requests.';
+        case 'reattached': {
+          const payload = name && typeof name === 'object' ? name : null;
+          toastMsg = payload?.previousGroupDismissed === false
+            ? 'Transferred to the similar request. Other requests stay in the previous group.'
+            : 'Transferred to the similar request. Find it on New Requests.';
           break;
+        }
         default:
           toastMsg = 'Group resolved successfully.';
           break;

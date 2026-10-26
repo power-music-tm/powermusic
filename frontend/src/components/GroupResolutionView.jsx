@@ -1040,7 +1040,6 @@ export default function GroupResolutionView({
 
   const openAttachLookalikeModal = () => {
     if (submitting) return;
-    if (incomingMemberCount() !== 1) return;
     const lookalikes = Array.isArray(group.separatedLookalikeRequests)
       ? group.separatedLookalikeRequests
       : [];
@@ -1062,6 +1061,7 @@ export default function GroupResolutionView({
     try {
       const result = await reattachGroupLookalike(group.id, {
         targetRequestId: targetId,
+        sourceRequestId: currentSourceRequestId,
       });
       const newGroupId = result?.newGroupId || null;
       let detail = null;
@@ -1078,9 +1078,10 @@ export default function GroupResolutionView({
       // row and navigate without tombstoning survivor request IDs.
       onResolved('reattached', {
         newGroupId,
-        sourceRequestId: result?.sourceRequestId || null,
+        sourceRequestId: result?.sourceRequestId || currentSourceRequestId || null,
         targetRequestId: result?.targetRequestId || targetId,
         previousGroupId: result?.previousGroupId || group.id,
+        previousGroupDismissed: Boolean(result?.previousGroupDismissed),
         detail,
       });
     } catch (err) {
@@ -1766,25 +1767,14 @@ export default function GroupResolutionView({
               . You previously chose <span className="font-semibold">Not the same person</span> for
               these. This request was transferred to the latest match only; those requests stay separate.
             </p>
-            {(() => {
-              const needsMerge = incomingMemberCount() > 1;
-              const attachBtn = (
-                <button
-                  type="button"
-                  disabled={submitting || needsMerge}
-                  onClick={openAttachLookalikeModal}
-                  className="inline-flex items-center rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-950 shadow-[0_1px_0_rgba(26,26,46,0.04)] transition-colors hover:border-amber-400 hover:bg-amber-100/60 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Transfer to a similar request
-                </button>
-              );
-              if (!needsMerge) return attachBtn;
-              return (
-                <HoverTip label="Merge Request History to one request first">
-                  <span className="inline-flex">{attachBtn}</span>
-                </HoverTip>
-              );
-            })()}
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={openAttachLookalikeModal}
+              className="inline-flex items-center rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-950 shadow-[0_1px_0_rgba(26,26,46,0.04)] transition-colors hover:border-amber-400 hover:bg-amber-100/60 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Transfer to a similar request
+            </button>
           </div>
         </div>
       ) : null}
@@ -2958,8 +2948,8 @@ export default function GroupResolutionView({
       >
         <p className="text-sm text-[var(--color-text-secondary)]">
           Choose which request to transfer this to. Only one can be selected.
-          The current request will leave this group and join that request. Other similar
-          requests stay separate.
+          The current request will leave this group and join that request.
+          Other requests in this group stay here. Other similar requests stay separate.
         </p>
         <fieldset className="mt-4 space-y-2">
           <legend className="sr-only">Similar requests</legend>

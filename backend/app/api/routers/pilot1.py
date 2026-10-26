@@ -2097,10 +2097,10 @@ def reattach_lookalike_api(
     db: Session = Depends(get_db),
     admin=Depends(require_admin),
 ):
-    """Move this group's sole open request onto a separated lookalike.
+    """Move the current open request onto a separated lookalike.
 
-    Requires Request History to already be merged to one request. Clears the
-    Not-the-Same-Person dismissal only for the chosen pair.
+    Peers may stay in the source group. Clears the Not-the-Same-Person dismissal
+    only for the chosen pair.
     """
     from app.duplicate_group_service import reattach_to_lookalike
 
@@ -2110,13 +2110,14 @@ def reattach_lookalike_api(
         group_id,
         payload.targetRequestId,
         admin_id=admin_id,
+        source_request_id=payload.sourceRequestId,
     )
     if not result:
         raise HTTPException(
             status_code=400,
             detail=(
-                "Cannot attach to that request. Merge Request History to one "
-                "request first, then choose a similar request marked Not the same person."
+                "Cannot transfer to that request. Choose a similar request "
+                "marked Not the same person."
             ),
         )
 
@@ -2128,6 +2129,7 @@ def reattach_lookalike_api(
         "targetRequestId": result["targetRequestId"],
         "newGroupId": result["newGroupId"],
         "previousGroupId": result["previousGroupId"],
+        "previousGroupDismissed": bool(result.get("previousGroupDismissed")),
     }
 
 

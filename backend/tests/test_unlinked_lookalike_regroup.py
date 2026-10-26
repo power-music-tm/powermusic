@@ -241,7 +241,8 @@ class TestUnlinkedLookalikeRegroup:
             assert c.id not in member_ids
             assert d.id not in member_ids
 
-    def test_reattach_requires_single_member_then_moves_to_chosen_lookalike(self, db: Session):
+    def test_reattach_moves_current_request_and_leaves_peers(self, db: Session):
+        """Transfer moves only the current request; peers stay without Merge."""
         now = datetime.now(timezone.utc)
         partner = _partner(db)
 
@@ -276,35 +277,25 @@ class TestUnlinkedLookalikeRegroup:
         db.flush()
         assert new_group is not None
 
-        # Still two members → reattach must be refused until Merge.
-        assert reattach_to_lookalike(db, new_group.id, india.id) is None
-
-        # Simulate peers_merge: keep latest (incoming), drop Denver from the group.
-        denver.duplicate_group_id = None
-        db.flush()
-        db.refresh(new_group)
-
-        assert are_requests_dismissed(db, incoming.id, india.id) or are_requests_dismissed(
-            db, denver.id, india.id
-        )
-
+        # Two members (denver + incoming) — Transfer still moves the current one.
         result = reattach_to_lookalike(db, new_group.id, india.id)
         db.flush()
         assert result is not None
         assert result["targetRequestId"] == india.id
         assert result["sourceRequestId"] == incoming.id
+        assert result["previousGroupDismissed"] is False
 
         db.refresh(incoming)
         db.refresh(india)
+        db.refresh(denver)
         db.refresh(pakistan)
         db.refresh(new_group)
 
         assert incoming.duplicate_group_id == india.duplicate_group_id == result["newGroupId"]
-        assert pakistan.duplicate_group_id != result["newGroupId"]
-        assert new_group.status == "dismissed"
+        assert denver.duplicate_group_id == new_group.id
+        assert new_group.status == "active"
         assert not are_requests_dismissed(db, incoming.id, india.id)
-        # Other lookalikes stay dismissed vs the original Denver peer barrier /
-        # remain outside the new group.
+        # Other lookalikes stay outside the destination group.
         assert pakistan.duplicate_group_id is None or pakistan.duplicate_group_id != result["newGroupId"]
         assert austin.duplicate_group_id != result["newGroupId"] or austin.duplicate_group_id is None
         assert england.duplicate_group_id != result["newGroupId"] or england.duplicate_group_id is None

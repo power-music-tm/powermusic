@@ -1001,23 +1001,26 @@ def reattach_to_lookalike(
     target_request_id: str,
     *,
     admin_id: Optional[str] = None,
+    source_request_id: Optional[str] = None,
 ) -> Optional[dict]:
-    """Move this group's sole open request onto a separated lookalike request.
+    """Move the current open request onto a separated lookalike request.
 
     Preconditions:
-      * Source group is active and has exactly one status=new member (admin must
-        Merge peer history first when multiple requests share the group).
+      * Source group is active with at least one status=new member.
       * target_request_id is an open lookalike that was separated via Not the
         same person (returned by find_separated_lookalike_requests).
 
     Effects:
-      * Clears pairwise dismissal only between the source member and the target.
+      * Moves only the chosen/current request (newest by default) — peers stay
+        in the source group. No Request History Merge required.
+      * Clears pairwise dismissal only between the moved member and the target.
       * Leaves dismissals vs other lookalikes intact.
       * Joins the target's existing group, or creates a new two-member group.
-      * Dismisses the emptied source group.
+      * Dismisses the source group only when it has no open members left.
 
-    Returns ``{sourceRequestId, targetRequestId, newGroupId, previousGroupId}``
-    or None when the operation is not allowed.
+    Returns
+    ``{sourceRequestId, targetRequestId, newGroupId, previousGroupId,
+    previousGroupDismissed}`` or None when the operation is not allowed.
     """
     del admin_id  # reserved for audit; dismissals cleared without admin stamp
 
@@ -1037,11 +1040,19 @@ def reattach_to_lookalike(
         )
         .all()
     )
-    if len(members) != 1:
+    if not members:
         return None
 
-    source = members[0]
-    if not source.id or source.id == target_request_id:
+    source = None
+    if source_request_id:
+        source = next((m for m in members if m.id == source_request_id), None)
+    if source is None:
+        source = _current_request_member(
+            members,
+            source_request_id=source_request_id,
+            representative_request_id=group.representative_request_id,
+        )
+    if not source or not source.id or source.id == target_request_id:
         return None
 
     target = (
@@ -1109,10 +1120,17 @@ def reattach_to_lookalike(
     source.duplicate_group_id = destination.id
     db.flush()
 
-    # Empty source group — mark dismissed so it leaves New Requests.
-    group.status = "dismissed"
-    group.resolved_at = now
-    group.representative_request_id = None
+    remaining = [m for m in members if m.id != source.id]
+    previous_group_dismissed = False
+    if remaining:
+        # Peers stay on the original group — Transfer is for a mis-matched current
+        # request, not a full history collapse.
+        _sync_group_representative_and_tags(db, group, member_requests=remaining)
+    else:
+        group.status = "dismissed"
+        group.resolved_at = now
+        group.representative_request_id = None
+        previous_group_dismissed = True
 
     dest_members = (
         db.query(models.ManagerRequest)
@@ -1129,6 +1147,7 @@ def reattach_to_lookalike(
         "targetRequestId": target.id,
         "newGroupId": destination.id,
         "previousGroupId": group_id,
+        "previousGroupDismissed": previous_group_dismissed,
     }
 
 
