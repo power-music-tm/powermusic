@@ -24,6 +24,7 @@ from app.manager_request_tags import (
     normalize_tags,
 )
 from app.intake_persons import (
+    apply_manual_manager_attribution,
     apply_person_to_row,
     set_admin_submitted_by,
     set_auto_mail_meta,
@@ -554,14 +555,7 @@ def create_handled_manual_request(
                 existing.handled_by_admin_id = admin_id
             if manager_notes:
                 existing.manager_notes = manager_notes
-            if submitted_by is not None:
-                set_submitted_by_attribution(
-                    existing,
-                    first_name=submitted_by.firstName or "",
-                    last_name=submitted_by.lastName or "",
-                    email=submitted_by.email or "",
-                    club=submitted_by.club or "",
-                )
+            apply_manual_manager_attribution(existing, submitted_by)
             apply_person_to_row(existing, person, source="partner")
             sync_display_person(existing)
             return existing
@@ -584,12 +578,5 @@ def create_handled_manual_request(
         row.archived_at = None
     if admin_id and admin_id != "dev-bypass":
         row.handled_by_admin_id = admin_id
-    if submitted_by is not None:
-        set_submitted_by_attribution(
-            row,
-            first_name=submitted_by.firstName or "",
-            last_name=submitted_by.lastName or "",
-            email=submitted_by.email or "",
-            club=submitted_by.club or "",
-        )
+    apply_manual_manager_attribution(row, submitted_by)
     return row

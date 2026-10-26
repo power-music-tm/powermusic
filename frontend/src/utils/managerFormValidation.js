@@ -11,12 +11,23 @@ export const PERSON_FIELD_LIMITS = {
   location: 200,
   role: 200,
   notes: 5000,
+  directorFirst: 100,
+  directorLast: 100,
 };
 
 export const MIN_ROSTER_NAME_LENGTH = 2;
 export const MIN_ROSTER_LOCATION_LENGTH = 2;
 
-const PERSON_FIELDS = ['firstName', 'lastName', 'email', 'location', 'role', 'notes'];
+const PERSON_FIELDS = [
+  'firstName',
+  'lastName',
+  'email',
+  'location',
+  'role',
+  'notes',
+  'directorFirst',
+  'directorLast',
+];
 
 /** Cap length and strip control chars; do not strip punctuation or symbols. */
 export function sanitizePersonFieldInput(field, value) {
@@ -24,8 +35,8 @@ export function sanitizePersonFieldInput(field, value) {
   if (field === 'email') {
     return raw.slice(0, PERSON_FIELD_LIMITS.email);
   }
-  if (field === 'firstName' || field === 'lastName') {
-    return raw.slice(0, PERSON_FIELD_LIMITS[field]);
+  if (field === 'firstName' || field === 'lastName' || field === 'directorFirst' || field === 'directorLast') {
+    return raw.slice(0, PERSON_FIELD_LIMITS[field] ?? 100);
   }
   if (field === 'location') {
     return raw.slice(0, PERSON_FIELD_LIMITS.location);
@@ -129,7 +140,30 @@ export function validatePersonNotes(raw) {
  * The options argument is accepted for backwards compatibility but no
  * longer changes which fields are required.
  */
-export function validatePersonFormFields(person, { locationLabel = 'User Location', requiresLocation = true } = {}) {
+export function validateOptionalDirectorName(raw, fieldName) {
+  const cleaned = rosterTextFieldValue(raw);
+  if (!cleaned) {
+    return { ok: true, value: '' };
+  }
+  if (cleaned.length < MIN_ROSTER_NAME_LENGTH) {
+    return { ok: false, error: `${fieldName} must be at least ${MIN_ROSTER_NAME_LENGTH} characters.` };
+  }
+  if (cleaned.length > PERSON_FIELD_LIMITS.directorFirst) {
+    return { ok: false, error: `${fieldName} must be at most 100 characters.` };
+  }
+  const htmlError = rejectHtml(cleaned, fieldName);
+  if (htmlError) return { ok: false, error: htmlError };
+  return { ok: true, value: cleaned };
+}
+
+export function validatePersonFormFields(person, {
+  locationLabel = 'User Location',
+  requiresLocation = true,
+  includeDirector = false,
+  directorFirstLabel = 'Director First Name',
+  directorLastLabel = 'Director Last Name',
+  requiresDirector = false,
+} = {}) {
   const errors = {};
   const values = {};
 
@@ -168,6 +202,34 @@ export function validatePersonFormFields(person, { locationLabel = 'User Locatio
   const notes = validatePersonNotes(person.notes);
   if (!notes.ok) errors.notes = notes.error;
   else values.notes = notes.value;
+
+  if (includeDirector) {
+    if (requiresDirector) {
+      const directorFirst = validateRosterPersonName(
+        person.directorFirst,
+        directorFirstLabel,
+        'directorFirst',
+      );
+      if (!directorFirst.ok) errors.directorFirst = directorFirst.error;
+      else values.directorFirst = directorFirst.value;
+
+      const directorLast = validateRosterPersonName(
+        person.directorLast,
+        directorLastLabel,
+        'directorLast',
+      );
+      if (!directorLast.ok) errors.directorLast = directorLast.error;
+      else values.directorLast = directorLast.value;
+    } else {
+      const directorFirst = validateOptionalDirectorName(person.directorFirst, directorFirstLabel);
+      if (!directorFirst.ok) errors.directorFirst = directorFirst.error;
+      else values.directorFirst = directorFirst.value;
+
+      const directorLast = validateOptionalDirectorName(person.directorLast, directorLastLabel);
+      if (!directorLast.ok) errors.directorLast = directorLast.error;
+      else values.directorLast = directorLast.value;
+    }
+  }
 
   return {
     ok: Object.keys(errors).length === 0,
@@ -216,6 +278,8 @@ export function validatePersonForms(forms, options = {}) {
       location: result.values.location ?? forms[index].location,
       role: result.values.role ?? forms[index].role ?? '',
       notes: result.values.notes ?? forms[index].notes ?? '',
+      directorFirst: result.values.directorFirst ?? forms[index].directorFirst ?? '',
+      directorLast: result.values.directorLast ?? forms[index].directorLast ?? '',
     })),
   };
 }

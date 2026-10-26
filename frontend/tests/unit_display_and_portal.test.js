@@ -122,7 +122,17 @@ test('manual entry / admin attribution helpers', () => {
     { partnerSlug: 'gll' },
   );
   assert.equal(fields.name, 'Lee');
-  assert.equal(fields.club, ''); // GLL hides club
+  assert.equal(fields.club, 'London');
+  const blankManual = getDirectoryManagerColumnContent({
+    managerName: '',
+    managerEmail: '',
+    club: 'Manual entry',
+    addedBy: 'Power Music Admin',
+    tags: [TAG_PARTNER_REQUEST, TAG_VERIFIED],
+  });
+  assert.equal(blankManual.primary, 'Power Music Admin');
+  assert.equal(blankManual.secondary, '');
+  assert.equal(blankManual.tertiary, '');
 });
 
 test('portal role guards (role-only path, no allowlist)', () => {

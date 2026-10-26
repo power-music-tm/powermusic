@@ -40,11 +40,11 @@ export function formatAttributedManagerFields(submittedBy, options = {}) {
   const terms = getPartnerTerminology(pName, pSlug);
   const name = submittedByName(submittedBy);
   const email = (submittedBy?.email || '').trim();
-  const club = terms.isGll ? '' : submittedByClub(submittedBy);
+  const club = submittedByClub(submittedBy);
   return {
     name: name || NO_MANAGER_NAME,
     email: email || NO_MANAGER_EMAIL,
-    club: terms.isGll ? '' : (club || `No ${terms.locationTermLower}`),
+    club: club || `No ${terms.locationTermLower}`,
     hasAny: Boolean(name || email || club),
     rawName: name,
     rawEmail: email,
@@ -106,7 +106,7 @@ export function getManagerColumnContent(request, options = {}) {
     const fields = formatAttributedManagerFields(submittedBy, { partnerName: pName, partnerSlug: pSlug });
     if (!fields.hasAny) {
       return {
-        primary: `No ${terms.managerTermLower} details`,
+        primary: 'Power Music Admin',
         secondary: '',
         tertiary: '',
         lines: null,
@@ -117,9 +117,7 @@ export function getManagerColumnContent(request, options = {}) {
     return {
       primary: fields.name,
       secondary: fields.email,
-      tertiary: terms.isGll
-        ? ((fields.club || '').trim() || 'No location')
-        : fields.club,
+      tertiary: fields.club,
       lines: null,
       muted: false,
     };
@@ -136,12 +134,12 @@ export function getManagerColumnContent(request, options = {}) {
   return {
     primary: name,
     secondary: (submittedBy?.email || '').trim() || 'No email',
-    tertiary: terms.isGll
-      ? ((submittedBy?.club || '').trim() || 'No location')
-      : ((submittedBy?.club || '').trim() || `No ${terms.locationTermLower}`),
+    tertiary: (submittedBy?.club || '').trim() || `No ${terms.locationTermLower}`,
     muted: false,
   };
 }
+
+const POWER_MUSIC_ADMIN_LABEL = 'Power Music Admin';
 
 /** Directory ledger rows — preserve Auto Email Request label for automated intake sources. */
 export function getDirectoryManagerColumnContent(row, options = {}) {
@@ -150,12 +148,15 @@ export function getDirectoryManagerColumnContent(row, options = {}) {
   const terms = getPartnerTerminology(pName, pSlug);
   const tags = row?.tags || [];
 
-  const name = (row?.managerName || row?.addedBy || '').trim();
+  // Do not treat addedBy/handledBy ("Power Music Admin") as manager attribution —
+  // that label is the fallback when Add Manually left manager fields blank.
+  const name = (row?.managerName || '').trim();
   const email = (row?.managerEmail || '').trim();
-  const club = (row?.club || row?.submittedBy?.club || '').trim();
-  // After Add/Remove-and-Update from a manager request, prefer that manager —
-  // never show a hybrid "Auto Email Request" + manager club.
-  const hasManagerDetails = Boolean(name || email);
+  const rawClub = (row?.club || row?.submittedBy?.club || '').trim();
+  const club = (
+    rawClub === MANUAL_ENTRY_CLUB || rawClub === 'Auto email'
+  ) ? '' : rawClub;
+  const hasManagerDetails = Boolean(name || email || club);
 
   const isAutoMail = (
     tags.includes('auto mail')
@@ -179,8 +180,13 @@ export function getDirectoryManagerColumnContent(row, options = {}) {
   }
 
   if (!hasManagerDetails) {
+    const adminLabel = (
+      row?.addedBy
+      || row?.handledBy
+      || POWER_MUSIC_ADMIN_LABEL
+    ).trim() || POWER_MUSIC_ADMIN_LABEL;
     return {
-      primary: `No ${terms.managerTermLower} details`,
+      primary: adminLabel,
       secondary: '',
       tertiary: '',
       muted: true,
@@ -190,7 +196,7 @@ export function getDirectoryManagerColumnContent(row, options = {}) {
   return {
     primary: name || NO_MANAGER_NAME,
     secondary: email || NO_MANAGER_EMAIL,
-    tertiary: terms.isGll ? '' : (club || `No ${terms.locationTermLower}`),
+    tertiary: club || `No ${terms.locationTermLower}`,
     muted: !name,
   };
 }

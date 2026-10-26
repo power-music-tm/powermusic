@@ -44,6 +44,38 @@ test('GLL can omit location; PureGym requires it', () => {
   assert.equal(validatePersonFormFields(person, { requiresLocation: false }).ok, true);
 });
 
+test('Health Fitness requires director first and last name when enabled', () => {
+  const person = {
+    firstName: 'Sam',
+    lastName: 'Lee',
+    email: 'sam@example.com',
+    location: 'Client A',
+    role: '',
+    notes: '',
+    directorFirst: '',
+    directorLast: '',
+  };
+  const missing = validatePersonFormFields(person, {
+    includeDirector: true,
+    requiresDirector: true,
+  });
+  assert.equal(missing.ok, false);
+  assert.ok(missing.errors.directorFirst);
+  assert.ok(missing.errors.directorLast);
+
+  const complete = validatePersonFormFields({
+    ...person,
+    directorFirst: 'Alex',
+    directorLast: 'Rivera',
+  }, {
+    includeDirector: true,
+    requiresDirector: true,
+  });
+  assert.equal(complete.ok, true);
+  assert.equal(complete.values.directorFirst, 'Alex');
+  assert.equal(complete.values.directorLast, 'Rivera');
+});
+
 test('batch rejects duplicate emails and reports first invalid field', () => {
   const forms = [
     {

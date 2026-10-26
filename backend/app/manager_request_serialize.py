@@ -905,15 +905,28 @@ def directory_person_to_api_dict(
 
     # Previously merged Directory rows often lack manager fields — recover from
     # the current/representative request of the linked group.
-    if not (manager_name or "").strip() and not (manager_fields.get("email") or "").strip():
+    # Skip when Add Manually left manager blank (Manual entry marker): do not
+    # resurrect a prior manager like "Manager Sample" from a linked request.
+    from app.intake_persons import MANUAL_ENTRY_CLUB, get_submitted_by_attribution
+
+    _dir_attr = get_submitted_by_attribution(req)
+    _is_manual_admin_only = (
+        (_dir_attr.get("club") or "").strip() == MANUAL_ENTRY_CLUB
+        and not (_dir_attr.get("firstName") or "").strip()
+        and not (_dir_attr.get("lastName") or "").strip()
+        and not (_dir_attr.get("email") or "").strip()
+    )
+    if (
+        not _is_manual_admin_only
+        and not (manager_name or "").strip()
+        and not (manager_fields.get("email") or "").strip()
+    ):
         source = manager_source()
         if source is not None:
             source_user = getattr(source, "_manager_user", None)
             manager_fields = resolve_manager_fields(source, manager_user=source_user)
             manager_name = resolve_manager_name(source, manager_user=source_user)
             if not source.manager_id:
-                from app.intake_persons import get_submitted_by_attribution
-
                 attributed = get_submitted_by_attribution(source)
                 if any(attributed.values()):
                     manager_fields = {

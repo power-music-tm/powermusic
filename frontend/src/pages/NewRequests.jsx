@@ -517,6 +517,8 @@ const emptyPersonForm = () => ({
   location: '',
   role: '',
   notes: '',
+  directorFirst: '',
+  directorLast: '',
 });
 
 const emptyManagerForm = () => ({
@@ -856,8 +858,20 @@ export default function Requests() {
     () => validatePersonForms(personForms, {
       locationLabel: terms.isGll ? 'Gym Location' : terms.locationTerm,
       requiresLocation: !terms.isGll,
+      includeDirector: terms.isHealthFitness,
+      directorFirstLabel: terms.directorFirstLabel,
+      directorLastLabel: terms.directorLastLabel,
+      // Match manager portal: director is required for Health Fitness Add/Remove.
+      requiresDirector: terms.isHealthFitness,
     }),
-    [personForms, terms.isGll, terms.locationTerm],
+    [
+      personForms,
+      terms.isGll,
+      terms.locationTerm,
+      terms.isHealthFitness,
+      terms.directorFirstLabel,
+      terms.directorLastLabel,
+    ],
   );
 
   const updatePersonForm = (index, field, value) => {
@@ -1045,6 +1059,10 @@ export default function Requests() {
     const validation = validatePersonForms(personForms, {
       locationLabel: terms.isGll ? 'Gym Location' : terms.locationTerm,
       requiresLocation: !terms.isGll,
+      includeDirector: terms.isHealthFitness,
+      directorFirstLabel: terms.directorFirstLabel,
+      directorLastLabel: terms.directorLastLabel,
+      requiresDirector: terms.isHealthFitness,
     });
     if (!validation.ok) {
       const firstInvalid = firstInvalidPersonField(validation.errorsByRow);
@@ -1070,13 +1088,21 @@ export default function Requests() {
         body: JSON.stringify({
           submittedBy: managerForm,
           partnerId: selectedPartnerId || undefined,
-          people: normalizedPeople.map(({ firstName, lastName, email, location, role, notes }) => ({
+          people: normalizedPeople.map(({
+            firstName, lastName, email, location, role, notes, directorFirst, directorLast,
+          }) => ({
             firstName,
             lastName,
             email,
             location,
             role: terms.isJdGyms && role?.trim() ? role.trim() : undefined,
             notes: notes?.trim() || undefined,
+            directorFirst: terms.isHealthFitness && directorFirst?.trim()
+              ? directorFirst.trim()
+              : undefined,
+            directorLast: terms.isHealthFitness && directorLast?.trim()
+              ? directorLast.trim()
+              : undefined,
           })),
           action: action,
         })
@@ -1891,7 +1917,10 @@ export default function Requests() {
               {terms.managerDetailsTitle} <span className="font-semibold normal-case tracking-normal text-[var(--color-text-muted)]">(optional)</span>
             </span>
             <div className={formGridClass}>
-              {[['First Name', 'firstName', 'text'], ['Last Name', 'lastName', 'text']].map(([label, field, type]) => (
+              {[
+                [terms.managerFirstLabel, 'firstName', 'text'],
+                [terms.managerLastLabel, 'lastName', 'text'],
+              ].map(([label, field, type]) => (
                 <div key={field}>
                   <label className="block text-[11px] font-semibold text-[var(--color-text-secondary)] mb-1">{label}</label>
                   <input type={type} value={managerForm[field]}
@@ -1900,21 +1929,23 @@ export default function Requests() {
                 </div>
               ))}
             </div>
-            {!terms.isHealthFitness && (
-              <div className={formGridClass}>
-                {(terms.isGll
-                  ? [['Email', 'email', 'email']]
-                  : [['Email', 'email', 'email'], [terms.clubOrClientLabel, 'club', 'text']]
-                ).map(([label, field, type]) => (
-                  <div key={field}>
-                    <label className="block text-[11px] font-semibold text-[var(--color-text-secondary)] mb-1">{label}</label>
-                    <input type={type} value={managerForm[field]}
-                      onChange={(e) => setManagerForm({ ...managerForm, [field]: e.target.value })}
-                      className="w-full px-3 py-2 bg-[var(--color-surface-panel)]/50 border border-[var(--color-border-default)] rounded-lg text-sm focus:outline-none focus:bg-white focus:border-[var(--color-border-focus)] focus:ring-2 focus:ring-[rgba(233,69,96,0.08)] transition-all" />
-                  </div>
-                ))}
-              </div>
-            )}
+            <div className={formGridClass}>
+              {[
+                [terms.managerEmailLabel, 'email', 'email'],
+                [terms.managerClubLabel, 'club', 'text'],
+              ].map(([label, field, type]) => (
+                <div key={field}>
+                  <label className="block text-[11px] font-semibold text-[var(--color-text-secondary)] mb-1">{label}</label>
+                  <input
+                    type={type}
+                    value={managerForm[field]}
+                    onChange={(e) => setManagerForm({ ...managerForm, [field]: e.target.value })}
+                    placeholder={field === 'club' ? terms.clubOrClientPlaceholder : undefined}
+                    className="w-full px-3 py-2 bg-[var(--color-surface-panel)]/50 border border-[var(--color-border-default)] rounded-lg text-sm placeholder-[var(--color-text-muted)] focus:outline-none focus:bg-white focus:border-[var(--color-border-focus)] focus:ring-2 focus:ring-[rgba(233,69,96,0.08)] transition-all"
+                  />
+                </div>
+              ))}
+            </div>
           </div>
 
           <div className="space-y-2.5">
@@ -2042,6 +2073,41 @@ export default function Requests() {
                     className="w-full px-3 py-2 bg-white border border-[var(--color-border-default)] rounded-lg text-sm placeholder-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-border-focus)] focus:ring-2 focus:ring-[rgba(233,69,96,0.08)] transition-all"
                   />
                 </div>
+                )}
+
+                {terms.isHealthFitness && (
+                  <div className="space-y-2.5 pt-1 border-t border-[var(--color-border-default)]/70">
+                    <span className="block text-[10px] font-bold text-[var(--color-text-secondary)] uppercase tracking-wider">
+                      {terms.directorDetailsTitle}
+                    </span>
+                    <div className={formGridClass}>
+                      {[
+                        [terms.directorFirstLabel, 'directorFirst'],
+                        [terms.directorLastLabel, 'directorLast'],
+                      ].map(([label, field]) => {
+                        const error = getManualFieldError(index, field);
+                        return (
+                          <div key={field}>
+                            <label className="block text-[11px] font-semibold text-[var(--color-text-secondary)] mb-1">
+                              {label} *
+                            </label>
+                            <input
+                              type="text"
+                              required
+                              maxLength={PERSON_FIELD_LIMITS[field]}
+                              value={person[field] || ''}
+                              onChange={(e) => updatePersonForm(index, field, e.target.value)}
+                              onBlur={() => handleManualPersonBlur(index, field, person[field])}
+                              ref={(node) => setManualPersonFieldRef(index, field, node)}
+                              aria-invalid={error ? true : undefined}
+                              className={`w-full px-3 py-2 bg-white border rounded-lg text-sm focus:outline-none focus:border-[var(--color-border-focus)] focus:ring-2 focus:ring-[rgba(233,69,96,0.08)] transition-all ${error ? 'border-red-500' : 'border-[var(--color-border-default)]'}`}
+                            />
+                            {error && <p className="mt-1 text-[11px] text-red-600">{error}</p>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
                 )}
 
                 <div>

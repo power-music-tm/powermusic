@@ -62,6 +62,18 @@ def get_admin_submitted_by(req: models.ManagerRequest) -> Dict[str, str]:
     return {"firstName": "", "lastName": "", "email": "", "club": ""}
 
 
+MANUAL_ENTRY_CLUB = "Manual entry"
+
+
+def clear_submitted_by_attribution(req: models.ManagerRequest) -> None:
+    """Remove admin-entered manager attribution from intake_persons."""
+    current = dict(get_intake_persons(req))
+    if "submittedBy" not in current:
+        return
+    current.pop("submittedBy", None)
+    req.intake_persons = current
+
+
 def set_submitted_by_attribution(
     req: models.ManagerRequest,
     *,
@@ -75,6 +87,7 @@ def set_submitted_by_attribution(
     mail = (email or "").strip()
     club_name = (club or "").strip()
     if not first and not last and not mail and not club_name:
+        clear_submitted_by_attribution(req)
         return
     current = dict(get_intake_persons(req))
     current["submittedBy"] = {
@@ -84,6 +97,44 @@ def set_submitted_by_attribution(
         "club": club_name,
     }
     req.intake_persons = current
+
+
+def apply_manual_manager_attribution(
+    req: models.ManagerRequest,
+    submitted_by: Optional[Any] = None,
+) -> None:
+    """Apply Add Manually manager fields, or mark as admin-only when blank.
+
+    Always clears ``manager_id`` so a matched Directory row does not keep showing
+    a previous manager (e.g. "Manager Sample") after an admin manual write.
+    When the admin leaves manager fields empty, store the Manual entry marker so
+    Directory / New Requests show Power Music Admin instead of inherited data.
+    """
+    # Unlink any prior manager account — this write is admin-authored.
+    req.manager_id = None
+
+    first = (getattr(submitted_by, "firstName", None) or "").strip() if submitted_by else ""
+    last = (getattr(submitted_by, "lastName", None) or "").strip() if submitted_by else ""
+    mail = (getattr(submitted_by, "email", None) or "").strip() if submitted_by else ""
+    club = (getattr(submitted_by, "club", None) or "").strip() if submitted_by else ""
+
+    if first or last or mail or club:
+        set_submitted_by_attribution(
+            req,
+            first_name=first,
+            last_name=last,
+            email=mail,
+            club=club,
+        )
+        return
+
+    set_submitted_by_attribution(
+        req,
+        first_name="",
+        last_name="",
+        email="",
+        club=MANUAL_ENTRY_CLUB,
+    )
 
 
 def get_director_fields(req: models.ManagerRequest) -> Dict[str, str]:

@@ -60,7 +60,7 @@ export function getPartnerTerminology(partnerName, partnerSlug = '') {
     managerFirstLabel: 'Manager First Name',
     managerLastLabel: 'Manager Last Name',
     managerEmailLabel: 'Manager Email',
-    managerClubLabel: isHF ? 'Client' : 'Manager Club Location',
+    managerClubLabel: isHF ? 'Client' : (isGLL ? 'Manager Gym Location' : 'Manager Club Location'),
     directorDetailsTitle: 'Director Details',
     directorFirstLabel: 'Director First Name',
     directorLastLabel: 'Director Last Name',
