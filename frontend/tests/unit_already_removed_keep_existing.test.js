@@ -42,4 +42,14 @@ describe('Already Removed: Keep Existing actions', () => {
       /return isRemove \? 'Remove from Directory' : 'Add to Directory'/,
     );
   });
+
+  it('drops Keep Existing wording on Delete New Request for archived-only', async () => {
+    const src = await readFile(
+      path.join(root, 'src/components/GroupResolutionView.jsx'),
+      'utf8',
+    );
+    assert.match(src, /if \(!hasDirectory\) return `Delete New Request\$\{suffix\}`/);
+    assert.match(src, /\{deleteNewRequestLabel\(false\)\}/);
+    assert.match(src, /\{deleteNewRequestLabel\(members\.length > 1\)\}/);
+  });
 });

@@ -372,9 +372,14 @@ export function applyListSeed(groupId, cached, seed) {
       const fromCached = Array.isArray(cached?.directoryPersons) && cached.directoryPersons.length
         ? cached.directoryPersons
         : null;
-      if (fromSeed) return fromSeed;
-      if (fromPreview) return fromPreview;
-      if (fromCached) return fromCached;
+      // List / preview usually ship one Directory person. Prefer the richest
+      // detail cache so reopen after Back does not flash 1 card then reload 2+.
+      const candidates = [fromCached, fromSeed, fromPreview].filter(Boolean);
+      if (candidates.length) {
+        return candidates.reduce((best, cur) => (
+          cur.length > best.length ? cur : best
+        ));
+      }
       // List rows only ship a single groupDirectoryPerson — promote it so the
       // group page can render Archived/Active Directory cards before detail loads.
       const single =
@@ -404,6 +409,16 @@ export function warmGroupCachesFromRequests(requests = []) {
     const existingCount = Array.isArray(existing?.members) ? existing.members.length : 0;
     // Never let a stale list preview re-expand a post-merge group detail cache.
     if (existingCount > 0 && members.length > existingCount) {
+      continue;
+    }
+    const existingDirCount = Array.isArray(existing?.directoryPersons)
+      ? existing.directoryPersons.length
+      : 0;
+    const listDirCount = Array.isArray(preview?.directoryPersons)
+      ? preview.directoryPersons.length
+      : ((row.groupDirectoryPerson || preview?.directoryPerson) ? 1 : 0);
+    // Keep a multi-match Directory detail cache; list only knows the primary.
+    if (existingDirCount > 1 && listDirCount <= 1) {
       continue;
     }
     const seeded = applyListSeed(gid, existing, {

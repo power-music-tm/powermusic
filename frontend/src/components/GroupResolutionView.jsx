@@ -311,6 +311,12 @@ export default function GroupResolutionView({
   // archive is never overwritten, and primary Add/Remove already creates the outcome.
   const showKeepExistingDelete = hasDirectoryLink;
   const showKeepExistingAddOrArchive = hasDirectory;
+  // Archive is always kept — drop the empty "Keep Existing" wording there.
+  const deleteNewRequestLabel = (plural = false) => {
+    const suffix = plural ? 's' : '';
+    if (!hasDirectory) return `Delete New Request${suffix}`;
+    return `Keep Existing and Delete New Request${suffix}`;
+  };
 
   const { selectedPartner, partners } = usePartners();
   const rawPartnerId = group?.partnerId || group?.partner_id || repMember?.partnerId || repMember?.partner_id;
@@ -1963,7 +1969,7 @@ export default function GroupResolutionView({
                   onClick={openKeepConfirm}
                   className={BTN_SECONDARY}
                 >
-                  Keep Existing and Delete New Request
+                  {deleteNewRequestLabel(false)}
                 </button>
               ) : null}
               {showKeepExistingAddOrArchive && incomingMemberCount() === 1 && currentRep?.action !== 'Remove' ? (
@@ -2156,7 +2162,7 @@ export default function GroupResolutionView({
                     onClick={openKeepConfirm}
                     className={BTN_SECONDARY}
                   >
-                    Keep Existing and Delete New Request{members.length > 1 ? 's' : ''}
+                    {deleteNewRequestLabel(members.length > 1)}
                   </button>
                 ) : null}
                 {showKeepExistingAddOrArchive && currentRep?.action !== 'Remove' ? (
@@ -2398,7 +2404,7 @@ export default function GroupResolutionView({
       >
         <p className="text-sm text-[var(--color-text-secondary)]">
           {confirmAction === 'peers_merge'
-            ? `These ${incomingMemberCount()} new requests will be merged into the person below, and the older versions will be removed. Directory stays unchanged for now. After this, choose Keep Existing or ${resolvePrimaryLabel({ hasDirectory, action: currentRep?.action })} on the current request.`
+            ? `These ${incomingMemberCount()} new requests will be merged into the person below, and the older versions will be removed. Directory stays unchanged for now. After this, choose ${hasDirectory ? 'Keep Existing' : 'Delete New Request'} or ${resolvePrimaryLabel({ hasDirectory, action: currentRep?.action })} on the current request.`
             : hasDirectory
             ? (dirScenario?.body || 'The selected Directory record will be updated with the final resolved values below, and the requests in this group will be closed.')
             : currentRep?.action === 'Remove'
@@ -2644,12 +2650,16 @@ export default function GroupResolutionView({
         })()}
       </Modal>
 
-      {/* ── Keep confirmation ── */}
+      {/* ── Keep / Delete New Request confirmation ── */}
       <Modal
         isOpen={confirmAction === 'keep'}
         onClose={closeConfirmModal}
         closeDisabled={submitting}
-        title={incomingMemberCount() > 1 ? "Keep existing and delete new requests?" : "Keep existing and delete new request?"}
+        title={
+          !hasDirectory
+            ? (incomingMemberCount() > 1 ? 'Delete new requests?' : 'Delete new request?')
+            : (incomingMemberCount() > 1 ? 'Keep existing and delete new requests?' : 'Keep existing and delete new request?')
+        }
         footer={
           <>
             <button
@@ -2666,7 +2676,9 @@ export default function GroupResolutionView({
               onClick={handleKeepExisting}
               className="px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer disabled:opacity-60"
             >
-              {submitting ? 'Resolving…' : 'Keep Existing'}
+              {submitting
+                ? (hasDirectory ? 'Resolving…' : 'Deleting…')
+                : (hasDirectory ? 'Keep Existing' : 'Delete')}
             </button>
           </>
         }
@@ -2674,8 +2686,12 @@ export default function GroupResolutionView({
         <p className="text-sm text-[var(--color-text-secondary)]">
           {hasDirectoryLink
             ? (incomingMemberCount() > 1
-                ? `The existing Directory record will remain unchanged. All ${incomingMemberCount()} incoming requests in this group will be deleted, and no Directory changes will be made.`
-                : 'The Directory record will stay unchanged. The incoming request will be closed without writing new values.')
+                ? (hasDirectory
+                  ? `The existing Directory record will remain unchanged. All ${incomingMemberCount()} incoming requests in this group will be deleted, and no Directory changes will be made.`
+                  : `The archived Directory record stays unchanged. All ${incomingMemberCount()} incoming requests in this group will be deleted.`)
+                : (hasDirectory
+                  ? 'The Directory record will stay unchanged. The incoming request will be closed without writing new values.'
+                  : 'The archived Directory record stays unchanged. The incoming request will be deleted.'))
             : 'No Directory record will be created. Incoming requests in this group will be closed and discarded.'}
         </p>
       </Modal>

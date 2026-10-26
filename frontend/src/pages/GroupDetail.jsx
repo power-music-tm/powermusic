@@ -6,12 +6,11 @@ import { usePartners } from '../context/PartnerContext';
 import { useRealtimeBroadcast } from '../hooks/useRealtimeBroadcast';
 import { fetchJson } from '../utils/api';
 import {
-  getNewRequestsPage,
-  loadWithCache,
   bumpCacheEpoch,
   refreshCache,
   clearCache,
   writeCache,
+  readCache,
   suppressNewRequests,
   clearNewRequestsSuppressions,
   hardSuppressedRequestIds,
@@ -27,6 +26,10 @@ import {
   patchRequestsCacheAfterReattach,
   readCachedGroup,
 } from '../utils/groupDetailCache';
+import {
+  scheduleRequestsPageRefetch,
+  subscribeRequestsPage,
+} from '../utils/requestsPageStore';
 
 /** Faster than New Requests list — admins watching a group need arrivals quickly. */
 const GROUP_DETAIL_POLL_MS = 4000;
@@ -227,15 +230,21 @@ export default function GroupDetail() {
     if (viewedMemberKey) markRequestsViewed(viewedMemberKey.split(','));
   }, [viewedMemberKey]);
 
-  // Directory is optional context — do not block the group UI on it.
+  // Directory is optional context — paint from the shared list cache; only
+  // schedule a soft refetch when that cache is empty (avoid a full /page GET
+  // on every Back → reopen of the same group).
   useEffect(() => {
-    loadWithCache(
-      requestsCacheKey,
-      () => getNewRequestsPage(selectedPartnerId || ''),
-      (data) => {
-        if (Array.isArray(data?.persons)) setDirectory(data.persons);
-      },
-    ).catch(() => {});
+    const partnerId = selectedPartnerId || '';
+    const cached = readCache(requestsCacheKey);
+    if (Array.isArray(cached?.persons)) setDirectory(cached.persons);
+    const unsub = subscribeRequestsPage(({ partnerId: pubPartnerId, data }) => {
+      if (String(pubPartnerId || '') !== String(partnerId)) return;
+      if (Array.isArray(data?.persons)) setDirectory(data.persons);
+    });
+    if (!Array.isArray(cached?.persons) || cached.persons.length === 0) {
+      scheduleRequestsPageRefetch(partnerId, { minAgeMs: 15_000 });
+    }
+    return unsub;
   }, [requestsCacheKey, selectedPartnerId]);
 
   // Paint list seed + cache instantly, then network-refresh for full history.
