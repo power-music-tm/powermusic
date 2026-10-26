@@ -9,12 +9,10 @@ even when name and location differ.
 
 For Health Fitness, the "location" field stores what the partner calls "client".
 
-GLL uses a 3-field model (first name, last name, email) with no location scoring:
-  Last Name  = 35 pts  (Jaro-Winkler)
-  First Name = 30 pts  (Jaro-Winkler)
-  Email      = 10 pts  (exact match)
-  Max score  = 75 pts
-  Exact same email is also confirmed for GLL.
+GLL uses first, last, email, and optional location (only when both sides filled):
+  Exact same email is confirmed.
+  Potential when an allowed field pair/triple matches (first may use nicknames).
+  Last+location alone is never a match.
 
 Partner isolation is enforced by the caller filtering to the correct partner_id
 before comparing requests; these functions receive already-filtered sets.
@@ -503,27 +501,54 @@ def match_classification(
     return None, total_score
 
 
+def _gll_allowed_field_combo(
+    *,
+    first_match: bool,
+    same_last: bool,
+    same_email: bool,
+    same_loc: bool,
+) -> bool:
+    """True when GLL flags form an allowed matching combination.
+
+    Allowed pairs (and any superset):
+      first+last, first+email, first+location, last+email, email+location
+    Forbidden:
+      last+location alone (too common without first/email)
+    """
+    if same_last and same_loc and not first_match and not same_email:
+        return False
+    return (
+        (first_match and same_last)
+        or (first_match and same_email)
+        or (first_match and same_loc)
+        or (same_last and same_email)
+        or (same_email and same_loc)
+    )
+
+
 def match_classification_gll(
     left: schemas.PersonInfo,
     right: schemas.PersonInfo,
 ) -> Tuple[Optional[str], float]:
-    """GLL-specific 3-field matching (First Name, Last Name, Email — no Location).
+    """GLL matching: first, last, email, optional location.
 
     Weights (display only — score no longer gates classification):
       Last Name  = 35 pts  (Jaro-Winkler, max)
       First Name = 30 pts  (Jaro-Winkler, max)
       Email      = 10 pts  (exact match)
       Max total  = 75 pts
+      Location does not change the numeric score.
 
     Classification rule
     -------------------
     Confirmed duplicate (evaluated FIRST):
       exact same non-empty email (complete match on its own).
 
-    Potential duplicate (only when emails differ):
-      number of True field flags >= MIN_MATCHED_FIELDS_FOR_POTENTIAL
-      AND (same_last OR same_email)
-      Location is never used — GLL records have NULL location.
+    Potential duplicate (only when emails differ / are empty):
+      Allowed field combos (first may nickname-match; location only if both filled):
+        first+last, first+email, first+location, last+email, email+location
+        (and any three-/four-field superset of those).
+      Never: last+location alone.
     """
     from app.nickname_match import normalize_first_name
 
@@ -540,24 +565,25 @@ def match_classification_gll(
 
     same_email_exact = bool(email_l and email_r and email_l == email_r)
 
-    # Score (display only — weights unchanged)
+    # Score (display only — weights unchanged; location excluded from score)
     first_name_score = jaro_winkler(first_l, first_r) * 30.0
     last_name_score  = jaro_winkler(last_l,  last_r)  * 35.0
     email_score      = 10.0 if same_email_exact else 0.0
 
     total_score = first_name_score + last_name_score + email_score
 
-    # Confirmed Duplicate — exact email alone is complete (covers all-three too).
+    # Confirmed Duplicate — exact email alone is complete.
     if same_email_exact:
         return "confirmed_duplicate", total_score
 
-    # Potential Duplicate — field-flag rule (replaces threshold gate)
-    # use_location=False: location is never part of the GLL identity model
-    flags    = _field_flags(left, right, use_location=False)
-    matched  = sum(flags.values())
-    anchored = flags["same_last"] or flags["same_email"]
-
-    if matched >= MIN_MATCHED_FIELDS_FOR_POTENTIAL and anchored:
+    # Potential — optional location counts only when both sides have it.
+    flags = _field_flags(left, right, use_location=True)
+    if _gll_allowed_field_combo(
+        first_match=flags["first_match"],
+        same_last=flags["same_last"],
+        same_email=flags["same_email"],
+        same_loc=flags["same_loc"],
+    ):
         return "potential_duplicate", total_score
 
     return None, total_score
@@ -572,7 +598,7 @@ def match_classification_for_partner(
 ) -> Tuple[Optional[str], float]:
     """Partner-aware classification wrapper.
 
-    * GLL (is_gll=True)  → 3-field engine (no location, max 75 pts)
+    * GLL (is_gll=True)  → GLL engine (first/last/email + optional location)
     * All others          → shared 4-field engine (PureGym / Health Fitness)
 
     The is_healthtech flag is accepted for backwards compatibility but no longer

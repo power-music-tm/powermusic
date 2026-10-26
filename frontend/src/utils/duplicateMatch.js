@@ -7,8 +7,9 @@
  *
  * Potential (non-GLL, emails differ): name is ONE entity (first_match AND
  * same_last); any two of {Name, Email, Location} → potential_duplicate.
- * Potential (GLL, emails differ): first/last stay separate flags; matched >= 2
- * AND (same_last OR same_email).
+ * Potential (GLL, emails differ): allowed combos among first/last/email/
+ * optional location (both filled): first+last, first+email, first+location,
+ * last+email, email+location (and supersets). Never last+location alone.
  */
 
 import nicknameRelated from '../data/nicknameRelated.json' with { type: 'json' };
@@ -126,9 +127,17 @@ export function matchClassification(left, right, options = {}) {
   }
 
   if (isGll) {
-    // GLL: first and last remain separate flags; any two + last/email anchor.
-    const matchedCount = [sameLast, firstMatch, sameEmail].filter(Boolean).length;
-    if (matchedCount >= 2 && (sameLast || sameEmail)) {
+    // Forbidden: last + location alone.
+    if (sameLast && sameLoc && !firstMatch && !sameEmail) {
+      return null;
+    }
+    const allowed =
+      (firstMatch && sameLast)
+      || (firstMatch && sameEmail)
+      || (firstMatch && sameLoc)
+      || (sameLast && sameEmail)
+      || (sameEmail && sameLoc);
+    if (allowed) {
       return 'potential_duplicate';
     }
     return null;

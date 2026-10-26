@@ -81,12 +81,13 @@ class TestManagerFormDirectoryOverlapNonGll:
 
 
 class TestManagerFormDirectoryOverlapGll:
-    """GLL: exact email alone warns; else any two of {first, last, email}."""
+    """GLL: email alone; first+last; first+location. Never last+location alone."""
 
     @pytest.mark.parametrize(
         "form,expect_reason",
         [
             ({"first": "josie", "last": "miller", "email": "", "location": ""}, "Name"),
+            ({"first": "josie", "last": "", "email": "", "location": "london gym"}, "Location"),
             ({"first": "josie", "last": "", "email": "mjose101@yahoo.co.uk", "location": ""}, "Email"),
             ({"first": "", "last": "miller", "email": "mjose101@yahoo.co.uk", "location": ""}, "Email"),
             ({"first": "", "last": "", "email": "mjose101@yahoo.co.uk", "location": ""}, "Email"),
@@ -96,6 +97,18 @@ class TestManagerFormDirectoryOverlapGll:
         row = _row()
         reasons = manager_form_directory_overlap_reasons(row=row, is_gll=True, **form)
         assert expect_reason in reasons
+
+    def test_last_plus_location_alone_does_not_warn(self):
+        row = _row()
+        reasons = manager_form_directory_overlap_reasons(
+            email="",
+            first="",
+            last="miller",
+            location="london gym",
+            row=row,
+            is_gll=True,
+        )
+        assert reasons == set()
 
     def test_overlap_without_same_person_gll_identity(self):
         """GLL name-only warns for manager form but is not same_person_gll identity."""

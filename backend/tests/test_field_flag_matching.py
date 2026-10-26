@@ -244,39 +244,32 @@ class TestFourFieldClassification:
 
 
 # ===========================================================================
-# GLL (3-FIELD)
+# GLL (first / last / email / optional location)
 # ===========================================================================
 
 class TestGllFieldFlagClassification:
 
-    # Test 18 – Clinton/Harry vs Hover, different email → potential? No — different last names.
-    # Per test 1 reasoning: same first only → None (not anchored)
-    def test_18_gll_clinton_harry_vs_hover_none(self):
+    def test_18_gll_same_first_only_none(self):
         left  = _p("Harry", "Clinton", "harry@example.com")
         right = _p("Harry", "Hover",   "hover@example.com")
         label, _ = match_classification_gll(left, right)
-        # first_match=True, same_last=False, same_email=False
-        # matched=1, anchored=False → None
         assert label is None, (
-            f"GLL Clinton/Harry vs Hover (different last, different email) should be None, got {label}"
+            f"GLL same first only should be None, got {label}"
         )
 
-    # Test 19 – Green/Oliver vs Green/Christian, different email → None (same last only)
-    def test_19_gll_green_oliver_vs_christian_none(self):
+    def test_19_gll_same_last_only_none(self):
         left  = _p("Oliver",    "Green", "oliver@example.com")
         right = _p("Christian", "Green", "chris@example.com")
         label, _ = match_classification_gll(left, right)
         assert label is None, f"GLL same last only should be None, got {label}"
 
-    # Test 20 – Smith/Bob vs Xyz, different email → None
-    def test_20_gll_smith_bob_vs_xyz_none(self):
+    def test_20_gll_same_first_different_last_email_none(self):
         left  = _p("Bob", "Smith", "bob@example.com")
         right = _p("Bob", "Xyz",   "xyz@example.com")
         label, _ = match_classification_gll(left, right)
-        assert label is None, f"GLL unrelated last names should be None, got {label}"
+        assert label is None, f"GLL first only should be None, got {label}"
 
-    # Test 21 – Same last + same email → confirmed (exact email)
-    def test_21_gll_same_last_same_email_confirmed(self):
+    def test_21_gll_same_email_confirmed(self):
         left  = _p("Alice", "Brown", "shared@example.com")
         right = _p("Bob",   "Brown", "shared@example.com")
         label, _ = match_classification_gll(left, right)
@@ -284,8 +277,7 @@ class TestGllFieldFlagClassification:
             f"GLL same email should be confirmed_duplicate, got {label}"
         )
 
-    # Test 22 – Same email + nickname first match, different last → confirmed
-    def test_22_gll_same_email_first_match_different_last_confirmed(self):
+    def test_22_gll_same_email_nickname_first_confirmed(self):
         left  = _p("Jon",  "Smith",  "shared@example.com")
         right = _p("John", "Taylor", "shared@example.com")
         label, _ = match_classification_gll(left, right)
@@ -293,31 +285,50 @@ class TestGllFieldFlagClassification:
             f"GLL same email should be confirmed_duplicate, got {label}"
         )
 
-    # Test 23 – All three identical → confirmed
-    def test_23_gll_all_three_identical_confirmed(self):
+    def test_23_gll_all_identity_fields_confirmed(self):
         p = _p("John", "Smith", "john@example.com")
         label, score = match_classification_gll(p, p)
         assert label == "confirmed_duplicate"
         assert score == 75.0
 
-    # Test 24 – Different or NULL location → result unchanged
-    def test_24_gll_location_never_affects_result(self):
-        email = "loc-test@example.com"
-        # Both with location
-        label_loc, score_loc = match_classification_gll(
-            _p("John", "Smith", email, location="London"),
-            _p("John", "Smith", email, location="Manchester"),
+    def test_24_gll_first_plus_last_potential(self):
+        left  = _p("John", "Smith", "a@example.com")
+        right = _p("John", "Smith", "b@example.com")
+        label, _ = match_classification_gll(left, right)
+        assert label == "potential_duplicate", (
+            f"GLL first+last should be potential_duplicate, got {label}"
         )
-        # Both without location
-        label_none, score_none = match_classification_gll(
-            _p("John", "Smith", email, location=None),
-            _p("John", "Smith", email, location=None),
+
+    def test_25_gll_first_plus_location_potential(self):
+        left  = _p("John", "Smith",  "a@example.com", "London")
+        right = _p("John", "Taylor", "b@example.com", "London")
+        label, _ = match_classification_gll(left, right)
+        assert label == "potential_duplicate", (
+            f"GLL first+location should be potential_duplicate, got {label}"
         )
-        assert label_loc == label_none, (
-            f"GLL: location must not affect classification; loc={label_loc} none={label_none}"
+
+    def test_26_gll_last_plus_location_alone_none(self):
+        left  = _p("Alice", "Smith", "a@example.com", "London")
+        right = _p("Bob",   "Smith", "b@example.com", "London")
+        label, _ = match_classification_gll(left, right)
+        assert label is None, (
+            f"GLL last+location alone should be None, got {label}"
         )
-        assert score_loc == score_none, (
-            f"GLL: location must not affect score; loc={score_loc} none={score_none}"
+
+    def test_27_gll_first_last_location_potential(self):
+        left  = _p("John", "Smith", "a@example.com", "London")
+        right = _p("John", "Smith", "b@example.com", "London")
+        label, _ = match_classification_gll(left, right)
+        assert label == "potential_duplicate", (
+            f"GLL first+last+location should be potential_duplicate, got {label}"
+        )
+
+    def test_28_gll_empty_location_ignored(self):
+        left  = _p("John", "Smith", "a@example.com", None)
+        right = _p("John", "Taylor", "b@example.com", None)
+        label, _ = match_classification_gll(left, right)
+        assert label is None, (
+            f"GLL first only with empty location should be None, got {label}"
         )
 
 

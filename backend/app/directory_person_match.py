@@ -111,9 +111,10 @@ def manager_form_directory_overlap_reasons(
         Name+Location (Name = first AND last both match).
       Name alone, first+location, last+location → no warn.
 
-    GLL (first/last stay separate; no location):
-      Exact same email alone warns as Email; otherwise at least two of
-      {first, last, email}.
+    GLL (first/last separate; location optional when both filled):
+      Exact same email alone warns as Email.
+      Otherwise warn on allowed combos: first+last, first+location
+      (email pairs are covered by the email branch). Never last+location alone.
     """
     matched = _manager_form_matched_field_keys(
         email=email,
@@ -124,19 +125,28 @@ def manager_form_directory_overlap_reasons(
     )
 
     if is_gll:
-        if "email" in matched:
+        first_m = "firstName" in matched
+        last_m = "lastName" in matched
+        email_m = "email" in matched
+        loc_m = "location" in matched
+        if email_m:
             reasons: set[str] = {"Email"}
-            if "firstName" in matched and "lastName" in matched:
+            if first_m and last_m:
                 reasons.add("Name")
             return reasons
-        if len(matched) < 2:
+        # Forbidden: last + location alone.
+        if last_m and loc_m and not first_m:
             return set()
-        reasons = set()
-        if "firstName" in matched and "lastName" in matched:
-            reasons.add("Name")
-        if not reasons:
-            reasons.add("Match")
-        return reasons
+        if (first_m and last_m) or (first_m and loc_m):
+            reasons = set()
+            if first_m and last_m:
+                reasons.add("Name")
+            if first_m and loc_m and not last_m:
+                reasons.add("Location")
+            if not reasons:
+                reasons.add("Match")
+            return reasons
+        return set()
 
     name_match = "firstName" in matched and "lastName" in matched
     email_match = "email" in matched
