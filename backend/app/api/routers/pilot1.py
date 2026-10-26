@@ -359,7 +359,7 @@ def get_people(
 ):
     if partner_id:
         get_partner_or_404(db, partner_id)
-    rows = directory_ledger_rows(db, limit=2000, partner_id=partner_id)
+    rows = directory_ledger_rows(db, partner_id=partner_id)
     return directory_rows_to_api_dicts(db, rows)
 
 
@@ -456,7 +456,7 @@ def get_archived_people(
 ):
     if partner_id:
         get_partner_or_404(db, partner_id)
-    rows = archived_snapshot_rows(db, limit=2000, partner_id=partner_id)
+    rows = archived_snapshot_rows(db, partner_id=partner_id)
     return directory_rows_to_api_dicts(db, rows)
 
 
@@ -1036,7 +1036,7 @@ def get_new_requests_page(
         query = query.filter(models.ManagerRequest.partner_id == partner_id)
     db_requests = query.order_by(request_id_numeric_desc()).all()
     hydrate_request_display(db_requests)
-    directory = directory_ledger_rows(db, limit=2000, partner_id=partner_id)
+    directory = directory_ledger_rows(db, partner_id=partner_id)
     with read_cache_scope():
         return {
             "requests": requests_to_api_dicts(db, db_requests),
@@ -1217,18 +1217,19 @@ def bulk_dismiss_requests(
 
     any_was_new = any(r.status == "new" for r in reqs)
     all_dismiss_ids = set()
-    # Freeze cascade peers at confirm-open — requests that join mid-modal stay open.
-    frozen_also = list(payload.alsoDeleteIds or [])
 
     for req in reqs:
         if req.id in all_dismiss_ids:
             continue
 
         group_id = req.duplicate_group_id
+        # Bulk delete always cascades to every other new member of the group.
+        # (Empty alsoDeleteIds from the client used to disable cascade and leave
+        # siblings Pending on the manager portal.)
         requests_to_dismiss, survivors = collect_selective_dismiss_targets(
             db,
             req,
-            also_delete_ids=frozen_also,
+            also_delete_ids=None,
         )
         dismiss_ids = [r.id for r in requests_to_dismiss]
         all_dismiss_ids.update(dismiss_ids)
@@ -1385,12 +1386,33 @@ def _manager_requests_query(db: Session, manager: AuthenticatedUser):
     return query
 
 
+def _repair_manager_admin_deleted_rows(db: Session, manager: AuthenticatedUser) -> None:
+    """Fix legacy admin deletes that still look Pending (missing handled_at)."""
+    from app.request_visibility import (
+        STATUS_ADMIN_DELETED,
+        repair_admin_deleted_missing_handled_at,
+    )
+
+    q = _manager_requests_query(db, manager).filter(
+        models.ManagerRequest.status == STATUS_ADMIN_DELETED,
+        models.ManagerRequest.handled_at.is_(None),
+    )
+    rows = q.limit(500).all()
+    if not rows:
+        return
+    if repair_admin_deleted_missing_handled_at(db, rows):
+        db.commit()
+        invalidate_manager_request_summary(manager.id)
+
+
 @router.get("/api/manager/requests/summary", response_model=schemas.ManagerRequestsSummaryOut)
 def manager_requests_summary(
     db: Session = Depends(get_db),
     manager: AuthenticatedUser = Depends(require_manager),
 ):
     """Lightweight counts for the manager portal card."""
+    _repair_manager_admin_deleted_rows(db, manager)
+
     cached = get_manager_request_summary(manager.id)
     if cached is not None:
         return cached
@@ -1424,11 +1446,13 @@ def list_manager_requests(
     if status and status not in ("new", "handled"):
         raise HTTPException(status_code=400, detail="status must be new or handled")
 
+    _repair_manager_admin_deleted_rows(db, manager)
+
     safe_page = max(page, 1)
     safe_limit = min(max(limit, 1), 50)
     offset = (safe_page - 1) * safe_limit
 
-    # Admin-deleted / merged rows keep their pre-delete Pending / Handled look here.
+    # Admin-deleted rows show as Handled; open merges stay Pending until survivor handled.
     manager_status = manager_status_expr()
     query = _manager_requests_query(db, manager)
     if status:

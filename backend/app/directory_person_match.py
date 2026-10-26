@@ -605,7 +605,7 @@ def _dedupe_latest_person(
 def directory_ledger_rows(
     db: Session,
     *,
-    limit: int = 1000,
+    limit: Optional[int] = None,
     partner_id: Optional[str] = None,
     dismissed_set: Optional[set] = None,
 ) -> List[models.ManagerRequest]:
@@ -613,6 +613,9 @@ def directory_ledger_rows(
 
     ``dismissed_set`` is accepted for call-site compatibility and unused — Directory
     pages show stored rows as-is; match/conflict paths still collapse separately.
+
+    When ``partner_id`` is set, all matching rows are returned (no artificial cap).
+    Without a partner scope, ``limit`` defaults to 5000 as a safety bound.
     """
     del dismissed_set  # unused — listing is not identity-deduped
     query = db.query(models.ManagerRequest).filter(
@@ -622,13 +625,19 @@ def directory_ledger_rows(
     )
     if partner_id:
         query = query.filter(models.ManagerRequest.partner_id == partner_id)
-    return query.order_by(models.ManagerRequest.handled_at.desc()).limit(limit).all()
+    query = query.order_by(models.ManagerRequest.handled_at.desc())
+    # Partner-scoped Directory pages pass limit=None → return every row.
+    # Explicit limits (manager snapshot caps, tests) are still honored.
+    effective_limit = limit if limit is not None else (None if partner_id else 5000)
+    if effective_limit is not None:
+        query = query.limit(effective_limit)
+    return query.all()
 
 
 def removed_snapshot_rows(
     db: Session,
     *,
-    limit: int = 1000,
+    limit: Optional[int] = None,
     partner_id: Optional[str] = None,
 ) -> List[models.ManagerRequest]:
     """Manager Remove-form Directory: every outcome=Removed row (no identity collapse).
@@ -641,19 +650,24 @@ def removed_snapshot_rows(
     )
     if partner_id:
         query = query.filter(models.ManagerRequest.partner_id == partner_id)
-    return query.order_by(models.ManagerRequest.handled_at.desc()).limit(limit).all()
+    query = query.order_by(models.ManagerRequest.handled_at.desc())
+    effective_limit = limit if limit is not None else (None if partner_id else 5000)
+    if effective_limit is not None:
+        query = query.limit(effective_limit)
+    return query.all()
 
 
 def archived_snapshot_rows(
     db: Session,
     *,
-    limit: int = 1000,
+    limit: Optional[int] = None,
     partner_id: Optional[str] = None,
     dismissed_set: Optional[set] = None,
 ) -> List[models.ManagerRequest]:
     """Archived Directory list: every Removed/archived row (no identity collapse).
 
     ``dismissed_set`` is accepted for call-site compatibility and unused.
+    Partner-scoped lists with limit=None return every matching row.
     """
     del dismissed_set  # unused — listing is not identity-deduped
     query = db.query(models.ManagerRequest).filter(
@@ -666,14 +680,14 @@ def archived_snapshot_rows(
     )
     if partner_id:
         query = query.filter(models.ManagerRequest.partner_id == partner_id)
-    return (
-        query.order_by(
-            models.ManagerRequest.handled_at.desc(),
-            models.ManagerRequest.archived_at.desc(),
-        )
-        .limit(limit)
-        .all()
+    query = query.order_by(
+        models.ManagerRequest.handled_at.desc(),
+        models.ManagerRequest.archived_at.desc(),
     )
+    effective_limit = limit if limit is not None else (None if partner_id else 5000)
+    if effective_limit is not None:
+        query = query.limit(effective_limit)
+    return query.all()
 
 
 def active_roster_rows(db: Session, *, partner_id: Optional[str] = None) -> List[models.ManagerRequest]:

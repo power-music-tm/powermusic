@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import HoverTip from './HoverTip';
 
@@ -11,6 +12,12 @@ export default function TablePagination({
   noun = 'rows',
   className = '',
 }) {
+  const [draftPage, setDraftPage] = useState(String(page));
+
+  useEffect(() => {
+    setDraftPage(String(page));
+  }, [page]);
+
   if (total <= 0) {
     return (
       <div className={`px-2 text-xs font-medium text-[var(--color-text-secondary)] ${className}`.trim()}>
@@ -20,6 +27,17 @@ export default function TablePagination({
   }
 
   const showControls = totalPages > 1;
+
+  const commitPage = () => {
+    const parsed = Number.parseInt(String(draftPage).trim(), 10);
+    if (!Number.isFinite(parsed)) {
+      setDraftPage(String(page));
+      return;
+    }
+    const next = Math.min(totalPages, Math.max(1, parsed));
+    setDraftPage(String(next));
+    if (next !== page) onPageChange(next);
+  };
 
   return (
     <div
@@ -43,9 +61,30 @@ export default function TablePagination({
               <ChevronLeft className="w-4 h-4" />
             </button>
           </HoverTip>
-          <span className="text-xs font-semibold text-[var(--color-text-primary)] px-1 tabular-nums">
-            {page}/{totalPages}
-          </span>
+          <label className="inline-flex items-center gap-0.5 text-xs font-semibold text-[var(--color-text-primary)] px-1 tabular-nums">
+            <span className="sr-only">Page</span>
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={draftPage}
+              onChange={(e) => setDraftPage(e.target.value.replace(/[^\d]/g, ''))}
+              onBlur={commitPage}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  e.currentTarget.blur();
+                } else if (e.key === 'Escape') {
+                  setDraftPage(String(page));
+                  e.currentTarget.blur();
+                }
+              }}
+              aria-label={`Page number, ${page} of ${totalPages}`}
+              className="w-10 rounded-md border border-[var(--color-border-default)] bg-white px-1.5 py-0.5 text-center text-xs font-semibold tabular-nums text-[var(--color-text-primary)] focus:border-[var(--color-border-focus)] focus:outline-none focus:ring-2 focus:ring-[rgba(233,69,96,0.12)]"
+            />
+            <span aria-hidden="true">/</span>
+            <span>{totalPages}</span>
+          </label>
           <HoverTip label="Next page">
             <button
               type="button"
