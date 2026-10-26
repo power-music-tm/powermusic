@@ -1,8 +1,8 @@
 """Admin Delete / duplicate merges must not remove requests from the manager portal.
 
 Verifies:
-1. Admin Delete hides a manager portal request from admin but keeps it, unchanged
-   (Pending stays Pending, Handled stays Handled), for the manager.
+1. Admin Delete hides a manager portal request from admin but keeps it for the
+   manager; Pending portal deletes become Handled; already-Handled stay Handled.
 2. Requests no manager can see are still permanently deleted.
 3. Duplicates merged into a still-open request show Pending to their manager, then
    Handled (with the survivor's outcome) once the survivor is added / removed.
@@ -120,7 +120,7 @@ def _manager_status_in_sql(db: Session, request_id: str) -> str:
 
 class TestAdminDeleteKeepsManagerHistory:
 
-    def test_delete_pending_portal_request_stays_pending_for_manager(self, db: Session, manager_id):
+    def test_delete_pending_portal_request_shows_handled_for_manager(self, db: Session, manager_id):
         now = datetime.now(timezone.utc)
         r1 = _create_request(db, first_name="Ava", received_at=now - timedelta(minutes=5), manager_id=manager_id)
         r2 = _create_request(db, first_name="Ava", received_at=now, manager_id=manager_id)
@@ -131,11 +131,12 @@ class TestAdminDeleteKeepsManagerHistory:
         db.refresh(group)
 
         assert r1.status == STATUS_ADMIN_DELETED
+        assert r1.handled_at is not None
         assert r1.duplicate_group_id is None
         assert group.representative_request_id != r1.id
         assert not _admin_can_see(db, r1.id)
-        assert manager_visible_status(r1) == "new"
-        assert _manager_status_in_sql(db, r1.id) == "new"
+        assert manager_visible_status(r1) == "handled"
+        assert _manager_status_in_sql(db, r1.id) == "handled"
 
     def test_delete_handled_directory_row_stays_handled_for_manager(self, db: Session, manager_id):
         row = _create_request(

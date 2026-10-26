@@ -72,25 +72,11 @@ function memberFormValues(member) {
 }
 
 function dismissCascadeCopy(impact) {
-  const confirmed = impact?.confirmedSiblingCount || 0;
-  const potential = impact?.potentialSiblingCount || 0;
-  if (!confirmed && !potential) return null;
-  const parts = [];
-  if (confirmed > 0) {
-    parts.push(
-      confirmed === 1
-        ? 'This will also delete 1 confirmed duplicate request.'
-        : `This will also delete ${confirmed} confirmed duplicate requests.`,
-    );
-  }
-  if (potential > 0) {
-    parts.push(
-      potential === 1
-        ? 'The related potential duplicate will be kept for review.'
-        : `The related potential duplicates (${potential}) will be kept for review.`,
-    );
-  }
-  return parts.join(' ');
+  const cascade = impact?.confirmedSiblingCount || 0;
+  if (!cascade) return null;
+  return cascade === 1
+    ? 'This will also delete the other request in this group.'
+    : `This will also delete the other ${cascade} requests in this group.`;
 }
 
 

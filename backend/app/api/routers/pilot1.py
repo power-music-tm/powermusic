@@ -1139,7 +1139,7 @@ def request_dismiss_impact(
     db: Session = Depends(get_db),
     admin: AuthenticatedUser = Depends(require_admin),
 ):
-    """Preview cascade: confirmed duplicate siblings are deleted with the request; potentials stay."""
+    """Preview cascade: every other new member of the same duplicate group is deleted too."""
     req = db.query(models.ManagerRequest).filter(models.ManagerRequest.id == request_id).first()
     if not is_admin_visible(req):
         raise HTTPException(status_code=404, detail="Request not found")

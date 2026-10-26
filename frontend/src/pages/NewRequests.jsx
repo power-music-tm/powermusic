@@ -61,25 +61,11 @@ const SORT_PRESETS = [
 const DEFAULT_SORT = 'displayId-desc';
 
 function dismissCascadeCopy(impact) {
-  const confirmed = impact?.confirmedSiblingCount || 0;
-  const potential = impact?.potentialSiblingCount || 0;
-  if (!confirmed && !potential) return null;
-  const parts = [];
-  if (confirmed > 0) {
-    parts.push(
-      confirmed === 1
-        ? 'This will also delete 1 confirmed duplicate request.'
-        : `This will also delete ${confirmed} confirmed duplicate requests.`,
-    );
-  }
-  if (potential > 0) {
-    parts.push(
-      potential === 1
-        ? 'The related potential duplicate will be kept for review.'
-        : `The related potential duplicates (${potential}) will be kept for review.`,
-    );
-  }
-  return parts.join(' ');
+  const cascade = impact?.confirmedSiblingCount || 0;
+  if (!cascade) return null;
+  return cascade === 1
+    ? 'This will also delete the other request in this group.'
+    : `This will also delete the other ${cascade} requests in this group.`;
 }
 
 function parseSortPreset(preset) {
@@ -1302,14 +1288,13 @@ export default function Requests() {
     try {
       await dismissRequest(req.id, { alsoDeleteIds: alsoIds });
       settleMutation();
-      const confirmedCount = impact?.confirmedSiblingCount || 0;
+      const cascadeCount = impact?.confirmedSiblingCount || 0;
       showToast(
-        confirmedCount > 0
-          ? `Request deleted${confirmedCount === 1 ? ' (and 1 confirmed duplicate)' : ` (and ${confirmedCount} confirmed duplicates)`}.`
+        cascadeCount > 0
+          ? `Request deleted${cascadeCount === 1 ? ' (and 1 other in the group)' : ` (and ${cascadeCount} others in the group)`}.`
           : 'Request deleted.',
         'success',
       );
-      // Survivors (potential duplicates) may reappear as their own group/card.
       refreshRequestsPage();
     } catch (err) {
       settleMutation();

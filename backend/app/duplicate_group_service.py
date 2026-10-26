@@ -1497,8 +1497,10 @@ def get_dismiss_impact(
 ) -> dict:
     """Preview which group siblings would also be deleted with this request.
 
-    Confirmed-match siblings are deleted with the target. Potential-only siblings
-    are left for separate review.
+    Deleting any new request in a duplicate group cascades to every other new
+    member of that group (confirmed and potential). Leaving potential peers open
+    previously left managers seeing Pending after admin thought the group was gone.
+    ``confirmedSiblingIds`` is the cascade list (API field name kept for clients).
     """
     req = (
         db.query(models.ManagerRequest)
@@ -1514,8 +1516,7 @@ def get_dismiss_impact(
             "potentialSiblingCount": 0,
         }
 
-    confirmed_ids: List[str] = []
-    potential_ids: List[str] = []
+    sibling_ids: List[str] = []
     if req.duplicate_group_id and req.status == "new":
         members = (
             db.query(models.ManagerRequest)
@@ -1526,21 +1527,14 @@ def get_dismiss_impact(
             )
             .all()
         )
-        target_person = person_from_model(req)
-        is_ht_req = is_healthtech_from_request(db, req)
-        for member in members:
-            classification, _ = match_classification_for_partner(target_person, person_from_model(member), is_healthtech=is_ht_req)
-            if classification == "confirmed_duplicate":
-                confirmed_ids.append(member.id)
-            elif classification == "potential_duplicate":
-                potential_ids.append(member.id)
+        sibling_ids = [member.id for member in members if member.id]
 
     return {
         "requestId": request_id,
-        "confirmedSiblingIds": confirmed_ids,
-        "potentialSiblingCount": len(potential_ids),
-        "confirmedSiblingCount": len(confirmed_ids),
-        "potentialSiblingIds": potential_ids,
+        "confirmedSiblingIds": sibling_ids,
+        "potentialSiblingIds": [],
+        "confirmedSiblingCount": len(sibling_ids),
+        "potentialSiblingCount": 0,
     }
 
 
@@ -1552,10 +1546,10 @@ def collect_selective_dismiss_targets(
 ) -> Tuple[List[models.ManagerRequest], List[models.ManagerRequest]]:
     """Return (requests_to_dismiss, survivors_to_keep).
 
-    Always deletes ``req``. When ``also_delete_ids`` is provided (frozen at
-    Delete-confirm open), also deletes those IDs if they are still new members of
-    the same group — late arrivals not in that list stay as survivors.
-    When ``also_delete_ids`` is omitted, only ``req`` is deleted.
+    Always deletes ``req``. Same-group new peers:
+      * ``also_delete_ids is None`` — cascade to every other new member (default).
+      * ``also_delete_ids`` provided (incl. ``[]``) — freeze that set from
+        Delete-confirm open; late arrivals not listed stay as survivors.
     """
     to_dismiss = [req]
     if not req.duplicate_group_id or req.status != "new":
@@ -1570,11 +1564,14 @@ def collect_selective_dismiss_targets(
         )
         .all()
     )
-    cascade = {mid for mid in (also_delete_ids or []) if mid and mid != req.id}
-    if cascade:
-        for peer in peers:
-            if peer.id in cascade:
-                to_dismiss.append(peer)
+    if also_delete_ids is None:
+        to_dismiss.extend(peers)
+    else:
+        cascade = {mid for mid in also_delete_ids if mid and mid != req.id}
+        if cascade:
+            for peer in peers:
+                if peer.id in cascade:
+                    to_dismiss.append(peer)
 
     dismiss_ids = {r.id for r in to_dismiss}
     survivors = [p for p in peers if p.id not in dismiss_ids]
@@ -2526,11 +2523,17 @@ def _hide_from_admin(
 def admin_delete_requests(db: Session, request_ids: List[str]) -> int:
     """Admin Delete (New Requests, group members, Directory).
 
-    Manager portal submissions are hidden from the admin app but kept, unchanged,
-    in the manager's request history. Rows no manager can see are permanently deleted.
-    Returns the number of rows removed from the admin app.
+    Manager portal submissions are hidden from the admin app but kept in the
+    manager's request history. Pending portal rows are stamped handled so the
+    manager sees Handled (not Pending) after admin delete. Already-handled
+    portal rows keep their prior handled_at / outcome. Rows no manager can see
+    are permanently deleted. Returns the number of rows removed from the admin app.
     """
-    from app.manager_request_stats import is_manager_portal_request
+    from app.manager_request_stats import (
+        decrement_manager_pending_stat,
+        is_manager_portal_request,
+    )
+    from app.manager_request_summary_cache import invalidate_manager_request_summary
     from app.request_visibility import STATUS_ADMIN_DELETED, admin_visible_filter
 
     valid_ids = [rid for rid in (request_ids or []) if rid]
@@ -2546,7 +2549,21 @@ def admin_delete_requests(db: Session, request_ids: List[str]) -> int:
 
     keep = [r for r in rows if is_manager_portal_request(r)]
     drop_ids = [r.id for r in rows if not is_manager_portal_request(r)]
+
+    # Stamp pending portal rows as handled before hiding so manager_visible_status
+    # maps admin_deleted → handled (requires handled_at).
+    now = datetime.now(timezone.utc)
+    affected_managers: set[str] = set()
+    for r in keep:
+        if r.handled_at is None:
+            r.handled_at = now
+            decrement_manager_pending_stat(db, r)
+            if r.manager_id:
+                affected_managers.add(str(r.manager_id))
+
     _hide_from_admin(db, keep, status=STATUS_ADMIN_DELETED)
+    for manager_id in affected_managers:
+        invalidate_manager_request_summary(manager_id)
     if drop_ids:
         permanently_delete_requests(db, drop_ids)
     return len(rows)

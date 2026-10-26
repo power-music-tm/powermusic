@@ -752,7 +752,8 @@ class MergePeersIn(BaseModel):
 class DismissImpactOut(BaseModel):
     """Preview for deleting a request that may sit in a duplicate group.
 
-    Confirmed-match siblings are deleted with the target. Potential-only siblings stay.
+    confirmedSiblingIds lists every other new member of the same group (cascade).
+    potentialSiblingIds is always empty (kept for older clients).
     """
 
     requestId: str
@@ -765,8 +766,9 @@ class DismissImpactOut(BaseModel):
 class DismissRequestIn(BaseModel):
     """Optional body for POST /api/admin/requests/{id}/dismiss.
 
-    alsoDeleteIds: freeze confirmed siblings at Delete-confirm open. Requests that
-    join the group after that stay open (not cascade-deleted).
+    alsoDeleteIds: freeze cascade peers at Delete-confirm open. Requests that
+    join the group after that stay open (not cascade-deleted). Omit to cascade
+    to every current new member of the group.
     """
 
     alsoDeleteIds: Optional[List[str]] = None

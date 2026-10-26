@@ -1,8 +1,10 @@
 """Admin vs manager visibility of manager_requests rows.
 
-Admin Delete and duplicate merges keep manager portal rows so the manager's
-request history is unchanged. Those rows get a status the admin app never
-lists ("new" = New Requests, "handled" = Directory / archive).
+Admin Delete and duplicate merges keep manager portal rows in the manager's
+request history. Those rows use statuses the admin app never lists
+("admin_deleted" / "merged"). Manager UI Pending vs Handled follows
+``manager_visible_status`` (admin-deleted pending rows get ``handled_at`` stamped
+on delete so they show as Handled).
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ def admin_visible_filter():
 
 
 def manager_visible_status(req: models.ManagerRequest) -> str:
-    """Hidden rows keep their pre-delete look; merged rows follow their survivor via handled_at."""
+    """Hidden rows: Handled when handled_at is set, else Pending (open merges)."""
     if req.status in ADMIN_HIDDEN_STATUSES:
         return STATUS_HANDLED if req.handled_at else STATUS_NEW
     return req.status
