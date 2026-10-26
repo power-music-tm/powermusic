@@ -442,6 +442,16 @@ export function applyListSeed(groupId, cached, seed) {
     representativeRequestId: cached?.representativeRequestId || repId || null,
     members,
     droppedMemberIds: Array.isArray(cached?.droppedMemberIds) ? cached.droppedMemberIds : [],
+    // List seed never ships lookalikes — keep the last detail-cache banner payload
+    // so Transfer does not pop in late on every Back → reopen.
+    separatedLookalikeRequests: (
+      Array.isArray(cached?.separatedLookalikeRequests)
+      && cached.separatedLookalikeRequests.length
+        ? cached.separatedLookalikeRequests
+        : (Array.isArray(preview?.separatedLookalikeRequests)
+          ? preview.separatedLookalikeRequests
+          : [])
+    ),
     classificationSummary: alignClassificationSummaryWithMembers(merged, members.length),
   };
 }

@@ -725,10 +725,9 @@ class UnlinkDuplicateIn(BaseModel):
 class ReattachLookalikeIn(BaseModel):
     """Payload for POST /api/duplicate-groups/{id}/reattach-lookalike.
 
-    Moves the current open request onto targetRequestId (a separated lookalike).
-    Peers may remain in the source group — Request History Merge is not required.
-    sourceRequestId selects which member to move when the group has several;
-    defaults to the newest / current request.
+    Moves one open member of this group onto targetRequestId (a separated
+    lookalike). sourceRequestId is required when the group has multiple open
+    members; with a single member it may be omitted.
     """
 
     targetRequestId: str

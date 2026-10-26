@@ -241,8 +241,7 @@ class TestUnlinkedLookalikeRegroup:
             assert c.id not in member_ids
             assert d.id not in member_ids
 
-    def test_reattach_moves_current_request_and_leaves_peers(self, db: Session):
-        """Transfer moves only the current request; peers stay without Merge."""
+    def test_reattach_moves_chosen_member_from_multi_group(self, db: Session):
         now = datetime.now(timezone.utc)
         partner = _partner(db)
 
@@ -277,8 +276,15 @@ class TestUnlinkedLookalikeRegroup:
         db.flush()
         assert new_group is not None
 
-        # Two members (denver + incoming) — Transfer still moves the current one.
-        result = reattach_to_lookalike(db, new_group.id, india.id)
+        # Multi-member: must name which request to move.
+        assert reattach_to_lookalike(db, new_group.id, india.id) is None
+
+        result = reattach_to_lookalike(
+            db,
+            new_group.id,
+            india.id,
+            source_request_id=incoming.id,
+        )
         db.flush()
         assert result is not None
         assert result["targetRequestId"] == india.id
@@ -286,19 +292,36 @@ class TestUnlinkedLookalikeRegroup:
         assert result["previousGroupDismissed"] is False
 
         db.refresh(incoming)
-        db.refresh(india)
         db.refresh(denver)
+        db.refresh(india)
         db.refresh(pakistan)
         db.refresh(new_group)
 
         assert incoming.duplicate_group_id == india.duplicate_group_id == result["newGroupId"]
         assert denver.duplicate_group_id == new_group.id
         assert new_group.status == "active"
+        assert pakistan.duplicate_group_id != result["newGroupId"]
         assert not are_requests_dismissed(db, incoming.id, india.id)
         # Other lookalikes stay outside the destination group.
         assert pakistan.duplicate_group_id is None or pakistan.duplicate_group_id != result["newGroupId"]
         assert austin.duplicate_group_id != result["newGroupId"] or austin.duplicate_group_id is None
         assert england.duplicate_group_id != result["newGroupId"] or england.duplicate_group_id is None
+
+        # Moving the last remaining member dismisses the emptied source group.
+        last = reattach_to_lookalike(
+            db,
+            new_group.id,
+            pakistan.id,
+            source_request_id=denver.id,
+        )
+        db.flush()
+        assert last is not None
+        assert last["previousGroupDismissed"] is True
+        db.refresh(new_group)
+        db.refresh(denver)
+        db.refresh(pakistan)
+        assert new_group.status == "dismissed"
+        assert denver.duplicate_group_id == pakistan.duplicate_group_id == last["newGroupId"]
 
     def test_peers_merge_keeps_lookalikes_out_and_reattach_stays_visible(self, db: Session):
         """After Merge, dismissed lookalikes must not rejoin; Attach must leave a visible group."""

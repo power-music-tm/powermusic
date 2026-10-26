@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
   ArrowLeft, ChevronRight, ChevronDown, Check, Database, Clock, Pencil,
@@ -359,6 +359,12 @@ export default function GroupResolutionView({
   const [valuesOpen, setValuesOpen] = useState(true);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [mergePageOpen, setMergePageOpen] = useState(false);
+  // Keep Transfer lookalikes stable across polls — ignore empty flashes after we
+  // already painted a banner for this group.
+  const [lookalikeRequests, setLookalikeRequests] = useState(
+    () => (Array.isArray(group.separatedLookalikeRequests) ? group.separatedLookalikeRequests : []),
+  );
+  const lookalikeGroupIdRef = useRef(group.id);
 
   // Keep confirmation + merge-page values
   // confirmAction: 'keep' | 'merge' | 'peers_merge' | 'add_as_new' | 'keep_and_archive' | 'nickname_check' | 'select_directory' | null
@@ -371,6 +377,7 @@ export default function GroupResolutionView({
   const [mergeEditing, setMergeEditing] = useState(false);
   const [attachLookalikeOpen, setAttachLookalikeOpen] = useState(false);
   const [attachLookalikeId, setAttachLookalikeId] = useState(null);
+  const [attachSourceRequestId, setAttachSourceRequestId] = useState(null);
   // Explicit Directory target for Add/Remove-and-Update (never auto-picked after choose).
   const [selectedDirectoryId, setSelectedDirectoryId] = useState(null);
   // Peer IDs frozen when peers_merge / Add-to-Directory confirm opens —
@@ -428,6 +435,24 @@ export default function GroupResolutionView({
     if (mergePageOpen) setModalValues(nextForm);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: sync from group.members only
   }, [group.members, group.id]);
+
+  useEffect(() => {
+    const next = Array.isArray(group.separatedLookalikeRequests)
+      ? group.separatedLookalikeRequests
+      : [];
+    setLookalikeRequests((prev) => {
+      if (lookalikeGroupIdRef.current !== group.id) {
+        lookalikeGroupIdRef.current = group.id;
+        return next;
+      }
+      const nextKey = next.map((l) => l?.id).filter(Boolean).join('|');
+      const prevKey = prev.map((l) => l?.id).filter(Boolean).join('|');
+      if (nextKey === prevKey) return prev;
+      // Seed/list paint often omits lookalikes — don't wipe a painted banner.
+      if (next.length === 0 && prev.length > 0) return prev;
+      return next;
+    });
+  }, [group.id, group.separatedLookalikeRequests]);
 
   // Keep final-values form on the Current request even when the member set was
   // already complete on first paint (no id-join change to trigger the effect above).
@@ -1050,11 +1075,13 @@ export default function GroupResolutionView({
 
   const openAttachLookalikeModal = () => {
     if (submitting) return;
-    const lookalikes = Array.isArray(group.separatedLookalikeRequests)
-      ? group.separatedLookalikeRequests
-      : [];
-    if (lookalikes.length === 0) return;
-    setAttachLookalikeId(lookalikes[0]?.id || null);
+    if (lookalikeRequests.length === 0) return;
+    const active = members.filter((m) => !sessionUnlinkedIds.includes(m.id));
+    const newest = [...active].sort(
+      (a, b) => new Date(b.receivedAt || 0) - new Date(a.receivedAt || 0),
+    )[0];
+    setAttachSourceRequestId(newest?.id || group.representativeRequestId || null);
+    setAttachLookalikeId(lookalikeRequests[0]?.id || null);
     setAttachLookalikeOpen(true);
   };
 
@@ -1062,16 +1089,18 @@ export default function GroupResolutionView({
     if (submitting) return;
     setAttachLookalikeOpen(false);
     setAttachLookalikeId(null);
+    setAttachSourceRequestId(null);
   };
 
   const handleConfirmAttachLookalike = async () => {
-    if (!attachLookalikeId || submitting) return;
+    if (!attachLookalikeId || !attachSourceRequestId || submitting) return;
     setSubmitting(true);
     const targetId = attachLookalikeId;
+    const sourceId = attachSourceRequestId;
     try {
       const result = await reattachGroupLookalike(group.id, {
         targetRequestId: targetId,
-        sourceRequestId: currentSourceRequestId,
+        sourceRequestId: sourceId,
       });
       const newGroupId = result?.newGroupId || null;
       let detail = null;
@@ -1084,11 +1113,12 @@ export default function GroupResolutionView({
       }
       setAttachLookalikeOpen(false);
       setAttachLookalikeId(null);
+      setAttachSourceRequestId(null);
       // Pass full payload + destination detail so the parent can upsert the list
       // row and navigate without tombstoning survivor request IDs.
       onResolved('reattached', {
         newGroupId,
-        sourceRequestId: result?.sourceRequestId || currentSourceRequestId || null,
+        sourceRequestId: result?.sourceRequestId || sourceId || null,
         targetRequestId: result?.targetRequestId || targetId,
         previousGroupId: result?.previousGroupId || group.id,
         previousGroupDismissed: Boolean(result?.previousGroupDismissed),
@@ -1691,9 +1721,16 @@ export default function GroupResolutionView({
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <h1 className="text-2xl font-semibold leading-tight tracking-tight text-[var(--color-text-primary)] sm:text-[1.75rem]">
-                    {heroName}
-                  </h1>
+                  <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+                    {currentRep?.displayId || currentRep?.id ? (
+                      <span className="text-sm font-semibold tabular-nums text-[var(--color-text-muted)] sm:text-base">
+                        {formatRequestDisplayId(currentRep.displayId || currentRep.id)}
+                      </span>
+                    ) : null}
+                    <h1 className="text-2xl font-semibold leading-tight tracking-tight text-[var(--color-text-primary)] sm:text-[1.75rem]">
+                      {heroName}
+                    </h1>
+                  </div>
                   <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-[var(--color-text-secondary)]">
                     {heroEmail ? (
                       <span className="inline-flex min-w-0 items-center gap-1.5">
@@ -1740,7 +1777,7 @@ export default function GroupResolutionView({
           </div>
         </div>
 
-      {Array.isArray(group.separatedLookalikeRequests) && group.separatedLookalikeRequests.length > 0 ? (
+      {lookalikeRequests.length > 0 ? (
         <div
           role="status"
           className="mt-6 flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-3 text-sm text-amber-950"
@@ -1749,12 +1786,12 @@ export default function GroupResolutionView({
           <div className="min-w-0 flex-1 space-y-3">
             <p className="leading-relaxed">
               Also similar to{' '}
-              {group.separatedLookalikeRequests.map((lookalike, index) => {
+              {lookalikeRequests.map((lookalike, index) => {
                 const href = lookalike.duplicateGroupId
                   ? `/new-requests/group/${encodeURIComponent(lookalike.duplicateGroupId)}`
                   : `/new-requests/${encodeURIComponent(lookalike.id)}`;
                 const label = formatRequestDisplayId(lookalike.displayId || lookalike.id);
-                const count = group.separatedLookalikeRequests.length;
+                const count = lookalikeRequests.length;
                 const sep =
                   index === count - 1
                     ? ''
@@ -1776,6 +1813,8 @@ export default function GroupResolutionView({
               })}
               . You previously chose <span className="font-semibold">Not the same person</span> for
               these. This request was transferred to the latest match only; those requests stay separate.
+              {' '}You can Transfer any request from this group to a similar request
+              {incomingMemberCount() > 1 ? ' (choose which one)' : ''}, and Transfer again later if you need to move it.
             </p>
             <button
               type="button"
@@ -2947,7 +2986,7 @@ export default function GroupResolutionView({
             </button>
             <button
               type="button"
-              disabled={submitting || !attachLookalikeId}
+              disabled={submitting || !attachLookalikeId || !attachSourceRequestId}
               onClick={handleConfirmAttachLookalike}
               className="px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer disabled:opacity-60"
             >
@@ -2957,13 +2996,60 @@ export default function GroupResolutionView({
         }
       >
         <p className="text-sm text-[var(--color-text-secondary)]">
-          Choose which request to transfer this to. Only one can be selected.
-          The current request will leave this group and join that request.
-          Other requests in this group stay here. Other similar requests stay separate.
+          {incomingMemberCount() > 1
+            ? 'Choose which request from this group to move, then which similar request to join. Other requests stay here; other similar requests stay separate.'
+            : 'Choose which similar request to join. This request will leave this group. Other similar requests stay separate.'}
         </p>
-        <fieldset className="mt-4 space-y-2">
-          <legend className="sr-only">Similar requests</legend>
-          {(group.separatedLookalikeRequests || []).map((lookalike) => {
+        {incomingMemberCount() > 1 ? (
+          <fieldset className="mt-4 space-y-2">
+            <legend className="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+              Move from this group
+            </legend>
+            {activeMembers.map((member) => {
+              const label = formatRequestDisplayId(member.displayId || member.id);
+              const inputId = `attach-source-${member.id}`;
+              return (
+                <label
+                  key={member.id}
+                  htmlFor={inputId}
+                  className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3.5 py-3 text-sm transition-colors ${
+                    attachSourceRequestId === member.id
+                      ? 'border-[var(--color-brand-primary)] bg-[var(--color-brand-primary)]/5'
+                      : 'border-[var(--color-border-default)] bg-white hover:bg-[var(--color-surface-highlight)]'
+                  }`}
+                >
+                  <input
+                    id={inputId}
+                    type="radio"
+                    name="attach-source"
+                    value={member.id}
+                    checked={attachSourceRequestId === member.id}
+                    onChange={() => setAttachSourceRequestId(member.id)}
+                    className="h-4 w-4 shrink-0 accent-[var(--color-brand-primary)]"
+                  />
+                  <span className="min-w-0">
+                    <span className="font-semibold tabular-nums text-[var(--color-text-primary)]">
+                      {label}
+                    </span>
+                    {member.person ? (
+                      <span className="mt-0.5 block truncate text-xs text-[var(--color-text-secondary)]">
+                        {formatPersonName(member.person)}
+                        {formatPersonLocation(member.person, { empty: '' })
+                          ? ` · ${formatPersonLocation(member.person)}`
+                          : ''}
+                      </span>
+                    ) : null}
+                  </span>
+                </label>
+              );
+            })}
+          </fieldset>
+        ) : null}
+        <fieldset className={`space-y-2 ${incomingMemberCount() > 1 ? 'mt-5' : 'mt-4'}`}>
+          <legend className="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+            Transfer to
+          </legend>
+          {lookalikeRequests.map((lookalike) => {
             const label = formatRequestDisplayId(lookalike.displayId || lookalike.id);
             const inputId = `attach-lookalike-${lookalike.id}`;
             return (

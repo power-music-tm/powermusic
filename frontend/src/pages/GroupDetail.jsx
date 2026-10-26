@@ -131,7 +131,11 @@ export default function GroupDetail() {
     return true;
   }, [showArrivalAlert]);
 
-  const applyGroupDetail = useCallback((data, { alertNewMembers = false, quietDissolved = false } = {}) => {
+  const applyGroupDetail = useCallback((data, {
+    alertNewMembers = false,
+    quietDissolved = false,
+    trustLookalikeEmpty = false,
+  } = {}) => {
     if (!data || data.status === 'resolved' || data.status === 'dismissed') {
       // After Delete, caller navigates away — keep current paint (avoid !group
       // flashing "Group not found" before replace navigation).
@@ -164,12 +168,30 @@ export default function GroupDetail() {
     const droppedSet = new Set([...droppedMemberIds, ...hardSuppressedRequestIds()]);
     const liveMembers = (Array.isArray(data.members) ? data.members : [])
       .filter((m) => m?.id && !droppedSet.has(m.id));
+    const prevLookalikes = Array.isArray(prevCached?.separatedLookalikeRequests)
+      ? prevCached.separatedLookalikeRequests
+      : (Array.isArray(groupRef.current?.separatedLookalikeRequests)
+        ? groupRef.current.separatedLookalikeRequests
+        : []);
+    const nextLookalikes = Array.isArray(data.separatedLookalikeRequests)
+      ? data.separatedLookalikeRequests
+      : [];
+    // Polls can briefly return empty lookalikes — keep the painted banner unless
+    // this refresh explicitly trusts an empty payload (post-action bust).
+    const separatedLookalikeRequests = (
+      nextLookalikes.length > 0
+        ? nextLookalikes
+        : (trustLookalikeEmpty || prevLookalikes.length === 0
+          ? nextLookalikes
+          : prevLookalikes)
+    );
+
     const filtered = {
       ...data,
       members: liveMembers,
       droppedMemberIds,
+      separatedLookalikeRequests,
     };
-    writeCache(groupDetailCacheKey(filtered.id || groupId), filtered);
 
     const nextIds = memberIdsFromGroup(filtered);
 
@@ -183,7 +205,37 @@ export default function GroupDetail() {
     // remount/seed is not a new request joining.
     const added = nextIds.filter((id) => !prevIds.has(id) && !droppedSet.has(id));
 
-    setGroup(filtered);
+    // Polls should not remount the Transfer banner when nothing displayable changed.
+    const prevGroup = groupRef.current;
+    const lookalikeKey = (list) => (Array.isArray(list) ? list : [])
+      .map((l) => l?.id)
+      .filter(Boolean)
+      .sort()
+      .join('|');
+    const memberKey = (list) => (Array.isArray(list) ? list : [])
+      .map((m) => [
+        m?.id || '',
+        m?.person?.firstName || '',
+        m?.person?.lastName || '',
+        m?.person?.email || '',
+        m?.action || '',
+        m?.receivedAt || '',
+      ].join(':'))
+      .join('|');
+    const unchangedDisplay = Boolean(
+      prevGroup
+      && String(prevGroup.id) === String(filtered.id)
+      && String(prevGroup.classification || '') === String(filtered.classification || '')
+      && String(prevGroup.directoryPersonId || '') === String(filtered.directoryPersonId || '')
+      && memberKey(prevGroup.members) === memberKey(filtered.members)
+      && lookalikeKey(prevGroup.separatedLookalikeRequests)
+        === lookalikeKey(filtered.separatedLookalikeRequests)
+      && added.length === 0
+    );
+    writeCache(groupDetailCacheKey(filtered.id || groupId), filtered);
+    if (!unchangedDisplay) {
+      setGroup(filtered);
+    }
     setNotFound(false);
     memberIdsRef.current = new Set(nextIds);
 
@@ -212,7 +264,11 @@ export default function GroupDetail() {
       groupCacheKey,
       () => fetchGroupDetail(groupId),
       (data) => {
-        applyGroupDetail(data, { alertNewMembers, quietDissolved });
+        applyGroupDetail(data, {
+          alertNewMembers,
+          quietDissolved,
+          trustLookalikeEmpty: bustCache,
+        });
         liveReadyRef.current = true;
         setLoading(false);
       },
@@ -593,9 +649,14 @@ export default function GroupDetail() {
       }
 
       if (type === 'reattached') {
-        // Leave the dissolved source group immediately. Opening the destination
+        const payload = name && typeof name === 'object' ? name : null;
+        if (payload?.previousGroupDismissed === false) {
+          // Peers remain — stay here and refresh after the chosen request left.
+          refreshGroupDetail({ alertNewMembers: false, bustCache: true });
+          return;
+        }
+        // Source group emptied — leave immediately. Opening the destination
         // group URL races dismissed→active transitions and flashes "Group not found".
-        // List cache already has the combined row — admin opens it from New Requests.
         navigate('/new-requests', { replace: true });
         return;
       }
