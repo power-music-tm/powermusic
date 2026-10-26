@@ -3751,6 +3751,164 @@ def preview_resolve_update(
     }
 
 
+def refresh_active_groups_directory_links(db: Session, dry_run: bool = False) -> dict:
+    """Re-scan active groups under current Directory matching rules.
+
+    Used after matching-rule changes (e.g. exact email = confirmed) so open
+    groups that previously missed a Directory hit pick up directory_person_id,
+    classification, matched ids, and representative tags.
+
+    If dry_run=True, rolls back at the end.
+    """
+    groups = (
+        db.query(models.DuplicateGroup)
+        .filter(models.DuplicateGroup.status == "active")
+        .order_by(models.DuplicateGroup.created_at.asc())
+        .all()
+    )
+    dismissed_set = get_all_dismissed_pairs(db)
+    updated: List[dict] = []
+
+    for group in groups:
+        members = get_group_members(db, group.id)
+        if not members:
+            continue
+
+        match_tuples: List[Tuple[models.ManagerRequest, str]] = []
+        seen_ids: Set[str] = set()
+        sample = members[0]
+        is_ht = is_healthtech_from_request(db, sample)
+        is_gll = is_gll_from_request(db, sample)
+
+        for req in members:
+            req_ht = is_healthtech_from_request(db, req)
+            req_gll = is_gll_from_request(db, req)
+            candidates = _directory_candidates(db, req)
+            for person, cls in _find_all_directory_matches(
+                db,
+                person_from_model(req),
+                candidates,
+                req_id=req.id,
+                is_ht=req_ht,
+                is_gll=req_gll,
+                dismissed_set=dismissed_set,
+            ):
+                if person.id and person.id not in seen_ids:
+                    seen_ids.add(person.id)
+                    match_tuples.append((person, cls))
+
+        if match_tuples:
+            match_tuples = _collapse_directory_matches_to_representatives(
+                match_tuples, is_ht=is_ht, is_gll=is_gll
+            )
+            match_tuples.sort(key=_directory_match_sort_key)
+
+        has_peer = len(members) > 1
+        new_classification = _classification_from_directory_matches(
+            match_tuples,
+            has_peer_match=has_peer,
+        )
+        # Keep peer-only classification when Directory still has no hit.
+        if new_classification is None:
+            if not match_tuples:
+                continue
+            new_classification = group.classification
+
+        matched_ids = [person.id for person, _ in match_tuples if person.id]
+        active_ids = {
+            person.id
+            for person, _ in match_tuples
+            if person.id
+            and (person.outcome or "") == "Added"
+            and not _directory_is_off_roster(person)
+        }
+
+        prev_dir = group.directory_person_id
+        prev_class = group.classification
+        prev_meta_ids = list((group.resolution_metadata or {}).get("matched_directory_person_ids") or [])
+
+        next_dir = prev_dir
+        if active_ids:
+            if not next_dir or next_dir not in active_ids:
+                next_dir = next(
+                    (person.id for person, _ in match_tuples if person.id in active_ids),
+                    None,
+                )
+        elif matched_ids:
+            # Only archived/Removed Directory hits — keep link for Keep Existing UX.
+            if not next_dir or next_dir not in set(matched_ids):
+                next_dir = matched_ids[0]
+
+        changed = (
+            next_dir != prev_dir
+            or (new_classification and new_classification != prev_class)
+            or matched_ids != prev_meta_ids
+        )
+        if not changed and next_dir:
+            # Still refresh tags so already-exists appears on the representative.
+            _sync_group_representative_and_tags(db, group, member_requests=members)
+            if dry_run:
+                pass
+            updated.append({
+                "group_id": group.id,
+                "action": "tags_synced",
+                "directory_person_id": next_dir,
+                "classification": group.classification,
+                "matched_directory_person_ids": matched_ids,
+            })
+            continue
+
+        if not changed:
+            continue
+
+        if next_dir:
+            group.directory_person_id = next_dir
+        if new_classification:
+            group.classification = new_classification
+        if matched_ids:
+            meta = dict(group.resolution_metadata or {})
+            meta["matched_directory_person_ids"] = matched_ids
+            group.resolution_metadata = meta
+            flag_modified(group, "resolution_metadata")
+
+        _sync_group_representative_and_tags(db, group, member_requests=members)
+        updated.append({
+            "group_id": group.id,
+            "action": "updated",
+            "previous_directory_person_id": prev_dir,
+            "directory_person_id": group.directory_person_id,
+            "previous_classification": prev_class,
+            "classification": group.classification,
+            "matched_directory_person_ids": matched_ids,
+            "member_ids": [m.id for m in members],
+            "members": [
+                {
+                    "id": m.id,
+                    "name": f"{(m.person_first_name or '').strip()} {(m.person_last_name or '').strip()}".strip(),
+                    "email": m.person_email,
+                    "action": m.action,
+                }
+                for m in members
+            ],
+        })
+
+    summary = {
+        "dry_run": dry_run,
+        "active_groups_scanned": len(groups),
+        "groups_updated": len([u for u in updated if u.get("action") == "updated"]),
+        "groups_tags_synced": len([u for u in updated if u.get("action") == "tags_synced"]),
+        "updates": updated[:50],
+        "updates_truncated": max(0, len(updated) - 50),
+    }
+
+    if dry_run:
+        db.rollback()
+    else:
+        db.commit()
+
+    return summary
+
+
 def backfill_duplicate_groups(db: Session, dry_run: bool = False) -> dict:
     """Evaluate all existing unhandled requests under duplicate/Directory matching rules.
 

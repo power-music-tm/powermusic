@@ -106,13 +106,14 @@ def manager_form_directory_overlap_reasons(
     """Manager Check Directory / match-candidates warning reasons.
 
     Non-GLL (name is one entity among {Name, Email, Location}):
-      Name = first AND last both match.
-      Warn when at least two entities match:
-        Name+Email, Name+Location, or Email+Location.
-      Name alone, first+email, last+email, first+location, last+location → no warn.
+      Exact same email alone is a complete match (warn as Email).
+      Otherwise warn when at least two entities match:
+        Name+Location (Name = first AND last both match).
+      Name alone, first+location, last+location → no warn.
 
     GLL (first/last stay separate; no location):
-      Warn when at least two of {first, last, email} match (unchanged).
+      Exact same email alone warns as Email; otherwise at least two of
+      {first, last, email}.
     """
     matched = _manager_form_matched_field_keys(
         email=email,
@@ -123,13 +124,16 @@ def manager_form_directory_overlap_reasons(
     )
 
     if is_gll:
+        if "email" in matched:
+            reasons: set[str] = {"Email"}
+            if "firstName" in matched and "lastName" in matched:
+                reasons.add("Name")
+            return reasons
         if len(matched) < 2:
             return set()
-        reasons: set[str] = set()
+        reasons = set()
         if "firstName" in matched and "lastName" in matched:
             reasons.add("Name")
-        if "email" in matched:
-            reasons.add("Email")
         if not reasons:
             reasons.add("Match")
         return reasons
@@ -137,16 +141,17 @@ def manager_form_directory_overlap_reasons(
     name_match = "firstName" in matched and "lastName" in matched
     email_match = "email" in matched
     loc_match = "location" in matched
+    if email_match:
+        reasons = {"Email"}
+        if name_match:
+            reasons.add("Name")
+        return reasons
     if sum((name_match, email_match, loc_match)) < 2:
         return set()
 
     reasons = set()
     if name_match:
         reasons.add("Name")
-    if email_match and loc_match:
-        reasons.add("Email + location")
-    elif email_match:
-        reasons.add("Email")
     if loc_match and name_match and not email_match:
         reasons.add("Location")
     if not reasons:

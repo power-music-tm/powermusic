@@ -4,6 +4,9 @@ PureGym and Health Fitness share the same duplicate matching model with
 name treated as ONE entity (first+last), plus email and location:
   Name (first nickname-match AND last exact), email, location
 
+Exact same non-empty email is always a confirmed duplicate (complete match),
+even when name and location differ.
+
 For Health Fitness, the "location" field stores what the partner calls "client".
 
 GLL uses a 3-field model (first name, last name, email) with no location scoring:
@@ -11,6 +14,7 @@ GLL uses a 3-field model (first name, last name, email) with no location scoring
   First Name = 30 pts  (Jaro-Winkler)
   Email      = 10 pts  (exact match)
   Max score  = 75 pts
+  Exact same email is also confirmed for GLL.
 
 Partner isolation is enforced by the caller filtering to the correct partner_id
 before comparing requests; these functions receive already-filtered sets.
@@ -448,15 +452,14 @@ def match_classification(
     Classification rule
     -------------------
     Confirmed duplicate (evaluated FIRST):
-      same first AND same last AND same email AND same location
-      (exact equality — unchanged from previous behaviour)
+      exact same non-empty email (complete match on its own).
 
-    Potential duplicate (name treated as ONE entity):
+    Potential duplicate (name treated as ONE entity; only when emails differ):
       Entities: Name, Email, Location
       Name matches only when first_match AND same_last are both True
         (first uses nickname matching; last is exact).
       Potential when at least two of those three entities match.
-      Examples: Name+Email, Name+Location, Email+Location.
+      Examples: Name+Location (different emails).
       Name alone (first+last, different email/location) is NOT enough.
 
     The numeric score is still computed with the original weights and returned
@@ -472,9 +475,6 @@ def match_classification(
     if not last_l or not last_r:
         return None, 0.0
 
-    # ── Confirmed: identity fields equal after first-name space/case fold ───
-    same_first       = (first_l == first_r)
-    same_last_exact  = (last_l  == last_r)
     same_email_exact = bool(email_l and email_r and email_l == email_r)
     same_loc_exact   = bool(loc_l   and loc_r   and loc_l   == loc_r)
 
@@ -486,11 +486,13 @@ def match_classification(
 
     total_score = first_name_score + last_name_score + email_score + loc_score
 
-    # 1. Confirmed Duplicate (strict rule — evaluated first, unchanged)
-    if same_first and same_last_exact and same_email_exact and same_loc_exact:
+    # 1. Confirmed Duplicate — exact same non-empty email is a complete match
+    # (covers the former all-four-identity confirmed case as well).
+    if same_email_exact:
         return "confirmed_duplicate", total_score
 
     # 2. Potential Duplicate — name is one entity among {Name, Email, Location}
+    # (emails already differ / are empty — same_email cannot contribute here).
     flags = _field_flags(left, right, use_location=True)
     name_match = flags["first_match"] and flags["same_last"]
     entity_matched = sum((name_match, flags["same_email"], flags["same_loc"]))
@@ -516,9 +518,9 @@ def match_classification_gll(
     Classification rule
     -------------------
     Confirmed duplicate (evaluated FIRST):
-      exact match on all three fields (unchanged from previous behaviour).
+      exact same non-empty email (complete match on its own).
 
-    Potential duplicate:
+    Potential duplicate (only when emails differ):
       number of True field flags >= MIN_MATCHED_FIELDS_FOR_POTENTIAL
       AND (same_last OR same_email)
       Location is never used — GLL records have NULL location.
@@ -536,16 +538,7 @@ def match_classification_gll(
     if not last_l or not last_r:
         return None, 0.0
 
-    same_last_exact  = (last_l == last_r)
-    same_first_exact = (first_l == first_r)
     same_email_exact = bool(email_l and email_r and email_l == email_r)
-
-    # Confirmed Duplicate: all three identity fields equal (first name space/case folded)
-    if same_first_exact and same_last_exact and same_email_exact:
-        first_name_score = 30.0
-        last_name_score  = 35.0
-        email_score      = 10.0
-        return "confirmed_duplicate", first_name_score + last_name_score + email_score
 
     # Score (display only — weights unchanged)
     first_name_score = jaro_winkler(first_l, first_r) * 30.0
@@ -553,6 +546,10 @@ def match_classification_gll(
     email_score      = 10.0 if same_email_exact else 0.0
 
     total_score = first_name_score + last_name_score + email_score
+
+    # Confirmed Duplicate — exact email alone is complete (covers all-three too).
+    if same_email_exact:
+        return "confirmed_duplicate", total_score
 
     # Potential Duplicate — field-flag rule (replaces threshold gate)
     # use_location=False: location is never part of the GLL identity model

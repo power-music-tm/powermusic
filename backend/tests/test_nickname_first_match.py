@@ -120,19 +120,19 @@ class TestPotentialUsesNicknameNotJw:
         label, _ = match_classification(left, right)
         assert label is None
 
-    def test_mike_michael_same_email_different_last_none(self):
-        # Nickname first-match alone does not form Name; email alone is not enough.
+    def test_mike_michael_same_email_different_last_confirmed(self):
+        # Exact same email is a complete / confirmed duplicate on its own.
         left = _p("Mike", "Johnson", "shared@example.com", "GymA")
         right = _p("Michael", "Smith", "shared@example.com", "GymB")
         label, _ = match_classification(left, right)
-        assert label is None
+        assert label == "confirmed_duplicate"
 
-    def test_mike_michael_same_last_and_email_potential(self):
-        # Full Name entity (nickname first + same last) + email → potential
+    def test_mike_michael_same_last_and_email_confirmed(self):
+        # Exact same email is confirmed even when name also matches.
         left = _p("Mike", "Smith", "shared@example.com", "GymA")
         right = _p("Michael", "Smith", "shared@example.com", "GymB")
         label, _ = match_classification(left, right)
-        assert label == "potential_duplicate"
+        assert label == "confirmed_duplicate"
 
     def test_alex_alfred_same_last_not_first_match(self):
         left = _p("Alex", "Smith", "a@x.com", "GymA")

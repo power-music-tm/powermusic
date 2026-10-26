@@ -23,7 +23,7 @@ def _row(**kwargs):
 
 
 class TestManagerFormDirectoryOverlapNonGll:
-    """Non-GLL: Name is one entity; any two of {Name, Email, Location} warn."""
+    """Non-GLL: exact email alone warns; else Name+Location (Name = first+last)."""
 
     @pytest.mark.parametrize(
         "form,expect_reason",
@@ -38,7 +38,11 @@ class TestManagerFormDirectoryOverlapNonGll:
             ),
             (
                 {"first": "", "last": "", "email": "mjose101@yahoo.co.uk", "location": "london gym"},
-                "Email + location",
+                "Email",
+            ),
+            (
+                {"first": "", "last": "", "email": "mjose101@yahoo.co.uk", "location": ""},
+                "Email",
             ),
             (
                 {
@@ -61,15 +65,12 @@ class TestManagerFormDirectoryOverlapNonGll:
         [
             # Name alone
             {"first": "josie", "last": "miller", "email": "", "location": ""},
-            # Partial name + one other field (incomplete Name entity)
-            {"first": "josie", "last": "", "email": "mjose101@yahoo.co.uk", "location": ""},
-            {"first": "", "last": "miller", "email": "mjose101@yahoo.co.uk", "location": ""},
+            # Partial name + location only (incomplete Name entity, no email)
             {"first": "josie", "last": "", "email": "", "location": "london gym"},
             {"first": "", "last": "miller", "email": "", "location": "london gym"},
             # Singles
             {"first": "josie", "last": "", "email": "", "location": ""},
             {"first": "", "last": "miller", "email": "", "location": ""},
-            {"first": "", "last": "", "email": "mjose101@yahoo.co.uk", "location": ""},
             {"first": "", "last": "", "email": "", "location": "London Gym"},
             {"first": "wrong", "last": "miller", "email": "", "location": ""},
         ],
@@ -80,7 +81,7 @@ class TestManagerFormDirectoryOverlapNonGll:
 
 
 class TestManagerFormDirectoryOverlapGll:
-    """GLL: first/last remain separate; any two of {first, last, email} warn."""
+    """GLL: exact email alone warns; else any two of {first, last, email}."""
 
     @pytest.mark.parametrize(
         "form,expect_reason",
@@ -88,6 +89,7 @@ class TestManagerFormDirectoryOverlapGll:
             ({"first": "josie", "last": "miller", "email": "", "location": ""}, "Name"),
             ({"first": "josie", "last": "", "email": "mjose101@yahoo.co.uk", "location": ""}, "Email"),
             ({"first": "", "last": "miller", "email": "mjose101@yahoo.co.uk", "location": ""}, "Email"),
+            ({"first": "", "last": "", "email": "mjose101@yahoo.co.uk", "location": ""}, "Email"),
         ],
     )
     def test_two_field_pairs_warn(self, form, expect_reason):

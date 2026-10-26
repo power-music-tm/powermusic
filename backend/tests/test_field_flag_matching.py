@@ -86,13 +86,13 @@ class TestFourFieldClassification:
             f"Name alone (same first+last) should be None without email/loc, got {label}"
         )
 
-    # Test 4b – Name + email (different location) → potential
-    def test_04b_name_plus_email_potential(self):
+    # Test 4b – Name + email (different location) → confirmed (exact email)
+    def test_04b_name_plus_email_confirmed(self):
         left  = _p("John", "Smith", "shared@example.com", "GymA")
         right = _p("John", "Smith", "shared@example.com", "GymB")
         label, _ = match_classification(left, right)
-        assert label == "potential_duplicate", (
-            f"Name + email should be potential_duplicate, got {label}"
+        assert label == "confirmed_duplicate", (
+            f"Same email should be confirmed_duplicate, got {label}"
         )
 
     # Test 4c – Name + location (different email) → potential
@@ -112,24 +112,22 @@ class TestFourFieldClassification:
         label, _ = match_classification(left, right)
         assert label is None, f"Same last only should be None, got {label}"
 
-    # Test 6 – Same email only → None
-    def test_06_same_email_only_none(self):
+    # Test 6 – Same email only → confirmed (complete match)
+    def test_06_same_email_only_confirmed(self):
         left  = _p("Alice", "Brown",  "shared@example.com", "GymA")
         right = _p("Zoe",   "Taylor", "shared@example.com", "GymB")
-        # same_email=True, same_last=False, first_match=False (JW very low)
-        # matched=1 → below threshold → None
         label, _ = match_classification(left, right)
-        assert label is None, f"Same email only should be None, got {label}"
+        assert label == "confirmed_duplicate", (
+            f"Same email only should be confirmed_duplicate, got {label}"
+        )
 
-    # Test 7 – Same last + same email, different first → None (name incomplete)
-    def test_07_same_last_same_email_different_first_none(self):
+    # Test 7 – Same last + same email, different first → confirmed (exact email)
+    def test_07_same_last_same_email_different_first_confirmed(self):
         left  = _p("Alice", "Brown", "shared@example.com", "GymA")
         right = _p("Bob",   "Brown", "shared@example.com", "GymB")
-        # Name requires first_match AND same_last; Alice≠Bob → name=False
-        # email only (loc differs) → entity_matched=1 → None
         label, _ = match_classification(left, right)
-        assert label is None, (
-            f"Last + email without first match should be None, got {label}"
+        assert label == "confirmed_duplicate", (
+            f"Same email should be confirmed_duplicate, got {label}"
         )
 
     # Test 8 – Same last + same location, different first → None (name incomplete)
@@ -142,24 +140,22 @@ class TestFourFieldClassification:
             f"Last + location without first match should be None, got {label}"
         )
 
-    # Test 9 – Same email + same location → potential
-    def test_09_same_email_same_location_potential(self):
+    # Test 9 – Same email + same location → confirmed (exact email)
+    def test_09_same_email_same_location_confirmed(self):
         left  = _p("Alice", "Brown",  "shared@example.com", "GymA")
         right = _p("Bob",   "Taylor", "shared@example.com", "GymA")
-        # same_email=True, same_loc=True → matched=2, anchored=True (same_email) → potential
         label, _ = match_classification(left, right)
-        assert label == "potential_duplicate", (
-            f"Same email + same location should be potential_duplicate, got {label}"
+        assert label == "confirmed_duplicate", (
+            f"Same email should be confirmed_duplicate, got {label}"
         )
 
-    # Test 10 – Mike vs Michael, same email, different last → None
-    # First soft-matches but last differs → Name entity is False; email alone ≠ 2.
-    def test_10_mike_vs_michael_same_email_different_last_none(self):
+    # Test 10 – Mike vs Michael, same email, different last → confirmed (exact email)
+    def test_10_mike_vs_michael_same_email_different_last_confirmed(self):
         left  = _p("Mike",    "Johnson", "shared@example.com", "GymA")
         right = _p("Michael", "Smith",   "shared@example.com", "GymB")
         label, _ = match_classification(left, right)
-        assert label is None, (
-            f"First + email without same last should be None, got {label}"
+        assert label == "confirmed_duplicate", (
+            f"Same email should be confirmed_duplicate, got {label}"
         )
 
     # Test 11 – Same first only → None
@@ -171,14 +167,13 @@ class TestFourFieldClassification:
         label, _ = match_classification(left, right)
         assert label is None, f"Same first name only should be None, got {label}"
 
-    # Test 12 – Case/whitespace normalization forms Name entity; + email → potential
+    # Test 12 – Case/whitespace normalization; same email → confirmed
     def test_12_case_whitespace_normalization(self):
         left  = _p("John", "  Smith  ", "shared@example.com", "GymA")
         right = _p("John", "SMITH",     "shared@example.com", "GymB")
-        # After _norm: both last names become "smith" → Name entity True + email
         label, _ = match_classification(left, right)
-        assert label == "potential_duplicate", (
-            f"Case/whitespace should normalize last name into Name entity; got {label}"
+        assert label == "confirmed_duplicate", (
+            f"Same email should be confirmed_duplicate; got {label}"
         )
 
     # Test 13 – Both emails empty → email does not count
@@ -280,22 +275,22 @@ class TestGllFieldFlagClassification:
         label, _ = match_classification_gll(left, right)
         assert label is None, f"GLL unrelated last names should be None, got {label}"
 
-    # Test 21 – Same last + same email → potential
-    def test_21_gll_same_last_same_email_potential(self):
+    # Test 21 – Same last + same email → confirmed (exact email)
+    def test_21_gll_same_last_same_email_confirmed(self):
         left  = _p("Alice", "Brown", "shared@example.com")
         right = _p("Bob",   "Brown", "shared@example.com")
         label, _ = match_classification_gll(left, right)
-        assert label == "potential_duplicate", (
-            f"GLL same last + same email should be potential_duplicate, got {label}"
+        assert label == "confirmed_duplicate", (
+            f"GLL same email should be confirmed_duplicate, got {label}"
         )
 
-    # Test 22 – Same email + nickname first match, different last → potential
-    def test_22_gll_same_email_first_match_different_last_potential(self):
+    # Test 22 – Same email + nickname first match, different last → confirmed
+    def test_22_gll_same_email_first_match_different_last_confirmed(self):
         left  = _p("Jon",  "Smith",  "shared@example.com")
         right = _p("John", "Taylor", "shared@example.com")
         label, _ = match_classification_gll(left, right)
-        assert label == "potential_duplicate", (
-            f"GLL jon/john same email should be potential_duplicate, got {label}"
+        assert label == "confirmed_duplicate", (
+            f"GLL same email should be confirmed_duplicate, got {label}"
         )
 
     # Test 23 – All three identical → confirmed
