@@ -133,8 +133,13 @@ export default function ManagerRequestHistoryPanel({
   };
 
   const tabCounts = useMemo(() => {
-    const pending = requests.filter((request) => request.status === 'new').length;
-    const handled = requests.filter((request) => request.status === 'handled').length;
+    // Same status rules as the Your requests hero card — count from the full list.
+    let pending = 0;
+    let handled = 0;
+    for (const request of requests) {
+      if (request?.status === 'handled') handled += 1;
+      else if (request?.status === 'new') pending += 1;
+    }
     return {
       all: requests.length,
       new: pending,

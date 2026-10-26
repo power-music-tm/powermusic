@@ -725,7 +725,7 @@ export default function ManagerForm() {
         'success',
       );
       if (user?.id) clearManagerFormDraft(user.id);
-      clearCache('manager_requests_all');
+      clearCache('manager_requests_all_v2');
       clearCache('manager_requests_summary');
       setSubmittedCount(count);
       setRequestRefreshToken((token) => token + 1);
@@ -1014,7 +1014,7 @@ export default function ManagerForm() {
         partnerName={partnerBranding?.partnerName}
         clubLocation={managerDetails.club}
         pendingCount={requestPortal.pendingCount}
-        handledCount={Math.max(0, (requestPortal.summaryTotal || 0) - (requestPortal.pendingCount || 0))}
+        handledCount={requestPortal.handledCount}
         totalCount={requestPortal.summaryTotal || 0}
         badgeCount={totalBadgeCount}
         loading={requestPortal.summaryPending}

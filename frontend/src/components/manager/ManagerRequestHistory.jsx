@@ -68,7 +68,7 @@ export function useManagerRequestPortal(refreshToken = 0, requestsOpen = false) 
 
   useEffect(() => {
     if (!requestsOpen) return;
-    clearCache('manager_requests_all');
+    clearCache('manager_requests_all_v2');
     clearCache('manager_requests_summary');
     refreshSummary();
     refreshRequests();
@@ -92,9 +92,39 @@ export function useManagerRequestPortal(refreshToken = 0, requestsOpen = false) 
 
   const summaryPending = summaryLoading && summaryMeta.total === 0 && summaryMeta.pendingCount === 0;
 
+  // Prefer counts from the loaded request list (same source as All/Pending/Handled
+  // pills). Fall back to summary only before the list has arrived.
+  const listCounts = useMemo(() => {
+    if (!Array.isArray(requests) || requests.length === 0) {
+      return null;
+    }
+    let pending = 0;
+    let handled = 0;
+    for (const request of requests) {
+      if (request?.status === 'handled') handled += 1;
+      else if (request?.status === 'new') pending += 1;
+    }
+    return {
+      total: requests.length,
+      pendingCount: pending,
+      handledCount: handled,
+    };
+  }, [requests]);
+
+  const pendingCount = listCounts?.pendingCount
+    ?? meta.pendingCount
+    ?? summaryMeta.pendingCount
+    ?? 0;
+  const summaryTotal = listCounts?.total
+    ?? meta.total
+    ?? summaryMeta.total
+    ?? 0;
+  const handledCount = listCounts?.handledCount
+    ?? Math.max(0, summaryTotal - pendingCount);
+
   const summary = requestSummaryText({
-    total: summaryMeta.total,
-    pendingCount: summaryMeta.pendingCount,
+    total: summaryTotal,
+    pendingCount,
     pendingUnseenCount,
     unreadCount,
     loading: summaryLoading,
@@ -120,8 +150,9 @@ export function useManagerRequestPortal(refreshToken = 0, requestsOpen = false) 
     unreadCount,
     totalBadgeCount: pendingUnseenCount + unreadCount,
     requests,
-    pendingCount: meta.pendingCount || summaryMeta.pendingCount,
-    summaryTotal: summaryMeta.total,
+    pendingCount,
+    handledCount,
+    summaryTotal,
     listLoading,
     historyError,
     highlightVersion,

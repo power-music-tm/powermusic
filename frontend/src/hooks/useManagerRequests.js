@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { clearCache, isRateLimitError, loadWithCache, refreshCache } from '../utils/pilot2Api';
+import { clearCache, isRateLimitError, loadWithCache, refreshCache, writeCache } from '../utils/pilot2Api';
 import {
   fetchManagerRequestsPage,
   fetchManagerRequestsSummary,
@@ -7,10 +7,28 @@ import {
 import { syncManagerHandledHighlights, syncManagerPendingHighlights } from '../utils/managerUiHighlights';
 import { useBackgroundRefresh } from './useBackgroundRefresh';
 
-const CACHE_KEY = 'manager_requests_all';
+/** v2: full multi-page fetch so hero + pills share complete counts. */
+const CACHE_KEY = 'manager_requests_all_v2';
 const SUMMARY_CACHE_KEY = 'manager_requests_summary';
-/** Backend caps manager list page size at 50. */
+/** Backend caps manager list page size at 50 — paginate until we have every row. */
 const FETCH_LIMIT = 50;
+const MAX_FETCH_PAGES = 100;
+
+/** Counts used by both All/Pending/Handled pills and the Your requests hero card. */
+export function countManagerRequestStatuses(requests) {
+  const items = Array.isArray(requests) ? requests : [];
+  let pendingCount = 0;
+  let handledCount = 0;
+  for (const request of items) {
+    if (request?.status === 'handled') handledCount += 1;
+    else if (request?.status === 'new') pendingCount += 1;
+  }
+  return {
+    total: items.length,
+    pendingCount,
+    handledCount,
+  };
+}
 
 function applyManagerRequestsPayload(data, onHighlightChange) {
   const items = Array.isArray(data?.items) ? data.items : [];
@@ -21,11 +39,52 @@ function applyManagerRequestsPayload(data, onHighlightChange) {
   if (highlightsChanged) {
     onHighlightChange?.();
   }
+  const counts = countManagerRequestStatuses(items);
   return {
     items,
-    total: data?.total ?? items.length,
-    pendingCount: data?.pendingCount ?? 0,
+    total: counts.total,
+    pendingCount: counts.pendingCount,
+    handledCount: counts.handledCount,
   };
+}
+
+/** Fetch every manager request page so pill + hero counts stay complete and aligned. */
+export async function fetchAllManagerRequests() {
+  const first = await fetchManagerRequestsPage({ page: 1, limit: FETCH_LIMIT });
+  const reportedTotal = Number(first?.total) || 0;
+  let items = Array.isArray(first?.items) ? [...first.items] : [];
+  let page = 2;
+
+  while (items.length < reportedTotal && page <= MAX_FETCH_PAGES) {
+    const next = await fetchManagerRequestsPage({ page, limit: FETCH_LIMIT });
+    const batch = Array.isArray(next?.items) ? next.items : [];
+    if (batch.length === 0) break;
+    const seen = new Set(items.map((row) => row?.id).filter(Boolean));
+    for (const row of batch) {
+      if (row?.id && seen.has(row.id)) continue;
+      if (row?.id) seen.add(row.id);
+      items.push(row);
+    }
+    page += 1;
+    if (batch.length < FETCH_LIMIT) break;
+  }
+
+  const counts = countManagerRequestStatuses(items);
+  const payload = {
+    items,
+    total: counts.total,
+    pendingCount: counts.pendingCount,
+    handledCount: counts.handledCount,
+    page: 1,
+    limit: counts.total,
+    unreadCount: first?.unreadCount ?? 0,
+  };
+  // Keep the hero summary card on the same numbers as the request list pills.
+  writeCache(SUMMARY_CACHE_KEY, {
+    total: counts.total,
+    pendingCount: counts.pendingCount,
+  });
+  return payload;
 }
 
 export function filterManagerRequestsByTab(requests, tab) {
@@ -130,7 +189,7 @@ export function useManagerRequests(
   { enabled = false, backgroundPollEnabled, pollIntervalMs = 60000, networkFirst = false } = {},
 ) {
   const [requests, setRequests] = useState([]);
-  const [meta, setMeta] = useState({ total: 0, pendingCount: 0 });
+  const [meta, setMeta] = useState({ total: 0, pendingCount: 0, handledCount: 0 });
   const [initialLoading, setInitialLoading] = useState(false);
   const [error, setError] = useState(null);
   const hasLoadedRef = useRef(false);
@@ -147,16 +206,17 @@ export function useManagerRequests(
       onHighlightChangeRef.current?.();
     });
     setRequests(next.items);
-    setMeta({ total: next.total, pendingCount: next.pendingCount });
+    setMeta({
+      total: next.total,
+      pendingCount: next.pendingCount,
+      handledCount: next.handledCount,
+    });
     setError(null);
     setInitialLoading(false);
     if (!isStale) hasLoadedRef.current = true;
   }, []);
 
-  const fetchAll = useCallback(
-    () => fetchManagerRequestsPage({ page: 1, limit: FETCH_LIMIT }),
-    [],
-  );
+  const fetchAll = useCallback(() => fetchAllManagerRequests(), []);
 
   const refresh = useCallback(async () => {
     if (!enabled || refreshInFlightRef.current) return;
