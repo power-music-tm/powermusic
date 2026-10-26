@@ -284,9 +284,18 @@ export function detachRequestFromGroupInCache(key, {
     for (const row of parsed.requests) {
       if (!row) continue;
 
-      // Already a solo row for this request — clear any leftover group pointers.
+      const isSourceGroup = groupId && row.duplicateGroupId === groupId;
+      // List rows are keyed by the representative request id. Transfer of that
+      // request must still rebuild the remaining peer shell — do not drop it.
       if (row.id === requestId) {
-        detached = {
+        const previewMembers = Array.isArray(row.groupPreview?.members)
+          ? row.groupPreview.members
+          : (Array.isArray(row.groupMembers) ? row.groupMembers : []);
+        const fromPreview = previewMembers.find((m) => m?.id === requestId) || null;
+        detached = standaloneRequestRowFromMember(member || fromPreview || {
+          ...row,
+          person: row.person,
+        }) || {
           ...row,
           duplicateGroupId: null,
           groupMembers: null,
@@ -298,10 +307,46 @@ export function detachRequestFromGroupInCache(key, {
             ? row.tags.filter((t) => !String(t).toLowerCase().includes('duplicate'))
             : row.tags,
         };
+        if (isSourceGroup && remaining) {
+          if (remaining.length === 1) {
+            nextRequests.push(
+              standaloneRequestRowFromMember(remaining[0], { stripDuplicateTags: true }),
+            );
+          } else if (remaining.length > 1) {
+            const rep =
+              remaining.find((m) => m.isRepresentative)
+              || remaining[0];
+            const preview = {
+              ...(row.groupPreview && typeof row.groupPreview === 'object' ? row.groupPreview : {}),
+              members: remaining,
+              representativeRequestId: rep.id,
+            };
+            nextRequests.push({
+              ...row,
+              id: rep.id,
+              displayId: rep.displayId || row.displayId || 0,
+              receivedAt: rep.receivedAt || row.receivedAt || null,
+              person: rep.person || row.person,
+              action: rep.action || row.action,
+              status: rep.status || row.status,
+              tags: rep.tags || row.tags,
+              submittedBy: rep.submittedBy || row.submittedBy,
+              notes: rep.notes || row.notes,
+              createdBy: rep.createdBy || row.createdBy,
+              directorFirst: rep.directorFirst || rep.person?.directorFirst || row.directorFirst,
+              directorLast: rep.directorLast || rep.person?.directorLast || row.directorLast,
+              duplicateGroupId: groupId,
+              groupMembers: remaining,
+              groupPreview: preview,
+            });
+          }
+          // remaining.length === 0 → source group dissolved; drop the shell.
+        } else if (!isSourceGroup) {
+          // Solo / non-group row for this id — already captured as detached.
+        }
         continue;
       }
 
-      const isSourceGroup = groupId && row.duplicateGroupId === groupId;
       if (!isSourceGroup) {
         nextRequests.push(row);
         continue;

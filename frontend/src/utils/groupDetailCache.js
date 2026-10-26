@@ -220,15 +220,48 @@ export function readCachedGroup(groupId) {
   }
 }
 
+function personFromMemberStub(member) {
+  const nested = member?.person && typeof member.person === 'object' ? member.person : null;
+  const first = nested?.firstName || member?.firstName || '';
+  const last = nested?.lastName || member?.lastName || '';
+  const email = nested?.email || member?.email || '';
+  const location = nested?.location || member?.location || '';
+  const role = nested?.role ?? member?.role ?? null;
+  if (nested && (first || last || email || location || role)) {
+    return {
+      ...nested,
+      firstName: first,
+      lastName: last,
+      email,
+      location,
+      role,
+    };
+  }
+  return {
+    firstName: first,
+    lastName: last,
+    email,
+    location,
+    role,
+  };
+}
+
+function personRichness(person) {
+  if (!person || typeof person !== 'object') return 0;
+  return ['firstName', 'lastName', 'email', 'location']
+    .reduce((n, key) => n + (String(person[key] || '').trim() ? 1 : 0), 0);
+}
+
 function normalizeMemberStub(member, { forceRepresentativeId = null } = {}) {
   if (!member?.id) return null;
+  const person = personFromMemberStub(member);
   return {
     id: member.id,
     displayId: member.displayId || 0,
     receivedAt: member.receivedAt || null,
-    person: member.person || {},
-    directorFirst: member.directorFirst || member.person?.directorFirst || null,
-    directorLast: member.directorLast || member.person?.directorLast || null,
+    person,
+    directorFirst: member.directorFirst || person?.directorFirst || null,
+    directorLast: member.directorLast || person?.directorLast || null,
     action: member.action || 'Add',
     status: member.status || 'new',
     isRepresentative:
@@ -289,6 +322,23 @@ export function applyListSeed(groupId, cached, seed) {
         ...m,
         isRepresentative: m.id === (cached.representativeRequestId || repId),
       }));
+    } else if (
+      cachedMembers.length > 0
+      && listMembers.length === cachedMembers.length
+    ) {
+      // Same IDs: keep whichever stub has richer person fields (detail cache
+      // usually wins over a thin list seed after Transfer / reopen).
+      const byId = new Map(cachedMembers.map((m) => [m.id, m]));
+      members = listMembers.map((listMember) => {
+        const cachedMember = byId.get(listMember.id);
+        if (!cachedMember) return listMember;
+        const preferCached = personRichness(cachedMember.person) > personRichness(listMember.person);
+        const chosen = preferCached ? { ...cachedMember, ...listMember, person: cachedMember.person } : listMember;
+        return {
+          ...chosen,
+          isRepresentative: listMember.id === (cached.representativeRequestId || repId),
+        };
+      });
     } else {
       members = listMembers;
     }

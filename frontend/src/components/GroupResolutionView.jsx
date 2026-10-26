@@ -391,12 +391,22 @@ export default function GroupResolutionView({
   };
 
   // When parent refreshes group detail (cache → network), sync members/form so
-  // pills and history don't stay stuck on the stale cached snapshot.
+  // pills and history don't stay stuck on a thin seed (same IDs, empty person).
   useEffect(() => {
     const nextMembers = Array.isArray(group.members) ? group.members : [];
-    const nextIds = nextMembers.map((m) => m.id).join('|');
-    const prevIds = members.map((m) => m.id).join('|');
-    if (nextIds === prevIds) return;
+    const memberFingerprint = (list) => (Array.isArray(list) ? list : [])
+      .map((m) => [
+        m?.id || '',
+        m?.person?.firstName || '',
+        m?.person?.lastName || '',
+        m?.person?.email || '',
+        m?.person?.location || '',
+        m?.action || '',
+        m?.receivedAt || '',
+        m?.isRepresentative ? '1' : '0',
+      ].join(':'))
+      .join('|');
+    if (memberFingerprint(nextMembers) === memberFingerprint(members)) return;
 
     setMembers(nextMembers);
     setSessionUnlinkedIds((ids) => ids.filter((id) => nextMembers.some((m) => m.id === id)));

@@ -402,7 +402,25 @@ export default function GroupDetail() {
             groupId,
             remainingMembers,
           });
-          clearCache(groupCacheKey);
+          // Keep a warm source-group detail cache so reopen does not paint
+          // empty person stubs while the list seed catches up.
+          if (remainingMembers.length > 0 && group) {
+            const nextRep =
+              remainingMembers.find((m) => m.isRepresentative)
+              || remainingMembers[0];
+            writeCache(groupCacheKey, {
+              ...group,
+              members: remainingMembers,
+              representativeRequestId: nextRep?.id || group.representativeRequestId,
+              droppedMemberIds: Array.from(new Set([
+                ...(Array.isArray(group.droppedMemberIds) ? group.droppedMemberIds : []),
+                movedSourceId,
+              ].filter(Boolean))),
+              separatedLookalikeRequests: [],
+            });
+          } else {
+            clearCache(groupCacheKey);
+          }
         }
         clearNewRequestsSuppressions({
           requestIds: movedIds,
