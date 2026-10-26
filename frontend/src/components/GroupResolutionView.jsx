@@ -292,7 +292,7 @@ export default function GroupResolutionView({
   const dirPerson = directoryPersons[0] || null;
   // Eligible active Directory target(s) for Add/Remove and Update.
   const hasDirectory = directoryPersons.length > 0;
-  // Any Directory link (including archived-only) — Keep Existing still applies.
+  // Any Directory link (including archived-only) — badge / primary Add|Remove still apply.
   const hasDirectoryLink = Boolean(
     group.directoryPersonId || allDirectoryPersons.length > 0 || hasDirectory,
   );
@@ -304,6 +304,11 @@ export default function GroupResolutionView({
       || allDirectoryPersons.some(isDirectoryPersonArchived)
     ),
   );
+  // Delete New Request still applies when the only match is archived (discard the
+  // incoming request). Add New / Archive are redundant vs archived-only matches —
+  // archive is never overwritten, and primary Add/Remove already creates the outcome.
+  const showKeepExistingDelete = hasDirectoryLink;
+  const showKeepExistingAddOrArchive = hasDirectory;
 
   const { selectedPartner, partners } = usePartners();
   const rawPartnerId = group?.partnerId || group?.partner_id || repMember?.partnerId || repMember?.partner_id;
@@ -657,7 +662,7 @@ export default function GroupResolutionView({
 
   /* ── keep existing — nickname check first, then history / confirm ── */
   const openKeepConfirm = () => {
-    if (submitting) return;
+    if (submitting || !showKeepExistingDelete) return;
     const latestValues = formValuesFromLatest() || { ...form };
     setForm(latestValues);
     setModalValues(latestValues);
@@ -666,7 +671,7 @@ export default function GroupResolutionView({
 
   /* ── not the same as Directory — nickname check first, then history / confirm ── */
   const openAddAsNewConfirm = () => {
-    if (submitting || !hasDirectoryLink) return;
+    if (submitting || !showKeepExistingAddOrArchive) return;
     if (currentRep?.action === 'Remove') return;
     const latestValues = formValuesFromLatest() || { ...form };
     setForm(latestValues);
@@ -677,7 +682,7 @@ export default function GroupResolutionView({
 
   /* ── Remove false positive vs Directory — archive Remove request ── */
   const openKeepAndArchiveConfirm = () => {
-    if (submitting || !hasDirectoryLink) return;
+    if (submitting || !showKeepExistingAddOrArchive) return;
     if (currentRep?.action !== 'Remove') return;
     const latestValues = formValuesFromLatest() || { ...form };
     setForm(latestValues);
@@ -1071,7 +1076,7 @@ export default function GroupResolutionView({
         detail,
       });
     } catch (err) {
-      onResolved('error', err.message || 'Failed to attach to that request.');
+      onResolved('error', err.message || 'Failed to transfer to that request.');
     } finally {
       setSubmitting(false);
     }
@@ -1178,7 +1183,7 @@ export default function GroupResolutionView({
   /* ── not same as Directory — add as new (Case A2) ── */
   const handleAddAsNew = async (values = form) => {
     if (!values.firstName.trim() || !values.lastName.trim() || submitting) return;
-    if (!hasDirectoryLink) return;
+    if (!showKeepExistingAddOrArchive) return;
     const snapshotIds = Array.isArray(peersMergeMemberIds) && peersMergeMemberIds.length > 0
       ? peersMergeMemberIds
       : snapshotPeersForMerge();
@@ -1214,7 +1219,7 @@ export default function GroupResolutionView({
   /* ── Remove false positive — keep Directory, archive Remove request ── */
   const handleKeepAndArchive = async (values = form) => {
     if (!values.firstName.trim() || !values.lastName.trim() || submitting) return;
-    if (!hasDirectoryLink || currentRep?.action !== 'Remove') return;
+    if (!showKeepExistingAddOrArchive || currentRep?.action !== 'Remove') return;
     const snapshotIds = Array.isArray(peersMergeMemberIds) && peersMergeMemberIds.length > 0
       ? peersMergeMemberIds
       : snapshotPeersForMerge();
@@ -1288,7 +1293,7 @@ export default function GroupResolutionView({
 
   /* ── resolve — keep existing (Case C) ── */
   const handleKeepExisting = async () => {
-    if (submitting) return;
+    if (submitting || !showKeepExistingDelete) return;
     const snapshotIds = Array.isArray(peersMergeMemberIds) && peersMergeMemberIds.length > 0
       ? peersMergeMemberIds
       : snapshotPeersForMerge();
@@ -1751,7 +1756,7 @@ export default function GroupResolutionView({
                 );
               })}
               . You previously chose <span className="font-semibold">Not the same person</span> for
-              these. This request was attached to the latest match only; those requests stay separate.
+              these. This request was transferred to the latest match only; those requests stay separate.
             </p>
             {(() => {
               const needsMerge = incomingMemberCount() > 1;
@@ -1762,7 +1767,7 @@ export default function GroupResolutionView({
                   onClick={openAttachLookalikeModal}
                   className="inline-flex items-center rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-950 shadow-[0_1px_0_rgba(26,26,46,0.04)] transition-colors hover:border-amber-400 hover:bg-amber-100/60 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  Attach to a similar request
+                  Transfer to a similar request
                 </button>
               );
               if (!needsMerge) return attachBtn;
@@ -1948,8 +1953,8 @@ export default function GroupResolutionView({
 
           {canStillMerge ? (
             <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
-              {/* Keep Existing only after peers are detached down to one new request */}
-              {hasDirectoryLink && incomingMemberCount() === 1 ? (
+              {/* Delete New Request still applies for archived-only; Add New / Archive need active Directory */}
+              {showKeepExistingDelete && incomingMemberCount() === 1 ? (
                 <button
                   type="button"
                   disabled={submitting}
@@ -1959,7 +1964,7 @@ export default function GroupResolutionView({
                   Keep Existing and Delete New Request
                 </button>
               ) : null}
-              {hasDirectoryLink && incomingMemberCount() === 1 && currentRep?.action !== 'Remove' ? (
+              {showKeepExistingAddOrArchive && incomingMemberCount() === 1 && currentRep?.action !== 'Remove' ? (
                 <button
                   type="button"
                   disabled={!isFormValid || submitting || isEditing}
@@ -1969,7 +1974,7 @@ export default function GroupResolutionView({
                   Keep Existing and Add New
                 </button>
               ) : null}
-              {hasDirectoryLink && incomingMemberCount() === 1 && currentRep?.action === 'Remove' ? (
+              {showKeepExistingAddOrArchive && incomingMemberCount() === 1 && currentRep?.action === 'Remove' ? (
                 <button
                   type="button"
                   disabled={!isFormValid || submitting || isEditing}
@@ -2142,7 +2147,7 @@ export default function GroupResolutionView({
 
             {canStillMerge ? (
               <div className="flex flex-wrap items-center justify-end gap-3 ml-auto">
-                {hasDirectoryLink && (
+                {showKeepExistingDelete ? (
                   <button
                     type="button"
                     disabled={submitting}
@@ -2151,8 +2156,8 @@ export default function GroupResolutionView({
                   >
                     Keep Existing and Delete New Request{members.length > 1 ? 's' : ''}
                   </button>
-                )}
-                {hasDirectoryLink && currentRep?.action !== 'Remove' ? (
+                ) : null}
+                {showKeepExistingAddOrArchive && currentRep?.action !== 'Remove' ? (
                   <button
                     type="button"
                     disabled={!isFormValid || submitting || isEditing}
@@ -2162,7 +2167,7 @@ export default function GroupResolutionView({
                     Keep Existing and Add New
                   </button>
                 ) : null}
-                {hasDirectoryLink && currentRep?.action === 'Remove' ? (
+                {showKeepExistingAddOrArchive && currentRep?.action === 'Remove' ? (
                   <button
                     type="button"
                     disabled={!isFormValid || submitting || isEditing}
@@ -2904,12 +2909,12 @@ export default function GroupResolutionView({
         </label>
       </Modal>
 
-      {/* ── Attach to a separated lookalike ── */}
+      {/* ── Transfer to a separated lookalike ── */}
       <Modal
         isOpen={attachLookalikeOpen}
         onClose={closeAttachLookalikeModal}
         closeDisabled={submitting}
-        title="Attach to a similar request?"
+        title="Transfer to a similar request?"
         footer={
           <>
             <button
@@ -2926,13 +2931,13 @@ export default function GroupResolutionView({
               onClick={handleConfirmAttachLookalike}
               className="px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer disabled:opacity-60"
             >
-              {submitting ? 'Attaching…' : 'Attach'}
+              {submitting ? 'Transferring…' : 'Transfer'}
             </button>
           </>
         }
       >
         <p className="text-sm text-[var(--color-text-secondary)]">
-          Choose which request this one should be grouped with. Only one can be selected.
+          Choose which request to transfer this to. Only one can be selected.
           The current request will leave this group and join that request. Other similar
           requests stay separate.
         </p>

@@ -490,7 +490,7 @@ export default function GroupDetail() {
           toastMsg = 'Group dissolved successfully.';
           break;
         case 'reattached':
-          toastMsg = 'Attached to the similar request. Find it on New Requests.';
+          toastMsg = 'Transferred to the similar request. Find it on New Requests.';
           break;
         default:
           toastMsg = 'Group resolved successfully.';
