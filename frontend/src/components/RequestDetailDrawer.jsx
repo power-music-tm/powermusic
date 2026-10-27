@@ -8,9 +8,14 @@ import {
   ChevronRight,
   Mail,
   MapPin,
+  Trash2,
   UserRound,
   X,
 } from 'lucide-react';
+import {
+  isNewRequestsListPath,
+  safeNewRequestsBackPath,
+} from '../utils/newRequestsNav';
 import { Tag, HoverTip } from './ui';
 import RequestComparison from './RequestComparison';
 import {
@@ -107,21 +112,18 @@ function SourceInfoBlock({ id, title, icon: Icon, children, empty, compact = fal
   );
 }
 
-function safeNewRequestsBackPath(from) {
-  if (typeof from !== 'string') return '/new-requests';
-  if (!from.startsWith('/new-requests')) return '/new-requests';
-  if (from.includes('://') || from.includes('//')) return '/new-requests';
-  return from;
-}
-
 export default function RequestDetailView({
   request,
   directory = [],
   onConfirmAction,
+  onDelete,
+  deleteLoading = false,
 }) {
   const location = useLocation();
   const backTo = safeNewRequestsBackPath(location.state?.from);
-  const backLabel = backTo === '/new-requests' ? 'Back to New Requests' : 'Back to previous request';
+  const backLabel = isNewRequestsListPath(backTo)
+    ? 'Back to New Requests'
+    : 'Back to previous request';
   const [noteText, setNoteText] = useState('');
 
   useEffect(() => {
@@ -339,7 +341,7 @@ export default function RequestDetailView({
                 />
               </div>
 
-              <div className="mt-4 border-t border-[var(--color-border-default)] pt-4">
+              <div className="mt-4 flex flex-wrap items-start justify-between gap-2 border-t border-[var(--color-border-default)] pt-4">
                 <p className="text-xs text-[var(--color-text-muted)]">
                   <span className="font-medium text-[var(--color-text-secondary)]">
                     {formatRequestDisplayId(request.displayId)}
@@ -347,6 +349,17 @@ export default function RequestDetailView({
                   <span className="mx-1.5" aria-hidden="true">·</span>
                   {formatAdminDateTime(request.receivedAt)}
                 </p>
+                {typeof onDelete === 'function' ? (
+                  <button
+                    type="button"
+                    disabled={deleteLoading}
+                    onClick={() => onDelete(request)}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-red-600 shadow-[0_1px_0_rgba(26,26,46,0.04)] transition-colors hover:border-red-300 hover:bg-red-50 hover:text-red-700 cursor-pointer disabled:opacity-60"
+                  >
+                    <Trash2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    {deleteLoading ? 'Loading…' : 'Delete'}
+                  </button>
+                ) : null}
               </div>
             </div>
           </div>

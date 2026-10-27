@@ -42,6 +42,10 @@ import {
   validatePersonForms,
   firstInvalidPersonField,
 } from '../utils/managerFormValidation';
+import {
+  actionTabFromSearchParams,
+  newRequestsListPath,
+} from '../utils/newRequestsNav';
 
 /** Visible-tab safety net when Realtime is slow/offline (GitHub-style poll). */
 const REQUESTS_POLL_MS = 5000;
@@ -569,8 +573,8 @@ export default function Requests() {
   const warmCachedRequests = cachedPageRef.current?.requests;
   const warmCachedPersons = cachedPageRef.current?.persons;
 
-  // ── Action tab (Add / Remove) ──
-  const [actionTab, setActionTab] = useState('All');
+  // ── Action tab (Add / Remove) — restore from ?action= when returning from detail ──
+  const [actionTab, setActionTab] = useState(() => actionTabFromSearchParams(searchParams));
 
   // ── New requests data ──
   const [newRequests, setNewRequests] = useState(() => warmCachedRequests || []);
@@ -592,12 +596,14 @@ export default function Requests() {
       ...(row.groupMembers || row.groupPreview?.members || []).map((m) => m?.id),
     ].filter(Boolean));
     bumpHighlights();
+    const listFrom = newRequestsListPath(actionTab);
     if (row.duplicateGroupId) {
       navigate(
         `/new-requests/group/${encodeURIComponent(row.duplicateGroupId)}`,
         {
           // Seed full member stubs from the list so Request History is instant.
           state: {
+            from: listFrom,
             seedFromList: {
               id: row.id,
               displayId: row.displayId,
@@ -625,7 +631,7 @@ export default function Requests() {
     } else {
       navigate(`/new-requests/${encodeURIComponent(row.id)}`, {
         // Seed detail so a stale/collapsed list cache cannot flash "not found".
-        state: { seedRequest: row, from: '/new-requests' },
+        state: { seedRequest: row, from: listFrom },
       });
     }
   };
@@ -907,7 +913,7 @@ export default function Requests() {
     setPersonForms((prev) => (prev.length === 1 ? prev : prev.filter((_, i) => i !== index)));
   };
 
-  // Reset filters when switching Add / Remove
+  // Reset filters when switching Add / Remove; keep ?action= so back from detail restores the tab.
   const handleActionTabSwitch = (tab) => {
     flushViewedRequestHighlights();
     bumpHighlights();
@@ -921,7 +927,19 @@ export default function Requests() {
     setFilterStatus('All');
     setSortPreset(DEFAULT_SORT);
     setFilterOpen(true);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (tab === 'Add' || tab === 'Remove') next.set('action', tab);
+      else next.delete('action');
+      return next;
+    }, { replace: true });
   };
+
+  // Restore tab when landing with ?action= (e.g. back from request/group detail).
+  useEffect(() => {
+    const fromUrl = actionTabFromSearchParams(searchParams);
+    setActionTab((prev) => (prev === fromUrl ? prev : fromUrl));
+  }, [searchParams]);
 
   // ── Generic filter + sort function ──
   const applyFilterSort = (rows, timestampKey) => {

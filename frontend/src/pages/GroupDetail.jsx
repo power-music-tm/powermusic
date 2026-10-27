@@ -30,6 +30,7 @@ import {
   scheduleRequestsPageRefetch,
   subscribeRequestsPage,
 } from '../utils/requestsPageStore';
+import { safeNewRequestsBackPath } from '../utils/newRequestsNav';
 
 /** Faster than New Requests list — admins watching a group need arrivals quickly. */
 const GROUP_DETAIL_POLL_MS = 4000;
@@ -105,7 +106,8 @@ export default function GroupDetail() {
     Array.isArray(group?.droppedMemberIds) ? group.droppedMemberIds : [],
   );
 
-  const goBack = useCallback(() => navigate('/new-requests'), [navigate]);
+  const backTo = safeNewRequestsBackPath(location.state?.from);
+  const goBack = useCallback(() => navigate(backTo), [navigate, backTo]);
 
   // Set when Request Detail hands off because a 2nd duplicate arrived while it was open.
   const handoffArrivalFromRef = useRef(null);
@@ -620,7 +622,7 @@ export default function GroupDetail() {
         }).then((fresh) => {
           if (!fresh || fresh.status === 'resolved' || fresh.status === 'dismissed') {
             clearCache(groupCacheKey);
-            navigate('/new-requests', { replace: true });
+            navigate(backTo, { replace: true });
           }
         });
         return;
@@ -639,11 +641,11 @@ export default function GroupDetail() {
               seedRequest: survivor
                 ? { ...survivor, duplicateGroupId: null }
                 : { id: survivorId, status: 'new' },
-              from: '/new-requests',
+              from: backTo,
             },
           });
         } else {
-          navigate('/new-requests', { replace: true });
+          navigate(backTo, { replace: true });
         }
         return;
       }
@@ -657,7 +659,7 @@ export default function GroupDetail() {
         }
         // Source group emptied — leave immediately. Opening the destination
         // group URL races dismissed→active transitions and flashes "Group not found".
-        navigate('/new-requests', { replace: true });
+        navigate(backTo, { replace: true });
         return;
       }
 
@@ -699,13 +701,13 @@ export default function GroupDetail() {
           groupIds: [groupId],
           includeHard: false,
         });
-        navigate('/new-requests', { replace: true });
+        navigate(backTo, { replace: true });
         return;
       }
 
-      navigate('/new-requests');
+      navigate(backTo);
     },
-    [groupId, group?.members, navigate, requestsCacheKey, directoryCacheKey, groupCacheKey, selectedPartnerId, showToast, refreshGroupDetail],
+    [groupId, group?.members, navigate, backTo, requestsCacheKey, directoryCacheKey, groupCacheKey, selectedPartnerId, showToast, refreshGroupDetail],
   );
 
   /* ── loading state ── */

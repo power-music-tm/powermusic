@@ -4,6 +4,10 @@ import {
   ArrowLeft, ChevronRight, ChevronDown, Check, Database, Clock, Pencil,
   X, Users, Inbox, Trash2, AlertTriangle, Mail, MapPin, Loader2,
 } from 'lucide-react';
+import {
+  isNewRequestsListPath,
+  safeNewRequestsBackPath,
+} from '../utils/newRequestsNav';
 import { Tag, Modal, HoverTip } from './ui';
 import { usePartners } from '../context/PartnerContext';
 import { getPartnerTerminology } from '../utils/managerAuthBranding';
@@ -51,7 +55,20 @@ import {
 
 /* ─── helpers ────────────────────────────────────────────────────────────── */
 
-const byNewestReceived = (a, b) => new Date(b.receivedAt || 0) - new Date(a.receivedAt || 0);
+/** Numeric request id for tie-breaks (matches backend: received_at, then id). */
+function requestSortId(member) {
+  const n = Number(member?.displayId);
+  if (Number.isFinite(n) && n > 0) return n;
+  const match = String(member?.id || '').match(/(\d+)/);
+  return match ? parseInt(match[1], 10) : 0;
+}
+
+/** Newest first; equal receivedAt → higher display id wins (same as list representative). */
+const byNewestReceived = (a, b) => {
+  const dt = new Date(b.receivedAt || 0) - new Date(a.receivedAt || 0);
+  if (dt !== 0) return dt;
+  return requestSortId(b) - requestSortId(a);
+};
 
 /** Newest open request — the Current Request card and the merge target. */
 function latestMember(list, excludeId = null) {
@@ -244,13 +261,6 @@ function directoryResolveScenario({ action }) {
 
 /* ─── main export ────────────────────────────────────────────────────────── */
 
-function safeNewRequestsBackPath(from) {
-  if (typeof from !== 'string') return '/new-requests';
-  if (!from.startsWith('/new-requests')) return '/new-requests';
-  if (from.includes('://') || from.includes('//')) return '/new-requests';
-  return from;
-}
-
 export default function GroupResolutionView({
   group,
   directory = [],
@@ -258,7 +268,9 @@ export default function GroupResolutionView({
 }) {
   const location = useLocation();
   const backTo = safeNewRequestsBackPath(location.state?.from);
-  const backLabel = backTo === '/new-requests' ? 'Back to New Requests' : 'Back to previous request';
+  const backLabel = isNewRequestsListPath(backTo)
+    ? 'Back to New Requests'
+    : 'Back to previous request';
   const groupPath = `/new-requests/group/${encodeURIComponent(group.id)}`;
   const { selectedPartnerId } = usePartners();
   const requestsCacheKey = selectedPartnerId ? `${REQUESTS_PAGE_CACHE_KEY}:${selectedPartnerId}` : REQUESTS_PAGE_CACHE_KEY;
@@ -1064,7 +1076,7 @@ export default function GroupResolutionView({
     if (lookalikeRequests.length === 0) return;
     const active = members.filter((m) => !sessionUnlinkedIds.includes(m.id));
     const newest = [...active].sort(
-      (a, b) => new Date(b.receivedAt || 0) - new Date(a.receivedAt || 0),
+      byNewestReceived,
     )[0];
     setAttachSourceRequestId(newest?.id || group.representativeRequestId || null);
     setAttachLookalikeId(lookalikeRequests[0]?.id || null);
@@ -1121,7 +1133,7 @@ export default function GroupResolutionView({
   const currentSourceRequestId = (() => {
     const active = members.filter((m) => !sessionUnlinkedIds.includes(m.id));
     const current = [...active].sort(
-      (a, b) => new Date(b.receivedAt || 0) - new Date(a.receivedAt || 0),
+      byNewestReceived,
     )[0];
     return current?.id || group.representativeRequestId || repMember?.id || null;
   })();
@@ -1354,7 +1366,7 @@ export default function GroupResolutionView({
     const target = active.find((m) => m.id === memberId)
       || members.find((m) => m.id === memberId);
     const current = [...active].sort(
-      (a, b) => new Date(b.receivedAt || 0) - new Date(a.receivedAt || 0),
+      byNewestReceived,
     )[0] || null;
     // Prefer a pairwise potential peer (the edge that justified the tag), then
     // current, then any other active member.
@@ -1528,9 +1540,7 @@ export default function GroupResolutionView({
   const canStillMerge = activeMembers.length > 0;
 
   const tag = classificationTag(group.classification);
-  const currentRequest = [...activeMembers].sort(
-    (a, b) => new Date(b.receivedAt || 0) - new Date(a.receivedAt || 0),
-  )[0] || null;
+  const currentRequest = [...activeMembers].sort(byNewestReceived)[0] || null;
   const currentRep = currentRequest || repMember;
 
   const isAlreadyExistsOrRemoved =
@@ -1838,7 +1848,7 @@ export default function GroupResolutionView({
           <div className="space-y-4">
             {(() => {
               const sortedByNewest = [...members].sort(
-                (a, b) => new Date(b.receivedAt) - new Date(a.receivedAt),
+                byNewestReceived,
               );
               const latestId = sortedByNewest[0]?.id || null;
               const historyCollapsible = members.length > 2;
@@ -2233,7 +2243,7 @@ export default function GroupResolutionView({
       {unlinkedMembers.map((member) => {
         const mgr = managerFieldsFromMember(member);
         const isLatestUnlinked = !members.some(
-          (m) => m.id !== member.id && new Date(m.receivedAt || 0) > new Date(member.receivedAt || 0),
+          (m) => m.id !== member.id && byNewestReceived(member, m) > 0,
         );
         return (
           <SectionCard

@@ -17,6 +17,8 @@ import {
   suppressNewRequests,
   removeRequestsFromCache,
   beginCacheMutation,
+  dismissRequest,
+  getDismissImpact,
   REQUESTS_PAGE_CACHE_KEY,
 } from '../utils/pilot2Api';
 import { fetchGroupDetail } from '../utils/duplicateGroupApi';
@@ -28,16 +30,10 @@ import {
   removeRequestHighlight,
 } from '../utils/adminUiHighlights';
 import { formatPersonName } from '../utils/personDisplay';
+import { safeNewRequestsBackPath } from '../utils/newRequestsNav';
 
 /** Match Group Detail cadence so the 1→2 grouping jump is not slower than 3+. */
 const REQUEST_DETAIL_POLL_MS = 4000;
-
-function safeNewRequestsBackPath(from) {
-  if (typeof from !== 'string') return '/new-requests';
-  if (!from.startsWith('/new-requests')) return '/new-requests';
-  if (from.includes('://') || from.includes('//')) return '/new-requests';
-  return from;
-}
 
 function seedFromRequest(match, groupDetail = null) {
   const members = Array.isArray(groupDetail?.members) ? groupDetail.members : null;
@@ -75,7 +71,7 @@ function seedFromRequest(match, groupDetail = null) {
  * `arrival`: the duplicate landed while this page was open — Group Detail shows
  * the same "New request arrived" alert it shows for 3rd+ arrivals.
  */
-async function promoteToGroupDetail(match, navigate, { arrival = false } = {}) {
+async function promoteToGroupDetail(match, navigate, { arrival = false, from } = {}) {
   const groupId = match?.duplicateGroupId;
   if (!groupId || match.status !== 'new') return false;
 
@@ -94,6 +90,7 @@ async function promoteToGroupDetail(match, navigate, { arrival = false } = {}) {
     state: {
       seedFromList: seedFromRequest(match, detail),
       arrivalFromRequestId: arrival ? match.id : null,
+      from: safeNewRequestsBackPath(from),
     },
   });
   return true;
@@ -112,6 +109,9 @@ export default function RequestDetail() {
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [confirmAction, setConfirmAction] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [deleteImpactLoading, setDeleteImpactLoading] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const adminDisplayName = profile?.full_name?.trim() || 'Power Music Admin';
   const requestsCacheKey = selectedPartnerId ? `${REQUESTS_PAGE_CACHE_KEY}:${selectedPartnerId}` : REQUESTS_PAGE_CACHE_KEY;
@@ -147,7 +147,10 @@ export default function RequestDetail() {
       if (promoteInFlightRef.current) return;
       promoteInFlightRef.current = true;
       try {
-        await promoteToGroupDetail(match, navigate, { arrival });
+        await promoteToGroupDetail(match, navigate, {
+          arrival,
+          from: location.state?.from,
+        });
       } finally {
         promoteInFlightRef.current = false;
       }
@@ -158,7 +161,7 @@ export default function RequestDetail() {
     setNotFound(false);
     setLoading(false);
     markRequestViewed(match.id);
-  }, [requestId, navigate]);
+  }, [requestId, navigate, location.state?.from]);
 
   const refreshRequest = useCallback(async ({ silent = false } = {}) => {
     if (!requestId) return;
@@ -320,11 +323,76 @@ export default function RequestDetail() {
           : `${personName} marked as ${outcome}. They are now in the Directory.`,
         'success',
       );
-      navigate('/new-requests');
+      navigate(backTo);
     } catch (err) {
       settleMutation();
       console.error(err);
       showToast(err.message || 'Failed to save request.', 'error');
+    }
+  };
+
+  const openDeleteConfirm = async (req) => {
+    if (!req || deleteImpactLoading || deleting) return;
+    if (!req.duplicateGroupId) {
+      setConfirmDelete({
+        request: req,
+        impact: {
+          requestId: req.id,
+          confirmedSiblingIds: [],
+          potentialSiblingIds: [],
+          confirmedSiblingCount: 0,
+          potentialSiblingCount: 0,
+        },
+      });
+      return;
+    }
+    setDeleteImpactLoading(true);
+    let impact = null;
+    try {
+      impact = await getDismissImpact(req.id);
+    } catch {
+      impact = null;
+    } finally {
+      setDeleteImpactLoading(false);
+    }
+    setConfirmDelete({ request: req, impact });
+  };
+
+  const handleDeleteRequest = async () => {
+    const req = confirmDelete?.request;
+    const impact = confirmDelete?.impact;
+    if (!req || deleting) return;
+
+    const alsoIds = Array.isArray(impact?.confirmedSiblingIds)
+      ? impact.confirmedSiblingIds.filter(Boolean)
+      : [];
+    const removeIds = [req.id, ...alsoIds];
+
+    setDeleting(true);
+    setConfirmDelete(null);
+    removeRequestHighlight(req.id);
+    for (const id of alsoIds) removeRequestHighlight(id);
+
+    const settleMutation = beginCacheMutation(requestsCacheKey);
+    suppressNewRequests({ requestIds: removeIds, hard: true });
+    removeRequestsFromCache(requestsCacheKey, { requestIds: removeIds });
+
+    try {
+      await dismissRequest(req.id, { alsoDeleteIds: alsoIds });
+      settleMutation();
+      const cascadeCount = impact?.confirmedSiblingCount || 0;
+      showToast(
+        cascadeCount > 0
+          ? `Request deleted${cascadeCount === 1 ? ' (and 1 other in the group)' : ` (and ${cascadeCount} others in the group)`}.`
+          : 'Request deleted.',
+        'success',
+      );
+      navigate(backTo, { replace: true });
+    } catch (err) {
+      settleMutation();
+      console.error(err);
+      setDeleting(false);
+      showToast(err.message || 'Failed to delete request.', 'error');
     }
   };
 
@@ -364,6 +432,8 @@ export default function RequestDetail() {
         request={request}
         directory={directory}
         onConfirmAction={(req, adminNote) => setConfirmAction({ request: req, adminNote: adminNote || '' })}
+        onDelete={openDeleteConfirm}
+        deleteLoading={deleteImpactLoading || deleting}
       />
 
       <Modal
@@ -403,6 +473,54 @@ export default function RequestDetail() {
               </span>
             ) : null}
           </p>
+        ) : null}
+      </Modal>
+
+      <Modal
+        isOpen={confirmDelete !== null}
+        onClose={() => {
+          if (deleting) return;
+          setConfirmDelete(null);
+        }}
+        closeDisabled={deleting}
+        confirm
+        title="Delete request"
+        footer={
+          <>
+            <button
+              type="button"
+              disabled={deleting}
+              onClick={() => setConfirmDelete(null)}
+              className="px-4 py-2 border border-[var(--color-border-default)] rounded-lg text-sm font-medium text-[var(--color-text-primary)] hover:bg-white transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={deleting}
+              onClick={handleDeleteRequest}
+              className="px-4 py-2 text-white text-sm font-semibold rounded-lg bg-[var(--color-brand-primary)] hover:bg-[var(--color-surface-sidebar-hover)] shadow-sm cursor-pointer disabled:opacity-60"
+            >
+              {deleting ? 'Deleting…' : 'Confirm'}
+            </button>
+          </>
+        }
+      >
+        {confirmDelete ? (
+          <div className="space-y-3 text-left">
+            <p>
+              Are you sure you want to delete the request for{' '}
+              <strong>{formatPersonName(confirmDelete.request.person)}</strong>?
+            </p>
+            {(confirmDelete.impact?.confirmedSiblingCount || 0) > 0 ? (
+              <p>
+                {(confirmDelete.impact.confirmedSiblingCount === 1)
+                  ? 'This will also delete the other request in this group.'
+                  : `This will also delete the other ${confirmDelete.impact.confirmedSiblingCount} requests in this group.`}
+              </p>
+            ) : null}
+            <p>This action cannot be undone.</p>
+          </div>
         ) : null}
       </Modal>
 
