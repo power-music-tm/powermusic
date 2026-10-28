@@ -1,18 +1,24 @@
 """Duplicate matching logic supporting name derivatives, location probes, and false-positive dismissal checks.
 
-PureGym and Health Fitness share the same duplicate matching model with
-name treated as ONE entity (first+last), plus email and location:
-  Name (first nickname-match AND last exact), email, location
+PureGym / Health Fitness and GLL both compare first, last, email, and location
+as separate fields (first may use nicknames; location only when both sides filled).
 
 Exact same non-empty email is always a confirmed duplicate (complete match),
 even when name and location differ.
 
-For Health Fitness, the "location" field stores what the partner calls "client".
+Potential (emails differ / empty) uses partner-specific allowed combos:
 
-GLL uses first, last, email, and optional location (only when both sides filled):
-  Exact same email is confirmed.
-  Potential when an allowed field pair/triple matches (first may use nicknames).
-  Last+location alone is never a match.
+Non-GLL (PureGym / Health Fitness):
+  Allowed: first+email, last+email, email+location, first+last+location
+           (and supersets of those).
+  Never: first+last alone, first+location alone, last+location alone.
+
+GLL:
+  Allowed: first+last, first+email, first+location, last+email, email+location
+           (and supersets).
+  Never: last+location alone.
+
+For Health Fitness, the "location" field stores what the partner calls "client".
 
 Partner isolation is enforced by the caller filtering to the correct partner_id
 before comparing requests; these functions receive already-filtered sets.
@@ -437,6 +443,36 @@ def _field_flags(
     }
 
 
+def _non_gll_allowed_field_combo(
+    *,
+    first_match: bool,
+    same_last: bool,
+    same_email: bool,
+    same_loc: bool,
+) -> bool:
+    """True when non-GLL flags form an allowed matching combination.
+
+    First and last are separate fields (same as GLL), but weak pairs are out:
+
+    Allowed (and any superset):
+      first+email, last+email, email+location, first+last+location
+    Forbidden alone:
+      first+last, first+location, last+location
+    """
+    if first_match and same_last and not same_email and not same_loc:
+        return False
+    if first_match and same_loc and not same_last and not same_email:
+        return False
+    if same_last and same_loc and not first_match and not same_email:
+        return False
+    return (
+        (first_match and same_email)
+        or (same_last and same_email)
+        or (same_email and same_loc)
+        or (first_match and same_last and same_loc)
+    )
+
+
 def match_classification(
     left: schemas.PersonInfo,
     right: schemas.PersonInfo,
@@ -452,13 +488,10 @@ def match_classification(
     Confirmed duplicate (evaluated FIRST):
       exact same non-empty email (complete match on its own).
 
-    Potential duplicate (name treated as ONE entity; only when emails differ):
-      Entities: Name, Email, Location
-      Name matches only when first_match AND same_last are both True
-        (first uses nickname matching; last is exact).
-      Potential when at least two of those three entities match.
-      Examples: Name+Location (different emails).
-      Name alone (first+last, different email/location) is NOT enough.
+    Potential duplicate (first/last separate; only when emails differ / empty):
+      Allowed: first+email, last+email, email+location, first+last+location
+               (and supersets).
+      Never: first+last alone, first+location alone, last+location alone.
 
     The numeric score is still computed with the original weights and returned
     for display/debugging.  It no longer gates the classification decision.
@@ -489,13 +522,15 @@ def match_classification(
     if same_email_exact:
         return "confirmed_duplicate", total_score
 
-    # 2. Potential Duplicate — name is one entity among {Name, Email, Location}
+    # 2. Potential — separate first/last with non-GLL allowlist
     # (emails already differ / are empty — same_email cannot contribute here).
     flags = _field_flags(left, right, use_location=True)
-    name_match = flags["first_match"] and flags["same_last"]
-    entity_matched = sum((name_match, flags["same_email"], flags["same_loc"]))
-
-    if entity_matched >= MIN_MATCHED_FIELDS_FOR_POTENTIAL:
+    if _non_gll_allowed_field_combo(
+        first_match=flags["first_match"],
+        same_last=flags["same_last"],
+        same_email=flags["same_email"],
+        same_loc=flags["same_loc"],
+    ):
         return "potential_duplicate", total_score
 
     return None, total_score
@@ -598,12 +633,13 @@ def match_classification_for_partner(
 ) -> Tuple[Optional[str], float]:
     """Partner-aware classification wrapper.
 
-    * GLL (is_gll=True)  → GLL engine (first/last/email + optional location)
-    * All others          → shared 4-field engine (PureGym / Health Fitness)
+    * GLL (is_gll=True)  → GLL allowlist (includes first+last, first+location)
+    * All others          → non-GLL allowlist (never first+last / first+loc /
+                            last+loc alone)
 
     The is_healthtech flag is accepted for backwards compatibility but no longer
     selects a different algorithm — PureGym and Health Fitness share the same
-    4-field match_classification().
+    non-GLL match_classification().
     """
     if is_gll:
         return match_classification_gll(left, right)

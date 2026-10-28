@@ -105,11 +105,11 @@ def manager_form_directory_overlap_reasons(
 ) -> set[str]:
     """Manager Check Directory / match-candidates warning reasons.
 
-    Non-GLL (name is one entity among {Name, Email, Location}):
-      Exact same email alone is a complete match (warn as Email).
-      Otherwise warn when at least two entities match:
-        Name+Location (Name = first AND last both match).
-      Name alone, first+location, last+location → no warn.
+    Non-GLL (first/last separate; location optional when both filled):
+      Exact same email alone warns as Email.
+      Otherwise warn on allowed combos: first+last+location (and email pairs
+      via the email branch). Never first+last, first+location, or
+      last+location alone.
 
     GLL (first/last separate; location optional when both filled):
       Exact same email alone warns as Email.
@@ -124,11 +124,12 @@ def manager_form_directory_overlap_reasons(
         row=row,
     )
 
+    first_m = "firstName" in matched
+    last_m = "lastName" in matched
+    email_m = "email" in matched
+    loc_m = "location" in matched
+
     if is_gll:
-        first_m = "firstName" in matched
-        last_m = "lastName" in matched
-        email_m = "email" in matched
-        loc_m = "location" in matched
         if email_m:
             reasons: set[str] = {"Email"}
             if first_m and last_m:
@@ -148,25 +149,22 @@ def manager_form_directory_overlap_reasons(
             return reasons
         return set()
 
-    name_match = "firstName" in matched and "lastName" in matched
-    email_match = "email" in matched
-    loc_match = "location" in matched
-    if email_match:
+    if email_m:
         reasons = {"Email"}
-        if name_match:
+        if first_m and last_m:
             reasons.add("Name")
         return reasons
-    if sum((name_match, email_match, loc_match)) < 2:
+    # Forbidden weak pairs for non-GLL.
+    if first_m and last_m and not loc_m:
         return set()
-
-    reasons = set()
-    if name_match:
-        reasons.add("Name")
-    if loc_match and name_match and not email_match:
-        reasons.add("Location")
-    if not reasons:
-        reasons.add("Match")
-    return reasons
+    if first_m and loc_m and not last_m:
+        return set()
+    if last_m and loc_m and not first_m:
+        return set()
+    # Allowed without email: first + last + location.
+    if first_m and last_m and loc_m:
+        return {"Name", "Location"}
+    return set()
 
 
 def _is_gll(db: Optional[Session], partner_id: Optional[str]) -> bool:
@@ -197,7 +195,9 @@ def _probe_clause_specs(
         specs.append({"person_email": email, "person_first_name": first})
     if email and last:
         specs.append({"person_email": email, "person_last_name": last})
-    # Location-based clauses are omitted for GLL (no location field)
+    # Location-based clauses are omitted for GLL (no location field).
+    # Non-GLL never matches on first+location or last+location alone, so those
+    # probes are omitted; first+last+location and email+location remain.
     if not is_gll:
         if email and location:
             specs.append({"person_email": email, "person_location": location})
@@ -207,10 +207,6 @@ def _probe_clause_specs(
                 "person_last_name": last,
                 "person_location": location,
             })
-        if first and location:
-            specs.append({"person_first_name": first, "person_location": location})
-        if last and location:
-            specs.append({"person_last_name": last, "person_location": location})
     return specs
 
 

@@ -77,13 +77,13 @@ class TestFourFieldClassification:
         assert score == 100.0
 
     # Test 4 – Same last + same first, different email/location → None
-    # Name is one entity; name alone is not enough without email or location.
+    # first+last alone is never enough without email or location.
     def test_04_same_last_same_first_different_email_loc_none(self):
         left  = _p("John", "Smith", "a@example.com", "GymA")
         right = _p("John", "Smith", "b@example.com", "GymB")
         label, _ = match_classification(left, right)
         assert label is None, (
-            f"Name alone (same first+last) should be None without email/loc, got {label}"
+            f"first+last alone should be None without email/loc, got {label}"
         )
 
     # Test 4b – Name + email (different location) → confirmed (exact email)
@@ -95,13 +95,22 @@ class TestFourFieldClassification:
             f"Same email should be confirmed_duplicate, got {label}"
         )
 
-    # Test 4c – Name + location (different email) → potential
+    # Test 4c – first+last+location (different email) → potential
     def test_04c_name_plus_location_potential(self):
         left  = _p("John", "Smith", "a@example.com", "GymA")
         right = _p("John", "Smith", "b@example.com", "GymA")
         label, _ = match_classification(left, right)
         assert label == "potential_duplicate", (
-            f"Name + location should be potential_duplicate, got {label}"
+            f"first+last+location should be potential_duplicate, got {label}"
+        )
+
+    # Test 4d – first+location alone (different last/email) → None
+    def test_04d_first_plus_location_alone_none(self):
+        left  = _p("John", "Smith", "a@example.com", "GymA")
+        right = _p("John", "Taylor", "b@example.com", "GymA")
+        label, _ = match_classification(left, right)
+        assert label is None, (
+            f"first+location alone should be None, got {label}"
         )
 
     # Test 5 – Same last only → None

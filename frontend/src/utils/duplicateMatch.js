@@ -5,11 +5,11 @@
  * exact match OR nickname-graph related (shared token length >= 3).
  * Confirmed: exact same non-empty email (complete match on its own).
  *
- * Potential (non-GLL, emails differ): name is ONE entity (first_match AND
- * same_last); any two of {Name, Email, Location} → potential_duplicate.
- * Potential (GLL, emails differ): allowed combos among first/last/email/
- * optional location (both filled): first+last, first+email, first+location,
- * last+email, email+location (and supersets). Never last+location alone.
+ * Potential (emails differ): first/last/email/location are separate fields.
+ * Non-GLL allowed: first+email, last+email, email+location, first+last+location
+ *   (and supersets). Never first+last, first+location, or last+location alone.
+ * GLL allowed: first+last, first+email, first+location, last+email,
+ *   email+location (and supersets). Never last+location alone.
  */
 
 import nicknameRelated from '../data/nicknameRelated.json' with { type: 'json' };
@@ -143,10 +143,22 @@ export function matchClassification(left, right, options = {}) {
     return null;
   }
 
-  // Non-GLL: name is one entity (first_match AND same_last). Emails already differ.
-  const nameMatch = firstMatch && sameLast;
-  const entityMatched = [nameMatch, sameEmail, sameLoc].filter(Boolean).length;
-  if (entityMatched >= 2) {
+  // Non-GLL: first/last separate. Forbidden weak pairs alone.
+  if (firstMatch && sameLast && !sameEmail && !sameLoc) {
+    return null;
+  }
+  if (firstMatch && sameLoc && !sameLast && !sameEmail) {
+    return null;
+  }
+  if (sameLast && sameLoc && !firstMatch && !sameEmail) {
+    return null;
+  }
+  const allowed =
+    (firstMatch && sameEmail)
+    || (sameLast && sameEmail)
+    || (sameEmail && sameLoc)
+    || (firstMatch && sameLast && sameLoc);
+  if (allowed) {
     return 'potential_duplicate';
   }
 

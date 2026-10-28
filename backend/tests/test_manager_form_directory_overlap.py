@@ -23,7 +23,7 @@ def _row(**kwargs):
 
 
 class TestManagerFormDirectoryOverlapNonGll:
-    """Non-GLL: exact email alone warns; else Name+Location (Name = first+last)."""
+    """Non-GLL: exact email alone warns; else first+last+location. Never weak pairs alone."""
 
     @pytest.mark.parametrize(
         "form,expect_reason",
